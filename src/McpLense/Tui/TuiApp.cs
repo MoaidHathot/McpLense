@@ -4,8 +4,17 @@ namespace McpLense;
 
 internal static class TuiApp
 {
-    public static async Task<int> RunAsync(ParsedCommand command)
+    public static Task<int> RunAsync(ParsedCommand command)
+        => RunAsync(command, console: null, waitForKey: null);
+
+    internal static async Task<int> RunAsync(
+        ParsedCommand command,
+        IAnsiConsole? console,
+        Func<Task>? waitForKey)
     {
+        console ??= AnsiConsole.Console;
+        waitForKey ??= DefaultWaitForKey;
+
         var inspectCommand = command with
         {
             Command = AppCommand.Inspect,
@@ -18,21 +27,29 @@ internal static class TuiApp
             throw new InvalidOperationException("TUI expected an inspect report.");
         }
 
+        return await RenderAsync(report, console, waitForKey);
+    }
+
+    internal static async Task<int> RenderAsync(
+        InspectReport report,
+        IAnsiConsole console,
+        Func<Task> waitForKey)
+    {
         var servers = report.Servers;
         if (servers.Count == 0)
         {
-            AnsiConsole.MarkupLine("[red]No servers were resolved.[/]");
+            console.MarkupLine("[red]No servers were resolved.[/]");
             return 1;
         }
 
         while (true)
         {
-            AnsiConsole.Clear();
+            console.Clear();
             var serverOptions = servers
-                .Select((server, index) => new { Label = $"{index + 1}. {server.Name} [{server.Transport}] {server.Target}", Server = server })
+                .Select((server, index) => new { Label = Markup.Escape($"{index + 1}. {server.Name} [{server.Transport}] {server.Target}"), Server = server })
                 .ToArray();
 
-            var selectedServerLabel = AnsiConsole.Prompt(
+            var selectedServerLabel = console.Prompt(
                 new SelectionPrompt<string>()
                     .Title("Select an MCP server")
                     .PageSize(10)
@@ -45,63 +62,63 @@ internal static class TuiApp
 
             var selectedServer = serverOptions.First(option => option.Label == selectedServerLabel).Server;
 
-            await ShowServerAsync(selectedServer);
+            await ShowServerAsync(console, selectedServer, waitForKey);
         }
     }
 
-    private static Task ShowServerAsync(ServerInspection server)
+    private static async Task ShowServerAsync(IAnsiConsole console, ServerInspection server, Func<Task> waitForKey)
     {
         while (true)
         {
-            AnsiConsole.Clear();
-            RenderServerSummary(server);
+            console.Clear();
+            RenderServerSummary(console, server);
 
-            var choice = AnsiConsole.Prompt(
+            var choice = console.Prompt(
                 new SelectionPrompt<string>()
                     .Title("Choose a section")
                     .AddChoices("Overview", "Tools", "Resources", "Resource Templates", "Prompts", "Back"));
 
             if (choice == "Back")
             {
-                return Task.CompletedTask;
+                return;
             }
 
-            AnsiConsole.Clear();
-            RenderServerSummary(server);
+            console.Clear();
+            RenderServerSummary(console, server);
             switch (choice)
             {
                 case "Overview":
-                    RenderOverview(server);
+                    RenderOverview(console, server);
                     break;
                 case "Tools":
-                    RenderTools(server);
+                    RenderTools(console, server);
                     break;
                 case "Resources":
-                    RenderResources(server);
+                    RenderResources(console, server);
                     break;
                 case "Resource Templates":
-                    RenderResourceTemplates(server);
+                    RenderResourceTemplates(console, server);
                     break;
                 case "Prompts":
-                    RenderPrompts(server);
+                    RenderPrompts(console, server);
                     break;
             }
 
-            AnsiConsole.MarkupLine("\n[grey]Press any key to continue...[/]");
-            Console.ReadKey(true);
+            console.MarkupLine("\n[grey]Press any key to continue...[/]");
+            await waitForKey();
         }
     }
 
-    private static void RenderServerSummary(ServerInspection server)
+    internal static void RenderServerSummary(IAnsiConsole console, ServerInspection server)
     {
         var panel = new Panel($"[bold]{Markup.Escape(server.Name)}[/]\n[grey]{Markup.Escape(server.Target)}[/]")
         {
             Header = new PanelHeader($"{server.Transport} server")
         };
-        AnsiConsole.Write(panel);
+        console.Write(panel);
     }
 
-    private static void RenderOverview(ServerInspection server)
+    internal static void RenderOverview(IAnsiConsole console, ServerInspection server)
     {
         var table = new Table().RoundedBorder();
         table.AddColumn("Section");
@@ -112,14 +129,14 @@ internal static class TuiApp
         table.AddRow("Resources", SectionStatus(server.Resources), server.Resources.Items.Count.ToString());
         table.AddRow("Resource Templates", SectionStatus(server.ResourceTemplates), server.ResourceTemplates.Items.Count.ToString());
         table.AddRow("Prompts", SectionStatus(server.Prompts), server.Prompts.Items.Count.ToString());
-        AnsiConsole.Write(table);
+        console.Write(table);
     }
 
-    private static void RenderTools(ServerInspection server)
+    internal static void RenderTools(IAnsiConsole console, ServerInspection server)
     {
         if (server.Tools.Error is not null)
         {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(server.Tools.Error)}[/]");
+            console.MarkupLine($"[red]{Markup.Escape(server.Tools.Error)}[/]");
             return;
         }
 
@@ -131,14 +148,14 @@ internal static class TuiApp
             table.AddRow(Markup.Escape(item.Name), Markup.Escape(item.Description ?? string.Empty));
         }
 
-        AnsiConsole.Write(table);
+        console.Write(table);
     }
 
-    private static void RenderResources(ServerInspection server)
+    internal static void RenderResources(IAnsiConsole console, ServerInspection server)
     {
         if (server.Resources.Error is not null)
         {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(server.Resources.Error)}[/]");
+            console.MarkupLine($"[red]{Markup.Escape(server.Resources.Error)}[/]");
             return;
         }
 
@@ -151,14 +168,14 @@ internal static class TuiApp
             table.AddRow(Markup.Escape(item.Name ?? string.Empty), Markup.Escape(item.Uri ?? string.Empty), Markup.Escape(item.MimeType ?? string.Empty));
         }
 
-        AnsiConsole.Write(table);
+        console.Write(table);
     }
 
-    private static void RenderResourceTemplates(ServerInspection server)
+    internal static void RenderResourceTemplates(IAnsiConsole console, ServerInspection server)
     {
         if (server.ResourceTemplates.Error is not null)
         {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(server.ResourceTemplates.Error)}[/]");
+            console.MarkupLine($"[red]{Markup.Escape(server.ResourceTemplates.Error)}[/]");
             return;
         }
 
@@ -171,14 +188,14 @@ internal static class TuiApp
             table.AddRow(Markup.Escape(item.Name ?? string.Empty), Markup.Escape(item.UriTemplate ?? string.Empty), Markup.Escape(item.MimeType ?? string.Empty));
         }
 
-        AnsiConsole.Write(table);
+        console.Write(table);
     }
 
-    private static void RenderPrompts(ServerInspection server)
+    internal static void RenderPrompts(IAnsiConsole console, ServerInspection server)
     {
         if (server.Prompts.Error is not null)
         {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(server.Prompts.Error)}[/]");
+            console.MarkupLine($"[red]{Markup.Escape(server.Prompts.Error)}[/]");
             return;
         }
 
@@ -191,13 +208,13 @@ internal static class TuiApp
             table.AddRow(Markup.Escape(item.Name), Markup.Escape(arguments));
         }
 
-        AnsiConsole.Write(table);
+        console.Write(table);
     }
 
-    private static string SectionStatus<T>(SectionResult<T> section)
+    internal static string SectionStatus<T>(SectionResult<T> section)
         => section.Error is not null ? $"error: {section.Error}" : section.Supported ? "ok" : "not supported";
 
-    private static string FormatCapabilities(CapabilitySnapshot capabilities)
+    internal static string FormatCapabilities(CapabilitySnapshot capabilities)
     {
         var names = new List<string>();
         if (capabilities.Tools) names.Add("tools");
@@ -206,5 +223,11 @@ internal static class TuiApp
         if (capabilities.Logging) names.Add("logging");
         if (capabilities.Completions) names.Add("completions");
         return names.Count == 0 ? "none" : string.Join(", ", names);
+    }
+
+    private static Task DefaultWaitForKey()
+    {
+        Console.ReadKey(true);
+        return Task.CompletedTask;
     }
 }
