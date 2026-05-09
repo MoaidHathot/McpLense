@@ -1,6 +1,8 @@
 <Solution>
   <Project Path="../tests/McpLense.E2ETests/McpLense.E2ETests.csproj" />
   <Project Path="../tests/McpLense.IntegrationTests/McpLense.IntegrationTests.csproj" />
+  <Project Path="../tests/McpLense.TestHttpServer/McpLense.TestHttpServer.csproj" />
+  <Project Path="../tests/McpLense.TestServer.Shared/McpLense.TestServer.Shared.csproj" />
   <Project Path="../tests/McpLense.TestServer/McpLense.TestServer.csproj" />
   <Project Path="../tests/McpLense.UnitTests/McpLense.UnitTests.csproj" />
   <Project Path="McpLense/McpLense.csproj" />

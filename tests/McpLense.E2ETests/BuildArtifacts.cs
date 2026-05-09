@@ -9,12 +9,15 @@ internal static class BuildArtifacts
     private static readonly Lazy<string> _repoRoot = new(LocateRepoRoot);
     private static readonly Lazy<string> _mainAppDll = new(() => LocateAssembly("McpLense", Path.Combine("src", "McpLense", "bin")));
     private static readonly Lazy<string> _testServerDll = new(() => LocateAssembly("McpLense.TestServer", Path.Combine("tests", "McpLense.TestServer", "bin")));
+    private static readonly Lazy<string> _testHttpServerDll = new(() => LocateAssembly("McpLense.TestHttpServer", Path.Combine("tests", "McpLense.TestHttpServer", "bin")));
 
     public static string RepoRoot => _repoRoot.Value;
 
     public static string MainAppDll => _mainAppDll.Value;
 
     public static string TestServerDll => _testServerDll.Value;
+
+    public static string TestHttpServerDll => _testHttpServerDll.Value;
 
     private static string LocateRepoRoot()
     {

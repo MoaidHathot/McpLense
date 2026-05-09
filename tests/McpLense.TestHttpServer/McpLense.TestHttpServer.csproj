@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>McpLense.TestHttpServer</AssemblyName>
+    <RootNamespace>McpLense.TestHttpServer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\McpLense.TestServer.Shared\McpLense.TestServer.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

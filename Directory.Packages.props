@@ -11,8 +11,9 @@
     <PackageVersion Include="Spectre.Console" Version="0.54.0" />
   </ItemGroup>
 
-  <ItemGroup Label="Hosting (test server)">
+  <ItemGroup Label="Hosting (test servers)">
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.2.0" />
   </ItemGroup>
 
   <ItemGroup Label="Test framework">

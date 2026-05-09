@@ -11,4 +11,8 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\McpLense.TestServer.Shared\McpLense.TestServer.Shared.csproj" />
+  </ItemGroup>
+
 </Project>
