@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>McpLense</AssemblyName>
+    <RootNamespace>McpLense</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Tool packaging">
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>mcplense</ToolCommandName>
+    <PackageId>McpLense</PackageId>
+    <Version>0.1.0</Version>
+    <Description>CLI tool for inspecting MCP servers, listing their capabilities, and calling tools or prompts for debugging.</Description>
+    <PackageTags>mcp;model-context-protocol;debugging;cli;dotnet-tool</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dumpify" />
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Spectre.Console" />
+  </ItemGroup>
+
+  <ItemGroup Label="Test access">
+    <InternalsVisibleTo Include="McpLense.UnitTests" />
+    <InternalsVisibleTo Include="McpLense.IntegrationTests" />
+    <InternalsVisibleTo Include="McpLense.E2ETests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
