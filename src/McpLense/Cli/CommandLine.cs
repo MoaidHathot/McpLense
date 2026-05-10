@@ -50,12 +50,21 @@ internal sealed record TargetOptions(
     string? Command,
     IReadOnlyList<string> CommandArguments,
     string? WorkingDirectory,
-    IReadOnlyDictionary<string, string> Environment);
+    IReadOnlyDictionary<string, string> Environment,
+    AuthOverrides AuthOverrides);
 
 internal sealed class UserInputException(string message) : Exception(message);
 
 internal static class CommandLineParser
 {
+    /// <summary>Long options that act as boolean switches and do NOT consume the next argument.</summary>
+    private static readonly HashSet<string> BooleanFlags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "no-auth",
+        "login",
+        "logout"
+    };
+
     public static ParsedCommand Parse(string[] args)
     {
         if (args.Length == 0)
@@ -125,12 +134,23 @@ internal static class CommandLineParser
         var timeout = ParseTimeout(GetSingle(options, "timeout"));
         var progress = ParseProgress(GetSingle(options, "progress"), command);
 
+        // --login/--logout short-circuit through McpExecutor and return an AuthSessionReport.
+        // The TUI path casts the executor's payload to InspectReport, so combining 'tui' with
+        // --login/--logout would otherwise surface as a confusing internal exception. Reject up
+        // front with a clear hint to run the auth action via a non-TUI command first.
+        if (command is AppCommand.Tui && (target.AuthOverrides.LoginOnly || target.AuthOverrides.LogoutOnly))
+        {
+            var flag = target.AuthOverrides.LoginOnly ? "--login" : "--logout";
+            throw new UserInputException(
+                $"{flag} is not supported with 'tui'. Run 'mcplense inspect ... {flag}' first, then launch 'mcplense tui'.");
+        }
+
         return new ParsedCommand(command, subject, arguments, format, timeout, target, progress);
     }
 
     private static ParsedCommand HelpCommand() => new(AppCommand.Help, null, null, OutputFormat.Text, TimeSpan.FromSeconds(30), EmptyTarget(), false);
 
-    private static TargetOptions EmptyTarget() => new(null, [], null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>());
+    private static TargetOptions EmptyTarget() => new(null, [], null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), AuthOverrides.Empty);
 
     private static AppCommand ParseCommand(string value) => value.ToLowerInvariant() switch
     {
@@ -162,7 +182,20 @@ internal static class CommandLineParser
             throw new UserInputException("--help must appear immediately after the command.");
         }
 
-        var value = separator >= 0 ? token[(separator + 1)..] : RequireValue(token, args, ref index);
+        string value;
+        if (separator >= 0)
+        {
+            value = token[(separator + 1)..];
+        }
+        else if (BooleanFlags.Contains(name))
+        {
+            value = "true";
+        }
+        else
+        {
+            value = RequireValue(token, args, ref index);
+        }
+
         AddOption(options, name, value);
     }
 
@@ -205,7 +238,15 @@ internal static class CommandLineParser
             "format",
             "timeout",
             "args",
-            "progress"
+            "progress",
+            "auth",
+            "auth-token",
+            "no-auth",
+            "scope",
+            "redirect-uri",
+            "token-cache-name",
+            "login",
+            "logout"
         };
 
         foreach (var option in options.Keys)
@@ -309,19 +350,20 @@ internal static class CommandLineParser
         var workingDirectory = GetSingle(options, "cwd");
         var displayName = GetSingle(options, "name");
         var transport = ParseTransport(GetSingle(options, "transport"));
+        var authOverrides = ParseAuthOverrides(options);
 
         if (hasConfig)
         {
+            // Config files already carry target definitions; only --server, --format, --timeout
+            // and the auth-related overrides may be added on top.
             if (headers.Count > 0 || environment.Count > 0 || workingDirectory is not null || displayName is not null || commandArgs.Count > 0 || command is not null || hasUrl)
             {
-                // Config files already carry target definitions; only --server is allowed on top.
-                if (headers.Count > 0 || environment.Count > 0 || workingDirectory is not null || displayName is not null || commandArgs.Count > 0 || command is not null || hasUrl)
-                {
-                    throw new UserInputException("When using --config, only --server, --format, and --timeout may be added.");
-                }
+                throw new UserInputException(
+                    "When using --config, only --server, --format, --timeout, --auth, --auth-token, " +
+                    "--scope, --redirect-uri, --token-cache-name, --login, --logout, and --no-auth may be added.");
             }
 
-            return new TargetOptions(configPath, serverNames, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>());
+            return new TargetOptions(configPath, serverNames, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), authOverrides);
         }
 
         if (hasUrl)
@@ -341,7 +383,7 @@ internal static class CommandLineParser
                 throw new UserInputException($"Invalid URL '{urlText}'.");
             }
 
-            return new TargetOptions(null, [], displayName, uri, transport, headers, null, [], null, new Dictionary<string, string>());
+            return new TargetOptions(null, [], displayName, uri, transport, headers, null, [], null, new Dictionary<string, string>(), authOverrides);
         }
 
         if (headers.Count > 0)
@@ -359,7 +401,118 @@ internal static class CommandLineParser
             throw new UserInputException("--transport only applies to URL targets.");
         }
 
-        return new TargetOptions(null, [], displayName, null, TransportPreference.Auto, new Dictionary<string, string>(), command, commandArgs, workingDirectory, environment);
+        return new TargetOptions(null, [], displayName, null, TransportPreference.Auto, new Dictionary<string, string>(), command, commandArgs, workingDirectory, environment, authOverrides);
+    }
+
+    private static AuthOverrides ParseAuthOverrides(Dictionary<string, List<string>> options)
+    {
+        var noAuthRaw = GetSingle(options, "no-auth");
+        var noAuth = string.Equals(noAuthRaw, "true", StringComparison.OrdinalIgnoreCase);
+
+        var loginRaw = GetSingle(options, "login");
+        var login = string.Equals(loginRaw, "true", StringComparison.OrdinalIgnoreCase);
+
+        var logoutRaw = GetSingle(options, "logout");
+        var logout = string.Equals(logoutRaw, "true", StringComparison.OrdinalIgnoreCase);
+
+        if (login && logout)
+        {
+            throw new UserInputException("--login and --logout cannot be combined.");
+        }
+
+        var authRaw = GetSingle(options, "auth");
+        var tokenRaw = GetSingle(options, "auth-token");
+        var redirectRaw = GetSingle(options, "redirect-uri");
+        var cacheNameRaw = GetSingle(options, "token-cache-name");
+        var scopes = GetMany(options, "scope");
+
+        if (noAuth)
+        {
+            // --no-auth is the dominant flag. We still accept (and ignore) other auth flags so a user
+            // toggling --no-auth for a quick debug doesn't have to scrub every other CLI argument.
+            // It is, however, incompatible with --login/--logout because those imply OAuth state churn.
+            if (login || logout)
+            {
+                throw new UserInputException("--no-auth cannot be combined with --login or --logout.");
+            }
+
+            return new AuthOverrides(NoAuth: true);
+        }
+
+        AuthKind? kind = null;
+        if (authRaw is not null)
+        {
+            kind = ParseAuthKind(authRaw);
+        }
+
+        var expander = new EnvironmentExpander();
+
+        string? token = null;
+        if (tokenRaw is not null)
+        {
+            token = expander.Expand(tokenRaw, "--auth-token");
+            if (string.IsNullOrEmpty(token))
+            {
+                throw new UserInputException("--auth-token resolved to an empty value.");
+            }
+        }
+
+        string? redirectUri = null;
+        if (redirectRaw is not null)
+        {
+            redirectUri = expander.Expand(redirectRaw, "--redirect-uri");
+            if (string.IsNullOrEmpty(redirectUri))
+            {
+                throw new UserInputException("--redirect-uri resolved to an empty value.");
+            }
+        }
+
+        string? cacheName = null;
+        if (cacheNameRaw is not null)
+        {
+            cacheName = expander.Expand(cacheNameRaw, "--token-cache-name");
+            if (string.IsNullOrEmpty(cacheName))
+            {
+                throw new UserInputException("--token-cache-name resolved to an empty value.");
+            }
+        }
+
+        IReadOnlyList<string>? expandedScopes = null;
+        if (scopes.Count > 0)
+        {
+            var collected = new List<string>(scopes.Count);
+            foreach (var scope in scopes)
+            {
+                var resolved = expander.Expand(scope, "--scope");
+                if (string.IsNullOrEmpty(resolved))
+                {
+                    throw new UserInputException("--scope resolved to an empty value.");
+                }
+                collected.Add(resolved);
+            }
+
+            expandedScopes = collected;
+        }
+
+        return new AuthOverrides(
+            Kind: kind,
+            Token: token,
+            Scopes: expandedScopes,
+            RedirectUri: redirectUri,
+            CacheName: cacheName,
+            LoginOnly: login,
+            LogoutOnly: logout);
+    }
+
+    private static AuthKind ParseAuthKind(string raw)
+    {
+        return raw.ToLowerInvariant() switch
+        {
+            "bearer" => AuthKind.Bearer,
+            "oauth" or "oauthdiscovery" => AuthKind.OAuth,
+            _ => throw new UserInputException(
+                $"Unknown --auth value '{raw}'. Supported: 'bearer', 'oauth'.")
+        };
     }
 
     private static IReadOnlyDictionary<string, string> ParsePairs(IReadOnlyList<string> values, string label)

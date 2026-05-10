@@ -13,6 +13,22 @@ internal static class McpExecutor
     {
         var servers = await TargetResolver.ResolveAsync(command.Target, cancellationToken);
 
+        // --login and --logout short-circuit BEFORE the per-command dispatch so they reuse the
+        // same target resolution + auth merging the underlying command would have used. The
+        // selected AppCommand is intentionally ignored on this path; the user just needs a valid
+        // target to identify which server(s) to (re-)authenticate.
+        if (command.Target.AuthOverrides.LoginOnly)
+        {
+            var report = await AuthSessionRunner.LoginAsync(servers, cancellationToken);
+            return new ExecutionOutcome(report, report.Servers.Any(entry => !entry.Success));
+        }
+
+        if (command.Target.AuthOverrides.LogoutOnly)
+        {
+            var report = await AuthSessionRunner.LogoutAsync(servers, cancellationToken);
+            return new ExecutionOutcome(report, report.Servers.Any(entry => !entry.Success));
+        }
+
         return command.Command switch
         {
             AppCommand.Inspect => await InspectAsync(servers, command.Timeout, cancellationToken),
@@ -222,6 +238,17 @@ internal static class McpExecutor
             if (server.Headers.Count > 0)
             {
                 SetProperty(options, server.Headers.ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase), "AdditionalHeaders");
+            }
+
+            if (server.Auth is { Kind: not AuthKind.None })
+            {
+                var authHandler = AuthHandlerFactory.Create(server.Auth, server.Url);
+                if (authHandler is not null)
+                {
+                    authHandler.InnerHandler = new SocketsHttpHandler();
+                    var http = new HttpClient(authHandler, disposeHandler: true);
+                    return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken);
+                }
             }
 
             return await McpClient.CreateAsync(new HttpClientTransport(options), cancellationToken: cancellationToken);

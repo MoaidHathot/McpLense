@@ -15,8 +15,35 @@ internal static class TextFormatter
         ToolCallReport report => FormatToolCall(report, jsonOptions),
         ReadReport report => FormatRead(report, jsonOptions),
         PromptCallReport report => FormatPromptCall(report, jsonOptions),
+        AuthSessionReport report => FormatAuthSession(report),
         _ => JsonSerializer.Serialize(payload, jsonOptions)
     };
+
+    private static string FormatAuthSession(AuthSessionReport report)
+    {
+        var builder = new StringBuilder();
+        var success = report.Servers.Count(server => server.Success);
+        builder.AppendLine($"{report.Action}: {success}/{report.Servers.Count} succeeded");
+
+        for (var index = 0; index < report.Servers.Count; index++)
+        {
+            var entry = report.Servers[index];
+            AppendLine(builder, 1, $"- {entry.Name} [{entry.Target}]");
+            AppendLine(builder, 2, $"status: {(entry.Success ? "ok" : "failed")}");
+
+            if (!string.IsNullOrEmpty(entry.Detail))
+            {
+                AppendLine(builder, 2, $"detail: {entry.Detail}");
+            }
+
+            if (!string.IsNullOrEmpty(entry.Error))
+            {
+                AppendLine(builder, 2, $"error: {entry.Error}");
+            }
+        }
+
+        return builder.ToString().TrimEnd();
+    }
 
     private static string FormatInspect(InspectReport report, JsonSerializerOptions jsonOptions)
     {

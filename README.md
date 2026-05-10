@@ -186,7 +186,199 @@ In a config file, headers go under the server entry:
 }
 ```
 
-> Environment variable expansion in config values is _not_ done by `mcplense`; substitute before invocation, or pass headers via `--header`.
+For richer authentication, use the dedicated `auth` block (config) or `--auth` flags
+(CLI). See [Authentication](#authentication) below.
+
+## Authentication
+
+`mcplense` supports two authentication kinds for HTTP/SSE servers:
+
+| Kind     | Status    | How tokens are sourced                                      |
+| -------- | --------- | ----------------------------------------------------------- |
+| `bearer` | Available | Static token from config or `--auth-token` (env-expandable) |
+| `oauth`  | Available | MCP-spec OAuth 2.1 with discovery (RFC 9728/8414), PKCE (RFC 7636), and Dynamic Client Registration (RFC 7591) |
+
+Stdio (process) targets do not accept authentication; an `auth` block on a stdio
+server raises an error unless `--no-auth` is supplied.
+
+### Environment-variable expansion
+
+All string values in config files (and the value of `--auth-token`) accept these
+forms:
+
+| Form               | Meaning                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `env:VAR`          | Whole-string only. Errors when `VAR` is unset.                          |
+| `${VAR}`           | Substring. Errors when `VAR` is unset (empty string is preserved).      |
+| `${VAR:-default}`  | Substring with default. Uses `default` when `VAR` is unset **or** empty (bash `:-` semantics). |
+| `$$`               | Literal `$`.                                                            |
+
+Errors include the JSON path (e.g. `servers.remote.auth.token`) or the CLI flag
+name.
+
+### Bearer auth via config
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "url": "https://example.com/mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "bearer",
+        "token": "${REMOTE_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Setting both an `auth` block and a literal `Authorization` header on the same
+server is a hard error.
+
+### Bearer auth via CLI
+
+```bash
+# Token straight from an env var
+mcplense inspect --url https://example.com/mcp \
+  --auth bearer --auth-token env:REMOTE_TOKEN
+
+# Inline (not recommended for shared shells)
+mcplense inspect --url https://example.com/mcp \
+  --auth bearer --auth-token "eyJhbGciOi..."
+```
+
+### Precedence and overrides
+
+- `--auth <type>` **replaces** the config `auth` block entirely; you must
+  re-supply `--auth-token` (and any future kind-specific flags).
+- Without `--auth`, individual flags such as `--auth-token` overlay the matching
+  field in the config block. They error out if no `auth` block exists for that
+  server.
+- `--no-auth` suppresses authentication on every server in the run, both HTTP
+  and stdio. Other auth flags are accepted but ignored.
+- With `--config`, auth flags apply to **every** HTTP server in the file. Stdio
+  servers are skipped (they would otherwise error).
+
+### Azure AD / other token sources
+
+Slice A intentionally does not bundle MSAL or `Azure.Identity`. To use Entra ID
+tokens today, mint them out-of-band and feed them in:
+
+```bash
+$env:AAD_TOKEN = (az account get-access-token --resource api://my-mcp-app `
+  --query accessToken -o tsv)
+
+mcplense inspect --url https://my-mcp-app.example.com/mcp `
+  --auth bearer --auth-token env:AAD_TOKEN
+```
+
+### OAuth (MCP spec) auth
+
+For MCP servers that publish [Protected Resource Metadata
+(RFC 9728)](https://www.rfc-editor.org/rfc/rfc9728), `mcplense` performs the
+full OAuth 2.1 + PKCE + Dynamic Client Registration dance for you. Zero MSAL,
+zero Azure SDK — only the BCL.
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "url": "https://api.example.com/mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "scopes": ["mcp.read", "mcp.write"]
+      }
+    }
+  }
+}
+```
+
+For servers that don't publish PRM, you can wire endpoints in by hand:
+
+```json
+{
+  "mcpServers": {
+    "manual": {
+      "url": "https://api.example.com/mcp",
+      "auth": {
+        "type": "oauth",
+        "scopes": ["mcp.read"],
+        "issuer": "https://login.example.com/",
+        "authorizationEndpoint": "https://login.example.com/oauth2/authorize",
+        "tokenEndpoint": "https://login.example.com/oauth2/token",
+        "clientId": "env:OAUTH_CLIENT_ID"
+      }
+    }
+  }
+}
+```
+
+#### Authorization Server Metadata discovery
+
+Once `mcplense` knows the issuer (from PRM or `auth.issuer`), it locates the
+authorization and token endpoints by trying three well-known URLs in order:
+
+1. **RFC 8414 strict path-insert** &mdash; `{issuer_origin}/.well-known/oauth-authorization-server{issuer_path}`.
+2. **RFC 8414 path-append variant** &mdash; `{issuer}/.well-known/oauth-authorization-server` (used by some
+   identity providers that did append-style instead of insert).
+3. **OIDC Discovery 1.0** &mdash; `{issuer}/.well-known/openid-configuration`. Per RFC 8414 §5,
+   OIDC documents are a superset of ASM for the fields `mcplense` consumes; this fallback covers
+   OIDC-only authorization servers, notably **Microsoft Entra ID v2.0**.
+
+A 404 (or any other non-2xx) on a given form falls through to the next form. A 2xx response with
+malformed JSON or missing `authorization_endpoint`/`token_endpoint` stops the ladder and surfaces
+the failure &mdash; the server clearly meant to respond at that URL. If all three forms exhaust, the
+error message lists every URL attempted with its status to ease diagnosis.
+
+> **Worked Microsoft Entra ID example:** see [`samples/agent365.json`](samples/agent365.json) for a
+> full config that connects to Microsoft Agent365 via Entra ID. Entra does not implement RFC 7591
+> Dynamic Client Registration, so you must register a public client in your tenant's Entra portal
+> manually and supply its application (client) ID via `env:AGENT365_CLIENT_ID`.
+
+#### CLI flags
+
+| Flag                   | Purpose                                                                |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `--scope <s>`          | OAuth scope to request (repeatable). Env-expandable.                   |
+| `--redirect-uri <uri>` | Override loopback redirect URI (defaults to a free port on `127.0.0.1`).|
+| `--token-cache-name`   | Override token cache key. Defaults to a stable hash of the resource URI.|
+| `--login`              | Run the OAuth flow once, cache the token, then exit.                   |
+| `--logout`             | Delete cached OAuth tokens for the resolved server(s) and exit.        |
+
+`--login` and `--logout` reuse the same target resolution as the actual command
+they're attached to, so you can put any command in front:
+
+```bash
+# Warm the cache before running headless commands.
+mcplense inspect --url https://api.example.com/mcp --auth oauth --scope mcp.read --login
+
+# Sign out.
+mcplense inspect --url https://api.example.com/mcp --auth oauth --scope mcp.read --logout
+```
+
+#### Token cache
+
+Tokens (and any DCR-issued client credentials) are cached per-resource so
+subsequent runs reuse them without re-prompting:
+
+| OS         | Location                                                          | Encryption                         |
+| ---------- | ----------------------------------------------------------------- | ---------------------------------- |
+| Windows    | `%LOCALAPPDATA%\McpLense\tokens\<name>.bin`                       | DPAPI (`CurrentUser`)              |
+| Linux      | `${XDG_DATA_HOME:-~/.local/share}/mcplense/tokens/<name>.json`    | Plain JSON, `chmod 600`            |
+| macOS      | `~/Library/Application Support/McpLense/tokens/<name>.json`       | Plain JSON, `chmod 600`            |
+
+#### Headless / CI environments
+
+Set `MCPLENSE_NO_BROWSER=1` to skip the browser launch and print the
+authorization URL to stderr instead. Combine with `ssh -L` port forwarding to
+complete the loopback redirect from a remote workstation.
+
+Set `MCPLENSE_NO_INTERACTIVE_FLOW=1` to disable the runtime browser fallback
+entirely. A missing or expired token then surfaces as a clear error instructing
+you to run `--login` on a workstation. This is the recommended posture for CI
+runners.
 
 ## Examples
 

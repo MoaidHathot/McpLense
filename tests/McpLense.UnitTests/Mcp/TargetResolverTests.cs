@@ -22,7 +22,8 @@ public class TargetResolverTests
         string? command = null,
         IReadOnlyList<string>? commandArguments = null,
         string? workingDirectory = null,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null,
+        AuthOverrides? authOverrides = null)
         => new(
             configPath,
             serverNames ?? [],
@@ -33,7 +34,8 @@ public class TargetResolverTests
             command,
             commandArguments ?? [],
             workingDirectory,
-            environment ?? new Dictionary<string, string>());
+            environment ?? new Dictionary<string, string>(),
+            authOverrides ?? AuthOverrides.Empty);
 
     [Fact]
     public async Task ResolveAsync_DirectUrl_ProducesHttpServer()
@@ -371,5 +373,307 @@ public class TargetResolverTests
 
         servers[0].Kind.ShouldBe(ConnectionKind.Http);
         servers[0].Url!.ToString().ShouldStartWith("https://example.com/mcp");
+    }
+
+    private static EnvironmentExpander FixedEnv(IDictionary<string, string?> values)
+        => new(name => values.TryGetValue(name, out var value) ? value : null);
+
+    [Fact]
+    public async Task ResolveAsync_HttpServerWithBearerAuth_ParsesAndAttachesAuth()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "remote": {
+              "url": "https://example.com/mcp",
+              "auth": { "type": "bearer", "token": "${TOK}" }
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(configPath: file.Path);
+        var expander = FixedEnv(new Dictionary<string, string?> { ["TOK"] = "abc" });
+
+        var servers = await TargetResolver.ResolveAsync(options, expander, CancellationToken.None);
+
+        servers.Count.ShouldBe(1);
+        var auth = servers[0].Auth.ShouldNotBeNull();
+        auth.Kind.ShouldBe(AuthKind.Bearer);
+        auth.Token.ShouldBe("abc");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_StdioWithAuthBlock_Throws()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "local": {
+              "command": "node",
+              "auth": { "type": "bearer", "token": "abc" }
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(configPath: file.Path);
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => TargetResolver.ResolveAsync(options, CancellationToken.None));
+
+        ex.Message.ShouldContain("local");
+        ex.Message.ShouldContain("only applies to HTTP/SSE targets");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_StdioWithAuthBlockAndNoAuth_StripsAuth()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "local": {
+              "command": "node",
+              "auth": { "type": "bearer", "token": "abc" }
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(configPath: file.Path, authOverrides: new AuthOverrides(NoAuth: true));
+
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        servers.Count.ShouldBe(1);
+        servers[0].Auth.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_NoAuthOnHttpServer_ClearsConfiguredAuth()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "remote": {
+              "url": "https://example.com/mcp",
+              "auth": { "type": "bearer", "token": "abc" }
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(configPath: file.Path, authOverrides: new AuthOverrides(NoAuth: true));
+
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        servers[0].Auth.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AuthBearerOverride_ReplacesConfigAuth()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "remote": {
+              "url": "https://example.com/mcp",
+              "auth": { "type": "bearer", "token": "config-token" }
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(
+            configPath: file.Path,
+            authOverrides: new AuthOverrides(Kind: AuthKind.Bearer, Token: "cli-token"));
+
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        servers[0].Auth!.Token.ShouldBe("cli-token");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AuthBearerWithoutToken_Throws()
+    {
+        const string json = """
+        { "mcpServers": { "remote": { "url": "https://example.com/mcp" } } }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(
+            configPath: file.Path,
+            authOverrides: new AuthOverrides(Kind: AuthKind.Bearer));
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => TargetResolver.ResolveAsync(options, CancellationToken.None));
+
+        ex.Message.ShouldContain("--auth bearer");
+        ex.Message.ShouldContain("--auth-token");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AuthTokenWithoutKindOrConfig_Throws()
+    {
+        const string json = """
+        { "mcpServers": { "remote": { "url": "https://example.com/mcp" } } }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(
+            configPath: file.Path,
+            authOverrides: new AuthOverrides(Token: "stray"));
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => TargetResolver.ResolveAsync(options, CancellationToken.None));
+
+        ex.Message.ShouldContain("require either '--auth <type>'");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AuthTokenOverlay_OverridesConfigToken()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "remote": {
+              "url": "https://example.com/mcp",
+              "auth": { "type": "bearer", "token": "config-token" }
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(
+            configPath: file.Path,
+            authOverrides: new AuthOverrides(Token: "cli-token"));
+
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        servers[0].Auth!.Kind.ShouldBe(AuthKind.Bearer);
+        servers[0].Auth!.Token.ShouldBe("cli-token");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AuthOverlayMultiServer_AppliesToAllHttp_SkipsStdio()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "alpha": {
+              "url": "https://alpha.example.com/mcp",
+              "auth": { "type": "bearer", "token": "alpha-token" }
+            },
+            "beta": {
+              "url": "https://beta.example.com/mcp",
+              "auth": { "type": "bearer", "token": "beta-token" }
+            },
+            "local": {
+              "command": "node"
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(
+            configPath: file.Path,
+            authOverrides: new AuthOverrides(Kind: AuthKind.Bearer, Token: "shared-cli-token"));
+
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        var alpha = servers.Single(s => s.Name == "alpha");
+        var beta = servers.Single(s => s.Name == "beta");
+        var local = servers.Single(s => s.Name == "local");
+
+        alpha.Auth!.Token.ShouldBe("shared-cli-token");
+        beta.Auth!.Token.ShouldBe("shared-cli-token");
+        local.Auth.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AuthBlockWithExplicitAuthorizationHeader_Throws()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "remote": {
+              "url": "https://example.com/mcp",
+              "headers": { "Authorization": "Bearer literal" },
+              "auth": { "type": "bearer", "token": "abc" }
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(configPath: file.Path);
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => TargetResolver.ResolveAsync(options, CancellationToken.None));
+
+        ex.Message.ShouldContain("cannot set both");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_StringValuesInConfig_AreEnvExpanded()
+    {
+        const string json = """
+        {
+          "mcpServers": {
+            "remote": {
+              "url": "https://${HOST:-default.example.com}/mcp",
+              "headers": { "X-Trace": "${TRACE_ID:-none}" }
+            }
+          }
+        }
+        """;
+
+        using var file = new TempFile(json);
+        var options = Direct(configPath: file.Path);
+        var expander = FixedEnv(new Dictionary<string, string?>
+        {
+            ["HOST"] = "real.example.com",
+            // TRACE_ID intentionally unset
+        });
+
+        var servers = await TargetResolver.ResolveAsync(options, expander, CancellationToken.None);
+
+        servers[0].Url!.Host.ShouldBe("real.example.com");
+        servers[0].Headers["X-Trace"].ShouldBe("none");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AuthOverrideOnDirectUrl_Wins()
+    {
+        var options = Direct(
+            url: new System.Uri("https://example.com/mcp"),
+            authOverrides: new AuthOverrides(Kind: AuthKind.Bearer, Token: "from-cli"));
+
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        servers.Count.ShouldBe(1);
+        servers[0].Auth!.Kind.ShouldBe(AuthKind.Bearer);
+        servers[0].Auth!.Token.ShouldBe("from-cli");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AuthOverrideOnDirectStdio_Throws()
+    {
+        var options = Direct(
+            command: "node",
+            authOverrides: new AuthOverrides(Kind: AuthKind.Bearer, Token: "ignored"));
+
+        // Direct stdio has no config auth, and the CLI auth flags only stick on HTTP servers.
+        // For stdio, the merged result is no auth (overlay is silently dropped on stdio), so resolution succeeds.
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        servers[0].Kind.ShouldBe(ConnectionKind.Stdio);
+        servers[0].Auth.ShouldBeNull();
     }
 }

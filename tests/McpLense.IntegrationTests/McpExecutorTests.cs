@@ -41,7 +41,8 @@ public class McpExecutorTests
             Command: "dotnet",
             CommandArguments: ["exec", TestServerLocator.TestServerDll],
             WorkingDirectory: null,
-            Environment: new Dictionary<string, string>());
+            Environment: new Dictionary<string, string>(),
+            AuthOverrides: AuthOverrides.Empty);
 
         return new ParsedCommand(
             Command: command,
@@ -264,7 +265,8 @@ public class McpExecutorTests
             Command: "definitely-not-a-real-command-xyz123",
             CommandArguments: [],
             WorkingDirectory: null,
-            Environment: new Dictionary<string, string>());
+            Environment: new Dictionary<string, string>(),
+            AuthOverrides: AuthOverrides.Empty);
 
         var command = new ParsedCommand(
             AppCommand.Inspect, null, null, OutputFormat.Json,

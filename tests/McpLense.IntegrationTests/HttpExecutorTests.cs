@@ -52,7 +52,8 @@ public class HttpExecutorTests
             Command: null,
             CommandArguments: [],
             WorkingDirectory: null,
-            Environment: new Dictionary<string, string>());
+            Environment: new Dictionary<string, string>(),
+            AuthOverrides: AuthOverrides.Empty);
 
         return new ParsedCommand(
             Command: command,

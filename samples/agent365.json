@@ -1,0 +1,47 @@
+{
+  "//": "Worked example: connect McpLense to a Microsoft Agent365 MCP endpoint via Entra ID v2.0 OAuth.",
+  "//1": "Microsoft Entra ID v2.0 does NOT implement RFC 7591 Dynamic Client Registration, so you must",
+  "//2": "register a public client manually in your tenant's Entra portal and export its application",
+  "//3": "(client) ID as the VSCODE_CLIENT_ID environment variable. The redirect URI you register in",
+  "//4": "Entra MUST exactly match the redirectUri below (http loopback, not https).",
+  "//5": "",
+  "//6": "Entra also doesn't serve RFC 8414 oauth-authorization-server metadata; it only publishes the",
+  "//7": "OIDC openid-configuration document. McpLense's discovery client falls back to that automatically,",
+  "//8": "but this sample short-circuits discovery entirely by hard-coding the v2.0 endpoints below for",
+  "//9": "speed and predictability.",
+  "//10": "",
+  "//11": "Tenant placeholders: 'organizations' in the issuer/auth/token URLs accepts any work-or-school",
+  "//12": "Entra tenant. The access token is issued by your actual tenant GUID at runtime. Replace with",
+  "//13": "'common', 'consumers', or a specific tenant GUID if you want different audience semantics.",
+  "//14": "",
+  "//15": "Scope: Entra resource tokens use the '<audience>/.default' shape, which means 'issue a token",
+  "//16": "for this resource carrying every statically-consented permission for it'. Set VSCODE_AUDIENCE",
+  "//17": "to the Application ID URI (Entra app registration > Expose an API) of the Agent365 resource",
+  "//18": "you're targeting, e.g. 'api://<guid>' or 'https://agent365.svc.cloud.microsoft'. The literal",
+  "//19": "'/.default' suffix is required by Entra; do NOT URL-encode it.",
+  "//20": "",
+  "//21": "Run:  $env:VSCODE_CLIENT_ID = '<your-app-client-id>'",
+  "//22": "      $env:VSCODE_AUDIENCE  = '<agent365-application-id-uri>'",
+  "//23": "      mcplense inspect --config samples/agent365.json --server agent365-mailtools --login",
+  "//24": "Then: mcplense tools  --config samples/agent365.json --server agent365-mailtools",
+  "servers": [
+    {
+      "name": "agent365-mailtools",
+      "url": "https://agent365.svc.cloud.microsoft/agents/tenants/72f988bf-86f1-41af-91ab-2d7cd011db47/servers/mcp_MailTools",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "clientId": "env:VSCODE_CLIENT_ID",
+        "redirectUri": "http://127.0.0.1:54321/callback",
+        "issuer": "https://login.microsoftonline.com/organizations/v2.0",
+        "authorizationEndpoint": "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+        "tokenEndpoint": "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+        "resourceUri": "https://agent365.svc.cloud.microsoft",
+        "scopes": ["${VSCODE_AUDIENCE}/.default", "offline_access"],
+        "cacheName": "agent365-mailtools"
+      }
+    }
+  ]
+}
+
+

@@ -49,6 +49,11 @@ internal static class App
             Console.Error.WriteLine(CommandLineHelp.Text);
             return 1;
         }
+        catch (McpLenseAuthException ex)
+        {
+            Console.Error.WriteLine($"Authentication error: {ex.Message}");
+            return 1;
+        }
         catch (OperationCanceledException)
         {
             Console.Error.WriteLine("Operation timed out.");
@@ -112,6 +117,64 @@ Target Options
   A stdio target can also be passed after --.
   Example: mcplense inspect -- npx -y @modelcontextprotocol/server-everything
 
+Authentication
+  --auth <bearer|oauth>        Auth scheme to use for HTTP/SSE targets.
+  --auth-token <value>         Bearer token (only used with '--auth bearer').
+                               Supports environment expansion:
+                                 - 'env:VAR'           (whole-string)
+                                 - '${VAR}' / '${VAR:-default}'  (substring)
+  --scope <scope>              OAuth scope to request. Repeat as needed.
+  --redirect-uri <uri>         Loopback redirect URI for the OAuth flow.
+                               Defaults to a free port on http://127.0.0.1.
+  --token-cache-name <name>    Override the token cache key. Defaults to a stable
+                               hash of the resource URI.
+  --no-auth                    Suppress all authentication on every resolved server.
+
+  --login                      Run the OAuth flow once for each resolved HTTP server,
+                               cache the resulting token, and exit. The selected
+                               command (e.g. 'inspect') is ignored on this path; only
+                               the target options matter.
+  --logout                     Delete cached OAuth tokens for each resolved HTTP
+                               server and exit.
+
+  Auth precedence:
+    1. --no-auth wins absolutely (no Authorization header sent anywhere).
+    2. --auth <type> replaces any 'auth' block in the config.
+    3. --auth-token / --scope / --redirect-uri / --token-cache-name overlay
+       individual fields onto the resolved auth block.
+
+  OAuth notes:
+    - Cached tokens live under '%LOCALAPPDATA%\McpLense\tokens' (Windows, DPAPI)
+      or '$XDG_DATA_HOME/mcplense/tokens' (Linux/macOS, chmod 600 JSON).
+    - Authorization Server discovery tries (in order): RFC 8414 strict path-insert,
+      then the OIDC-style path-append variant, then OIDC openid-configuration.
+      The OIDC fallback covers servers like Microsoft Entra ID v2.0 that do not
+      publish RFC 8414 metadata.
+    - Set MCPLENSE_NO_BROWSER=1 to print the auth URL to stderr instead of
+      launching a browser. Useful in headless environments together with
+      'ssh -L' port-forwarding for the loopback redirect.
+    - Set MCPLENSE_NO_INTERACTIVE_FLOW=1 to forbid the runtime browser fallback
+      so a missing/expired token surfaces as an error. Combine with '--login'
+      on a workstation to refresh the cache, then re-run headless.
+
+  Config example (per-server):
+    {
+      "mcpServers": {
+        "bearer-server": {
+          "url": "https://api.example.com/mcp",
+          "auth": { "type": "bearer", "token": "env:API_TOKEN" }
+        },
+        "oauth-server": {
+          "url": "https://api.example.com/mcp",
+          "auth": {
+            "type": "oauth",
+            "scopes": ["mcp.read", "mcp.write"],
+            "clientId": "env:OAUTH_CLIENT_ID"
+          }
+        }
+      }
+    }
+
 Common Options
   --format <text|json|dumpify> Output format. Default: text.
   --timeout <seconds>          Per-server timeout. Default: 30.
@@ -138,18 +201,23 @@ Config Shapes
         "name": "remote",
         "url": "https://example.com/mcp",
         "transport": "streamable-http",
-        "headers": {
-          "Authorization": "Bearer ..."
-        }
+        "auth": { "type": "bearer", "token": "env:REMOTE_TOKEN" }
       }
     ]
   }
+
+  Every string in the JSON config is environment-expanded using the same
+  '${VAR}', '${VAR:-default}', and 'env:VAR' syntax described above.
+  Use '$$' for a literal '$'.
 
 Examples
   mcplense inspect --config mcp.json
   mcplense tui --config mcp.json
   mcplense tools --config mcp.json --server everything
   mcplense inspect --url https://localhost:3000/mcp --format json
+  mcplense inspect --url https://api.example.com/mcp --auth bearer --auth-token env:API_TOKEN
+  mcplense inspect --url https://api.example.com/mcp --auth oauth --scope mcp.read --login
+  mcplense inspect --url https://api.example.com/mcp --auth oauth --scope mcp.read --logout
   mcplense call echo --url https://localhost:3000/mcp --args '{"message":"hello"}'
   dotnet run -- inspect --format dumpify -- npx -y @modelcontextprotocol/server-everything
   dotnet run -- tools --format json -- npx -y @modelcontextprotocol/server-everything

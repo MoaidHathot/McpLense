@@ -19,7 +19,8 @@ internal sealed record ResolvedServer(
     IReadOnlyDictionary<string, string> Environment,
     Uri? Url,
     TransportPreference Transport,
-    IReadOnlyDictionary<string, string> Headers);
+    IReadOnlyDictionary<string, string> Headers,
+    ResolvedAuth? Auth = null);
 
 internal sealed record ExecutionOutcome(object Payload, bool HasErrors);
 
