@@ -65,44 +65,37 @@ public class CliOAuthE2ETests
     }
 
     [Fact]
-    public async Task Login_AndLogout_TogetherFails_AtParseTime()
+    public async Task LoginCommand_NoArgs_FailsWithHint()
     {
-        var result = await CliRunner.RunAsync([
-            "inspect",
-            "--url", _fixture.BaseUrl,
-            "--login",
-            "--logout"
-        ], DefaultTimeout);
+        // Phase C: --login/--logout flags are gone; mcplense login is its own top-level command.
+        var result = await CliRunner.RunAsync(["login"], DefaultTimeout);
 
         result.ExitCode.ShouldNotBe(0);
-        result.StandardError.ShouldContain("--login and --logout cannot be combined");
+        result.StandardError.ShouldContain("--all");
+        result.StandardError.ShouldContain("--profile");
     }
 
     [Fact]
-    public async Task NoAuth_AndLogin_TogetherFails_AtParseTime()
+    public async Task LogoutCommand_NoArgs_FailsWithHint()
     {
+        var result = await CliRunner.RunAsync(["logout"], DefaultTimeout);
+
+        result.ExitCode.ShouldNotBe(0);
+        result.StandardError.ShouldContain("--all");
+        result.StandardError.ShouldContain("--profile");
+    }
+
+    [Fact]
+    public async Task LoginFlag_OnInspect_IsRejected()
+    {
+        // Phase C: the --login flag was removed.
         var result = await CliRunner.RunAsync([
             "inspect",
             "--url", _fixture.BaseUrl,
-            "--no-auth",
             "--login"
         ], DefaultTimeout);
 
         result.ExitCode.ShouldNotBe(0);
-        result.StandardError.ShouldContain("--no-auth cannot be combined with --login or --logout");
-    }
-
-    [Fact]
-    public async Task NoAuth_AndLogout_TogetherFails_AtParseTime()
-    {
-        var result = await CliRunner.RunAsync([
-            "inspect",
-            "--url", _fixture.BaseUrl,
-            "--no-auth",
-            "--logout"
-        ], DefaultTimeout);
-
-        result.ExitCode.ShouldNotBe(0);
-        result.StandardError.ShouldContain("--no-auth cannot be combined with --login or --logout");
+        result.StandardError.ShouldContain("--login");
     }
 }

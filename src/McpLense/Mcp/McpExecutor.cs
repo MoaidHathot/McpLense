@@ -11,6 +11,20 @@ internal static class McpExecutor
 {
     public static async Task<ExecutionOutcome> ExecuteAsync(ParsedCommand command, JsonSerializerOptions jsonOptions, CancellationToken cancellationToken)
     {
+        // Top-level login/logout commands have their own dispatch path: they don't go through
+        // TargetResolver (no stdio/HTTP target to open), they operate purely on profiles.
+        if (command.Command is AppCommand.Login)
+        {
+            var loginReport = await DispatchProfileLoginAsync(command.Target, cancellationToken).ConfigureAwait(false);
+            return new ExecutionOutcome(loginReport, loginReport.Servers.Any(entry => !entry.Success));
+        }
+
+        if (command.Command is AppCommand.Logout)
+        {
+            var logoutReport = await DispatchProfileLogoutAsync(command.Target, cancellationToken).ConfigureAwait(false);
+            return new ExecutionOutcome(logoutReport, logoutReport.Servers.Any(entry => !entry.Success));
+        }
+
         var servers = await TargetResolver.ResolveAsync(command.Target, cancellationToken);
 
         // Resolve auth profiles for HTTP servers that don't already have inline auth (i.e.
@@ -19,22 +33,6 @@ internal static class McpExecutor
         if (!command.Target.AuthOverrides.NoAuth)
         {
             servers = await AttachProfilesAsync(servers, command.Target, cancellationToken).ConfigureAwait(false);
-        }
-
-        // --login and --logout short-circuit BEFORE the per-command dispatch so they reuse the
-        // same target resolution + auth merging the underlying command would have used. The
-        // selected AppCommand is intentionally ignored on this path; the user just needs a valid
-        // target to identify which server(s) to (re-)authenticate.
-        if (command.Target.AuthOverrides.LoginOnly)
-        {
-            var report = await DispatchLoginAsync(servers, cancellationToken);
-            return new ExecutionOutcome(report, report.Servers.Any(entry => !entry.Success));
-        }
-
-        if (command.Target.AuthOverrides.LogoutOnly)
-        {
-            var report = await DispatchLogoutAsync(servers, cancellationToken);
-            return new ExecutionOutcome(report, report.Servers.Any(entry => !entry.Success));
         }
 
         return command.Command switch
@@ -47,6 +45,164 @@ internal static class McpExecutor
             AppCommand.Read => await ReadResourceAsync(SingleServer(servers), command.Subject!, command.Arguments, command.Timeout, cancellationToken),
             AppCommand.Prompt => await GetPromptAsync(SingleServer(servers), command.Subject!, command.Arguments!, command.Timeout, cancellationToken),
             _ => throw new UserInputException($"Unsupported command '{command.Command}'.")
+        };
+    }
+
+    /// <summary>
+    /// Resolves the set of profiles to act on for the top-level <c>mcplense login/logout</c>
+    /// commands. Returns an ordered list of (profile, optional URL) pairs; the URL is only
+    /// non-null when the user passed a positional URL.
+    /// </summary>
+    private static async Task<IReadOnlyList<(AuthProfile Profile, Uri? Url)>> ResolveProfilesForSessionAsync(
+        TargetOptions target,
+        CancellationToken cancellationToken)
+    {
+        var profilePaths = ResolveProfilePaths(target.ProfilePaths);
+        var profiles = await ProfileLoader.LoadAsync(profilePaths, new EnvironmentExpander(), cancellationToken).ConfigureAwait(false);
+
+        if (target.AuthOverrides.All)
+        {
+            if (profiles.Count == 0)
+            {
+                throw new UserInputException(
+                    $"No auth profiles are loaded. Drop a profile file in '$XDG_CONFIG_HOME/McpLense/{DefaultConfigPaths.ProfilesFileName}' or pass one via --profiles <path>.");
+            }
+
+            return profiles.Select(p => (p, (Uri?)null)).ToArray();
+        }
+
+        if (!string.IsNullOrEmpty(target.AuthOverrides.Profile))
+        {
+            var match = profiles.FirstOrDefault(p => string.Equals(p.Name, target.AuthOverrides.Profile, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                var available = profiles.Count == 0 ? "(none loaded)" : string.Join(", ", profiles.Select(p => p.Name));
+                throw new UserInputException(
+                    $"--profile '{target.AuthOverrides.Profile}' was not found. Loaded profiles: {available}.");
+            }
+
+            return new[] { (match, (Uri?)null) };
+        }
+
+        if (target.Url is not null)
+        {
+            using var probe = new AuthProbe();
+            var resolver = new AuthProfileResolver(probe, new MsalCacheInspector());
+            var profile = await resolver.ResolveAsync(target.Url, profiles, requestedProfile: null, cancellationToken).ConfigureAwait(false);
+            if (profile is null)
+            {
+                throw new UserInputException($"No profile resolved for {target.Url}.");
+            }
+
+            return new[] { (profile, (Uri?)target.Url) };
+        }
+
+        // CommandLineParser guards this case, but defend at the executor edge.
+        throw new UserInputException("login/logout requires --all, --profile <name>, or a positional URL.");
+    }
+
+    /// <summary>Top-level <c>mcplense login</c>: drives the auth flow for one or more profiles.</summary>
+    private static async Task<AuthSessionReport> DispatchProfileLoginAsync(TargetOptions target, CancellationToken cancellationToken)
+    {
+        var pairs = await ResolveProfilesForSessionAsync(target, cancellationToken).ConfigureAwait(false);
+        var entries = new List<AuthSessionEntry>(pairs.Count);
+        foreach (var (profile, url) in pairs)
+        {
+            entries.Add(await LoginOneProfileAsync(profile, url, cancellationToken).ConfigureAwait(false));
+        }
+
+        return new AuthSessionReport("login", DateTimeOffset.UtcNow, entries);
+    }
+
+    /// <summary>Top-level <c>mcplense logout</c>: clears cached state for one or more profiles.</summary>
+    private static async Task<AuthSessionReport> DispatchProfileLogoutAsync(TargetOptions target, CancellationToken cancellationToken)
+    {
+        var pairs = await ResolveProfilesForSessionAsync(target, cancellationToken).ConfigureAwait(false);
+        var entries = new List<AuthSessionEntry>(pairs.Count);
+        foreach (var (profile, url) in pairs)
+        {
+            entries.Add(await LogoutOneProfileAsync(profile, url, cancellationToken).ConfigureAwait(false));
+        }
+
+        return new AuthSessionReport("logout", DateTimeOffset.UtcNow, entries);
+    }
+
+    /// <summary>
+    /// Wraps a single profile in a synthetic <see cref="ResolvedServer"/> so it can flow through
+    /// the existing <see cref="InteractiveBrowserSessionRunner"/> / <see cref="AuthSessionRunner"/>
+    /// implementations. The synthetic URL falls back to the profile's <c>resourceUri</c> (OAuth
+    /// only) when no positional URL was supplied; interactive-browser profiles get a placeholder
+    /// since MSAL only needs clientId/tenantId/scopes.
+    /// </summary>
+    private static ResolvedServer? SynthesizeServer(AuthProfile profile, Uri? url)
+    {
+        var effectiveUrl = url
+            ?? (Uri.TryCreate(profile.Auth.ResourceUri, UriKind.Absolute, out var resourceUri) ? resourceUri : null);
+
+        if (effectiveUrl is null && profile.Auth.Kind == AuthKind.InteractiveBrowser)
+        {
+            effectiveUrl = new Uri($"https://profile.{profile.Name}.local/");
+        }
+
+        if (effectiveUrl is null)
+        {
+            return null;
+        }
+
+        return new ResolvedServer(
+            Name: profile.Name,
+            Kind: ConnectionKind.Http,
+            Target: effectiveUrl.ToString(),
+            Source: "profile",
+            Command: null,
+            CommandArguments: [],
+            WorkingDirectory: null,
+            Environment: new Dictionary<string, string>(),
+            Url: effectiveUrl,
+            Transport: TransportPreference.Auto,
+            Headers: new Dictionary<string, string>(),
+            Auth: profile.Auth);
+    }
+
+    private static async Task<AuthSessionEntry> LoginOneProfileAsync(AuthProfile profile, Uri? url, CancellationToken cancellationToken)
+    {
+        var server = SynthesizeServer(profile, url);
+        if (server is null)
+        {
+            return new AuthSessionEntry(
+                profile.Name,
+                Target: $"profile:{profile.Name}",
+                Success: false,
+                Error: $"OAuth profile '{profile.Name}' has no 'resourceUri'; pass a positional URL or set 'auth.resourceUri' in the profile.");
+        }
+
+        return profile.Auth.Kind switch
+        {
+            AuthKind.InteractiveBrowser => (await InteractiveBrowserSessionRunner.LoginAsync([server], cancellationToken).ConfigureAwait(false)).Servers[0],
+            AuthKind.OAuth => (await AuthSessionRunner.LoginAsync([server], cancellationToken).ConfigureAwait(false)).Servers[0],
+            AuthKind.Bearer => new AuthSessionEntry(profile.Name, server.Target, Success: true, Detail: "bearer profiles need no login"),
+            _ => new AuthSessionEntry(profile.Name, server.Target, Success: false, Error: $"unsupported auth kind {profile.Auth.Kind}")
+        };
+    }
+
+    private static async Task<AuthSessionEntry> LogoutOneProfileAsync(AuthProfile profile, Uri? url, CancellationToken cancellationToken)
+    {
+        var server = SynthesizeServer(profile, url);
+        if (server is null)
+        {
+            return new AuthSessionEntry(
+                profile.Name,
+                Target: $"profile:{profile.Name}",
+                Success: false,
+                Error: $"OAuth profile '{profile.Name}' has no 'resourceUri'; pass a positional URL or set 'auth.resourceUri' in the profile.");
+        }
+
+        return profile.Auth.Kind switch
+        {
+            AuthKind.InteractiveBrowser => (await InteractiveBrowserSessionRunner.LogoutAsync([server], cancellationToken).ConfigureAwait(false)).Servers[0],
+            AuthKind.OAuth => (await AuthSessionRunner.LogoutAsync([server], cancellationToken).ConfigureAwait(false)).Servers[0],
+            AuthKind.Bearer => new AuthSessionEntry(profile.Name, server.Target, Success: true, Detail: "bearer profiles have no cache to clear"),
+            _ => new AuthSessionEntry(profile.Name, server.Target, Success: false, Error: $"unsupported auth kind {profile.Auth.Kind}")
         };
     }
 
@@ -160,106 +316,6 @@ internal static class McpExecutor
             0 => throw new UserInputException("No server was resolved."),
             _ => throw new UserInputException("This command requires exactly one server. Use --server with --config to select one.")
         };
-
-    /// <summary>
-    /// Routes each resolved server to the right login implementation based on its
-    /// <see cref="AuthKind"/>. Servers without a recognised OAuth-family auth scheme surface as
-    /// per-server failures via the shared <see cref="AuthSessionEntry"/> contract.
-    /// </summary>
-    private static async Task<AuthSessionReport> DispatchLoginAsync(IReadOnlyList<ResolvedServer> servers, CancellationToken cancellationToken)
-    {
-        var (oauth, interactive, unsupported) = PartitionByAuthKind(servers);
-
-        var entries = new List<AuthSessionEntry>(servers.Count);
-        if (oauth.Count > 0)
-        {
-            entries.AddRange((await AuthSessionRunner.LoginAsync(oauth, cancellationToken).ConfigureAwait(false)).Servers);
-        }
-
-        if (interactive.Count > 0)
-        {
-            entries.AddRange((await InteractiveBrowserSessionRunner.LoginAsync(interactive, cancellationToken).ConfigureAwait(false)).Servers);
-        }
-
-        entries.AddRange(unsupported.Select(server => new AuthSessionEntry(
-            server.Name,
-            server.Target,
-            Success: false,
-            Error: $"--login requires OAuth or interactive-browser authentication on '{server.Name}'.")));
-
-        // Preserve the input ordering so the output report matches the user's --server order.
-        return new AuthSessionReport(
-            "login",
-            DateTimeOffset.UtcNow,
-            ReorderToInput(servers, entries));
-    }
-
-    private static async Task<AuthSessionReport> DispatchLogoutAsync(IReadOnlyList<ResolvedServer> servers, CancellationToken cancellationToken)
-    {
-        var (oauth, interactive, unsupported) = PartitionByAuthKind(servers);
-
-        var entries = new List<AuthSessionEntry>(servers.Count);
-        if (oauth.Count > 0)
-        {
-            entries.AddRange((await AuthSessionRunner.LogoutAsync(oauth, cancellationToken).ConfigureAwait(false)).Servers);
-        }
-
-        if (interactive.Count > 0)
-        {
-            entries.AddRange((await InteractiveBrowserSessionRunner.LogoutAsync(interactive, cancellationToken).ConfigureAwait(false)).Servers);
-        }
-
-        entries.AddRange(unsupported.Select(server => new AuthSessionEntry(
-            server.Name,
-            server.Target,
-            Success: false,
-            Error: $"--logout requires OAuth or interactive-browser authentication on '{server.Name}'.")));
-
-        return new AuthSessionReport(
-            "logout",
-            DateTimeOffset.UtcNow,
-            ReorderToInput(servers, entries));
-    }
-
-    private static (List<ResolvedServer> OAuth, List<ResolvedServer> Interactive, List<ResolvedServer> Unsupported) PartitionByAuthKind(IReadOnlyList<ResolvedServer> servers)
-    {
-        var oauth = new List<ResolvedServer>();
-        var interactive = new List<ResolvedServer>();
-        var unsupported = new List<ResolvedServer>();
-
-        foreach (var server in servers)
-        {
-            switch (server.Auth?.Kind)
-            {
-                case AuthKind.OAuth:
-                    oauth.Add(server);
-                    break;
-                case AuthKind.InteractiveBrowser:
-                    interactive.Add(server);
-                    break;
-                default:
-                    unsupported.Add(server);
-                    break;
-            }
-        }
-
-        return (oauth, interactive, unsupported);
-    }
-
-    private static IReadOnlyList<AuthSessionEntry> ReorderToInput(IReadOnlyList<ResolvedServer> servers, IReadOnlyList<AuthSessionEntry> entries)
-    {
-        var byName = entries.ToDictionary(static entry => entry.Name, StringComparer.Ordinal);
-        var ordered = new List<AuthSessionEntry>(servers.Count);
-        foreach (var server in servers)
-        {
-            if (byName.TryGetValue(server.Name, out var entry))
-            {
-                ordered.Add(entry);
-            }
-        }
-
-        return ordered;
-    }
 
     private static async Task<ExecutionOutcome> InspectAsync(IReadOnlyList<ResolvedServer> servers, TimeSpan timeout, CancellationToken cancellationToken)
     {

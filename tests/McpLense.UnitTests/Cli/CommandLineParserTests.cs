@@ -798,74 +798,149 @@ public class CommandLineParserTests
         parsed.Target.AuthOverrides.Profile.ShouldBe("agent365");
     }
 
-    // -------- --login / --logout (Phase A; removed in Phase C) -------------------
+    // -------- Phase C: --login / --logout flags removed; new top-level commands ----
 
     [Fact]
-    public void Parse_Login_IsBoolean_NoValueRequired()
+    public void Parse_LoginFlag_IsRejected()
     {
-        var parsed = CommandLineParser.Parse([
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
             "inspect", "--url", "https://example.com/mcp", "--login"
-        ]);
+        ]));
 
-        parsed.Target.AuthOverrides.LoginOnly.ShouldBeTrue();
-        parsed.Target.AuthOverrides.LogoutOnly.ShouldBeFalse();
+        // The flag is no longer in the BooleanFlags set; the parser tries to consume the next
+        // arg as its value (none exists) and surfaces a "requires a value" error.
+        ex.Message.ShouldContain("--login");
     }
 
     [Fact]
-    public void Parse_Logout_IsBoolean_NoValueRequired()
+    public void Parse_LogoutFlag_IsRejected()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp", "--logout"
+        ]));
+
+        ex.Message.ShouldContain("--logout");
+    }
+
+    [Fact]
+    public void Parse_LoginFlagWithValue_IsRejected_AsUnknownOption()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp", "--login=true"
+        ]));
+
+        ex.Message.ShouldContain("Unknown option '--login'");
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_NoArgs_Throws()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse(["login"]));
+        ex.Message.ShouldContain("--all");
+        ex.Message.ShouldContain("--profile");
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_All_PopulatesOverrides()
+    {
+        var parsed = CommandLineParser.Parse(["login", "--all"]);
+
+        parsed.Command.ShouldBe(AppCommand.Login);
+        parsed.Target.AuthOverrides.All.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_Profile_PopulatesOverrides()
+    {
+        var parsed = CommandLineParser.Parse(["login", "--profile", "agent365"]);
+
+        parsed.Command.ShouldBe(AppCommand.Login);
+        parsed.Target.AuthOverrides.Profile.ShouldBe("agent365");
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_PositionalUrl_PopulatesUrl()
+    {
+        var parsed = CommandLineParser.Parse(["login", "https://example.com/mcp"]);
+
+        parsed.Command.ShouldBe(AppCommand.Login);
+        parsed.Target.Url!.ToString().ShouldStartWith("https://example.com/mcp");
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_AllAndProfile_Throws()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "login", "--all", "--profile", "x"
+        ]));
+
+        ex.Message.ShouldContain("exactly one");
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_AllAndUrl_Throws()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "login", "--all", "https://example.com/mcp"
+        ]));
+
+        ex.Message.ShouldContain("exactly one");
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_NonUrlPositional_Throws()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "login", "not-a-url"
+        ]));
+
+        ex.Message.ShouldContain("absolute http(s) URL");
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_RejectsNonLoginFlag()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "login", "--all", "--header", "X=Y"
+        ]));
+
+        ex.Message.ShouldContain("--header");
+        ex.Message.ShouldContain("login");
+    }
+
+    [Fact]
+    public void Parse_LogoutCommand_All_PopulatesOverrides()
+    {
+        var parsed = CommandLineParser.Parse(["logout", "--all"]);
+
+        parsed.Command.ShouldBe(AppCommand.Logout);
+        parsed.Target.AuthOverrides.All.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Parse_LogoutCommand_Profile_PopulatesOverrides()
+    {
+        var parsed = CommandLineParser.Parse(["logout", "--profile", "agent365"]);
+
+        parsed.Command.ShouldBe(AppCommand.Logout);
+        parsed.Target.AuthOverrides.Profile.ShouldBe("agent365");
+    }
+
+    [Fact]
+    public void Parse_LogoutCommand_NoArgs_Throws()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse(["logout"]));
+        ex.Message.ShouldContain("--all");
+        ex.Message.ShouldContain("--profile");
+    }
+
+    [Fact]
+    public void Parse_LoginCommand_WithProfilesFile_Loads()
     {
         var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp", "--logout"
+            "login", "--all", "--profiles", "p1.json", "--profiles", "p2.json"
         ]);
 
-        parsed.Target.AuthOverrides.LogoutOnly.ShouldBeTrue();
-        parsed.Target.AuthOverrides.LoginOnly.ShouldBeFalse();
-    }
-
-    [Fact]
-    public void Parse_LoginAndLogoutTogether_Throws()
-    {
-        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp", "--login", "--logout"
-        ]));
-
-        ex.Message.ShouldContain("--login");
-        ex.Message.ShouldContain("--logout");
-    }
-
-    [Fact]
-    public void Parse_NoAuthWithLogin_Throws()
-    {
-        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--no-auth", "--login"
-        ]));
-
-        ex.Message.ShouldContain("--no-auth");
-        ex.Message.ShouldContain("--login");
-    }
-
-    [Fact]
-    public void Parse_TuiWithLogin_Throws()
-    {
-        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "tui", "--url", "https://example.com/mcp", "--login"
-        ]));
-
-        ex.Message.ShouldContain("--login");
-        ex.Message.ShouldContain("tui");
-        ex.Message.ShouldContain("inspect");
-    }
-
-    [Fact]
-    public void Parse_TuiWithLogout_Throws()
-    {
-        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "tui", "--url", "https://example.com/mcp", "--logout"
-        ]));
-
-        ex.Message.ShouldContain("--logout");
-        ex.Message.ShouldContain("tui");
-        ex.Message.ShouldContain("inspect");
+        parsed.Target.ProfilePaths.ShouldBe(new[] { "p1.json", "p2.json" });
     }
 }

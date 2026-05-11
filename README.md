@@ -57,6 +57,8 @@ mcplense prompts [<url>]
 mcplense call <tool-name> [<url>]
 mcplense read <uri-or-template> [<url>]
 mcplense prompt <prompt-name> [<url>]
+mcplense login   {--all | --profile <name> | <url>}
+mcplense logout  {--all | --profile <name> | <url>}
 ```
 
 ## Targets
@@ -275,16 +277,26 @@ the CLI flag name.
 | ---------------------- | ---------------------------------------------------------------------- |
 | `--profiles <path>`    | Load profile entries from a specific file (repeatable; merges across files). |
 | `--profile <name>`     | Force a specific loaded profile by name. Env-expandable.               |
-| `--try-all`            | Walk every loaded profile sequentially. Currently `--login`-only.      |
+| `--try-all`            | Walk every loaded profile sequentially. Currently `mcplense login`-only. |
 | `--auth bearer`        | Send a static `Authorization: Bearer <token>` header.                  |
 | `--auth-token <value>` | Bearer token paired with `--auth bearer`. Env-expandable.              |
 | `--no-auth`            | Suppress all authentication.                                           |
-| `--login`              | Run the auth flow once for the resolved profile, cache, and exit.      |
-| `--logout`             | Clear cached tokens for the resolved profile and exit.                 |
 
-`--login` and `--logout` reuse the same target/profile resolution as the
-underlying command. They will move to top-level `mcplense login` / `mcplense
-logout` commands in a future release.
+### Logging in and out
+
+`mcplense login` and `mcplense logout` are top-level commands that operate on
+profiles directly. They support three mutually-exclusive selectors:
+
+| Invocation                       | What it does                                                              |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| `mcplense login --all`           | Walk every loaded profile; skip already-cached; prompt for the rest.      |
+| `mcplense login --profile <name>`| Force interactive login for one profile.                                  |
+| `mcplense login <url>`           | Resolve URL via auto-pick, then log in to the matched profile.            |
+| `mcplense logout --all`          | Clear cached state for every loaded profile (per-account, MSAL-safe).     |
+| `mcplense logout --profile <n>`  | Clear cache for one profile.                                              |
+| `mcplense logout <url>`          | Resolve URL via auto-pick, then clear that profile's cache.               |
+
+Bare `mcplense login` (or `logout`) errors with a hint listing the three forms.
 
 ### Microsoft 365 / Entra ID (interactive browser)
 
@@ -319,8 +331,7 @@ $env:VSCODE_CLIENT_ID = 'aebc6443-996d-45c2-90f0-388ff96faa56'
 $env:CORP_TENANT_ID   = '<your-tenant-guid-or-common>'
 $env:VSCODE_AUDIENCE  = '<agent365-application-id-uri>'
 
-mcplense inspect https://agent365.svc.cloud.microsoft/.../mcp_MailTools `
-  --profiles samples/agent365.json --profile agent365 --login
+mcplense login --profiles samples/agent365.json --profile agent365
 
 # Subsequent commands re-use the cached token automatically:
 mcplense tools https://agent365.svc.cloud.microsoft/.../mcp_MailTools `
@@ -422,7 +433,7 @@ complete the loopback redirect from a remote workstation.
 
 Set `MCPLENSE_NO_INTERACTIVE_FLOW=1` to disable the runtime browser fallback
 entirely. A missing or expired token then surfaces as a clear error instructing
-you to run `--login` on a workstation. This is the recommended posture for CI
+you to run `mcplense login` on a workstation. This is the recommended posture for CI
 runners.
 
 ## Examples

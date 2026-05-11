@@ -30,10 +30,9 @@
   "//28": "Run:  $env:VSCODE_CLIENT_ID = 'aebc6443-996d-45c2-90f0-388ff96faa56'",
   "//29": "      $env:CORP_TENANT_ID  = '<your-tenant-guid-or-common>'",
   "//30": "      $env:VSCODE_AUDIENCE = '<agent365-application-id-uri>'",
-  "//31": "      mcplense inspect https://agent365.svc.cloud.microsoft/.../mcp_MailTools \\",
-  "//32": "                       --profiles samples/agent365.json --profile agent365 --login",
-  "//33": "Then: mcplense tools https://agent365.svc.cloud.microsoft/.../mcp_MailTools \\",
-  "//34": "                     --profiles samples/agent365.json",
+  "//31": "      mcplense login --profiles samples/agent365.json --profile agent365",
+  "//32": "Then: mcplense tools https://agent365.svc.cloud.microsoft/.../mcp_MailTools \\",
+  "//33": "                     --profiles samples/agent365.json",
   "authProfiles": [
     {
       "name": "agent365",

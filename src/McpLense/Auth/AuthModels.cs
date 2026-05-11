@@ -85,9 +85,10 @@ internal sealed record ResolvedAuth(
 
 /// <summary>
 /// CLI-provided overlay describing how to handle authentication for the resolved target(s).
-/// In Phase A the per-field auth knobs (clientId/tenantId/scopes/redirectUri/cacheName) are gone:
-/// rich auth lives in named profiles, while the CLI exposes only profile selection plus the
-/// simple ad-hoc Bearer escape hatch.
+/// In Phase A the per-field auth knobs (clientId/tenantId/scopes/redirectUri/cacheName) were
+/// removed: rich auth lives in named profiles, while the CLI exposes only profile selection
+/// plus the simple ad-hoc Bearer escape hatch. Phase C added the <see cref="All"/> field used
+/// by the top-level <c>mcplense login</c> / <c>mcplense logout</c> commands.
 /// </summary>
 /// <param name="Kind">
 /// Auth scheme to apply ad-hoc (only <see cref="AuthKind.Bearer"/> is supported here; richer
@@ -102,31 +103,26 @@ internal sealed record ResolvedAuth(
 /// When true, the resolver walks every loaded profile sequentially (prompting interactively as
 /// needed) instead of auto-picking. Mutually exclusive with <see cref="Profile"/>.
 /// </param>
+/// <param name="All">
+/// When true, the top-level <c>mcplense login</c> / <c>mcplense logout</c> commands act on
+/// every loaded profile. Mutually exclusive with <see cref="Profile"/>.
+/// </param>
 /// <param name="NoAuth">Suppress all authentication (HTTP and stdio).</param>
-/// <param name="LoginOnly">
-/// Run the auth flow once for the resolved profile, prime the cache, then exit 0 without
-/// dispatching the underlying command.
-/// </param>
-/// <param name="LogoutOnly">
-/// Clear the cached account(s) for the resolved profile, then exit 0 without dispatching.
-/// </param>
 internal sealed record AuthOverrides(
     AuthKind? Kind = null,
     string? Token = null,
     string? Profile = null,
     bool TryAll = false,
-    bool NoAuth = false,
-    bool LoginOnly = false,
-    bool LogoutOnly = false)
+    bool All = false,
+    bool NoAuth = false)
 {
     public static readonly AuthOverrides Empty = new();
 
     /// <summary>True when no override was supplied at all (CLI did not set any auth flag).</summary>
     public bool IsEmpty
         => !NoAuth
-           && !LoginOnly
-           && !LogoutOnly
            && !TryAll
+           && !All
            && Kind is null
            && Token is null
            && Profile is null;

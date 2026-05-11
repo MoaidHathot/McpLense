@@ -97,6 +97,8 @@ Usage
   mcplense call <tool-name> [<url>] [target-options] [common-options] [--args <json>]
   mcplense read <uri-or-template> [<url>] [target-options] [common-options] [--args <json>]
   mcplense prompt <prompt-name> [<url>] [target-options] [common-options] [--args <json>]
+  mcplense login   {--all | --profile <name> | <url>} [--profiles <path>] [common-options]
+  mcplense logout  {--all | --profile <name> | <url>} [--profiles <path>] [common-options]
   mcplense help
   mcplense version
 
@@ -156,13 +158,14 @@ Authentication (auth profiles)
                                environment expansion:
                                  - 'env:VAR'           (whole-string)
                                  - '${VAR}' / '${VAR:-default}'  (substring)
-    --no-auth                  Suppress all authentication (HTTP and stdio).
+  --no-auth                    Suppress all authentication (HTTP and stdio).
 
-  --login                      Run the auth flow once for the resolved profile/server,
-                               cache the token, and exit. (Phase A surface; will move to
-                               'mcplense login' in Phase C.)
-  --logout                     Clear the cached token and exit. (Phase A surface; will move
-                               to 'mcplense logout' in Phase C.)
+  Top-level login / logout commands:
+    mcplense login --all                Log in to every loaded profile (skip already-cached).
+    mcplense login --profile <name>     Force interactive login for one profile.
+    mcplense login <url>                Resolve URL via auto-pick, then log in to the matched profile.
+    mcplense logout {--all | --profile <name> | <url>}
+                                        Mirror semantics for sign-out.
 
   Profile file shape:
     {
@@ -226,6 +229,10 @@ Examples
   mcplense inspect https://api.example.com/mcp --auth bearer --auth-token env:API_TOKEN
   mcplense inspect https://agent365.svc.cloud.microsoft/.../mcp_MailTools \
                    --profiles samples/agent365.json --profile agent365
+  mcplense login --all
+  mcplense login --profile agent365
+  mcplense login https://agent365.svc.cloud.microsoft/.../mcp_MailTools
+  mcplense logout --profile agent365
   mcplense inspect --config mcp.json
   mcplense tools   --config mcp.json --server everything
   mcplense call echo --url https://localhost:3000/mcp --args '{"message":"hello"}'

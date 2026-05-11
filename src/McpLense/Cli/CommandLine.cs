@@ -14,7 +14,9 @@ internal enum AppCommand
     Prompts,
     Call,
     Read,
-    Prompt
+    Prompt,
+    Login,
+    Logout
 }
 
 internal enum OutputFormat
@@ -62,9 +64,8 @@ internal static class CommandLineParser
     private static readonly HashSet<string> BooleanFlags = new(StringComparer.OrdinalIgnoreCase)
     {
         "no-auth",
-        "login",
-        "logout",
-        "try-all"
+        "try-all",
+        "all"
     };
 
     public static ParsedCommand Parse(string[] args)
@@ -129,6 +130,11 @@ internal static class CommandLineParser
 
         ValidateOptions(options, command);
 
+        if (command is AppCommand.Login or AppCommand.Logout)
+        {
+            return ParseLoginLogout(command, options, positionals);
+        }
+
         var (subject, urlPositional) = ParseSubjectAndUrl(command, positionals);
         var arguments = ParseArguments(command, GetSingle(options, "args"));
         var target = ParseTarget(options, stdioTokens, urlPositional);
@@ -136,18 +142,110 @@ internal static class CommandLineParser
         var timeout = ParseTimeout(GetSingle(options, "timeout"));
         var progress = ParseProgress(GetSingle(options, "progress"), command);
 
-        // --login/--logout short-circuit through McpExecutor and return an AuthSessionReport.
-        // The TUI path casts the executor's payload to InspectReport, so combining 'tui' with
-        // --login/--logout would otherwise surface as a confusing internal exception. Reject up
-        // front with a clear hint to run the auth action via a non-TUI command first.
-        if (command is AppCommand.Tui && (target.AuthOverrides.LoginOnly || target.AuthOverrides.LogoutOnly))
+        return new ParsedCommand(command, subject, arguments, format, timeout, target, progress);
+    }
+
+    /// <summary>
+    /// Parses the top-level <c>mcplense login</c> / <c>mcplense logout</c> commands. These
+    /// share a much narrower option surface than the read commands: they pick a profile (or all
+    /// profiles), optionally take a positional URL for auto-pick, and emit an
+    /// <see cref="AuthSessionReport"/>.
+    /// </summary>
+    private static ParsedCommand ParseLoginLogout(AppCommand command, Dictionary<string, List<string>> options, List<string> positionals)
+    {
+        var verb = command.ToString().ToLowerInvariant();
+
+        // Reject options that don't apply to login/logout. Allowed:
+        // --profiles, --profile, --all, --format, --timeout. Plus the universal -h/--help
+        // (which already short-circuits earlier in Parse).
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            var flag = target.AuthOverrides.LoginOnly ? "--login" : "--logout";
-            throw new UserInputException(
-                $"{flag} is not supported with 'tui'. Run 'mcplense inspect ... {flag}' first, then launch 'mcplense tui'.");
+            "profiles", "profile", "all", "format", "timeout"
+        };
+
+        foreach (var option in options.Keys)
+        {
+            if (!allowed.Contains(option))
+            {
+                throw new UserInputException(
+                    $"--{option} is not valid for '{verb}'. Use --all, --profile <name>, or pass a URL positionally.");
+            }
         }
 
-        return new ParsedCommand(command, subject, arguments, format, timeout, target, progress);
+        if (positionals.Count > 1)
+        {
+            throw new UserInputException($"'{verb}' accepts at most one positional URL.");
+        }
+
+        string? urlPositional = null;
+        if (positionals.Count == 1)
+        {
+            if (!LooksLikeUrl(positionals[0]))
+            {
+                throw new UserInputException(
+                    $"'{verb}' positional argument must be an absolute http(s) URL.");
+            }
+
+            urlPositional = positionals[0];
+        }
+
+        var profilePaths = GetMany(options, "profiles");
+        var profileRaw = GetSingle(options, "profile");
+        var allRaw = GetSingle(options, "all");
+        var all = string.Equals(allRaw, "true", StringComparison.OrdinalIgnoreCase);
+
+        var hasProfile = !string.IsNullOrEmpty(profileRaw);
+        var hasUrl = urlPositional is not null;
+
+        var selectorCount = (all ? 1 : 0) + (hasProfile ? 1 : 0) + (hasUrl ? 1 : 0);
+        if (selectorCount == 0)
+        {
+            throw new UserInputException(
+                $"'{verb}' requires --all, --profile <name>, or a positional URL.");
+        }
+
+        if (selectorCount > 1)
+        {
+            throw new UserInputException(
+                $"'{verb}' accepts exactly one of --all, --profile <name>, or a positional URL.");
+        }
+
+        var expander = new EnvironmentExpander();
+        string? profile = null;
+        if (hasProfile)
+        {
+            profile = expander.Expand(profileRaw, "--profile");
+            if (string.IsNullOrEmpty(profile))
+            {
+                throw new UserInputException("--profile resolved to an empty value.");
+            }
+        }
+
+        Uri? url = null;
+        if (urlPositional is not null && !Uri.TryCreate(urlPositional, UriKind.Absolute, out url))
+        {
+            throw new UserInputException($"Invalid URL '{urlPositional}'.");
+        }
+
+        var format = ParseFormat(GetSingle(options, "format"));
+        var timeout = ParseTimeout(GetSingle(options, "timeout"));
+
+        var authOverrides = new AuthOverrides(Profile: profile, All: all);
+        var target = new TargetOptions(
+            ConfigPaths: [],
+            ServerNames: [],
+            ProfilePaths: profilePaths,
+            DisplayName: null,
+            Url: url,
+            Transport: TransportPreference.Auto,
+            Headers: new Dictionary<string, string>(),
+            Command: null,
+            CommandArguments: [],
+            WorkingDirectory: null,
+            Environment: new Dictionary<string, string>(),
+            AuthOverrides: authOverrides);
+
+        return new ParsedCommand(command, Subject: null, Arguments: null, format, timeout, target, ProgressEnabled: false);
     }
 
     private static ParsedCommand HelpCommand() => new(AppCommand.Help, null, null, OutputFormat.Text, TimeSpan.FromSeconds(30), EmptyTarget(), false);
@@ -166,6 +264,8 @@ internal static class CommandLineParser
         "call" => AppCommand.Call,
         "read" => AppCommand.Read,
         "prompt" => AppCommand.Prompt,
+        "login" => AppCommand.Login,
+        "logout" => AppCommand.Logout,
         _ => throw new UserInputException($"Unknown command '{value}'.")
     };
 
@@ -232,6 +332,7 @@ internal static class CommandLineParser
             "profiles",
             "profile",
             "try-all",
+            "all",
             "name",
             "url",
             "transport",
@@ -246,9 +347,7 @@ internal static class CommandLineParser
             "progress",
             "auth",
             "auth-token",
-            "no-auth",
-            "login",
-            "logout"
+            "no-auth"
         };
 
         foreach (var option in options.Keys)
@@ -383,7 +482,7 @@ internal static class CommandLineParser
             {
                 throw new UserInputException(
                     "When using --config, only --server, --format, --timeout, --profiles, --profile, " +
-                    "--try-all, --auth, --auth-token, --login, --logout, and --no-auth may be added.");
+                    "--try-all, --auth, --auth-token, and --no-auth may be added.");
             }
 
             return new TargetOptions(configPaths, serverNames, profilePaths, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), authOverrides);
@@ -437,19 +536,8 @@ internal static class CommandLineParser
         var noAuthRaw = GetSingle(options, "no-auth");
         var noAuth = string.Equals(noAuthRaw, "true", StringComparison.OrdinalIgnoreCase);
 
-        var loginRaw = GetSingle(options, "login");
-        var login = string.Equals(loginRaw, "true", StringComparison.OrdinalIgnoreCase);
-
-        var logoutRaw = GetSingle(options, "logout");
-        var logout = string.Equals(logoutRaw, "true", StringComparison.OrdinalIgnoreCase);
-
         var tryAllRaw = GetSingle(options, "try-all");
         var tryAll = string.Equals(tryAllRaw, "true", StringComparison.OrdinalIgnoreCase);
-
-        if (login && logout)
-        {
-            throw new UserInputException("--login and --logout cannot be combined.");
-        }
 
         var authRaw = GetSingle(options, "auth");
         var tokenRaw = GetSingle(options, "auth-token");
@@ -462,14 +550,8 @@ internal static class CommandLineParser
 
         if (noAuth)
         {
-            // --no-auth is the dominant flag. We still accept (and ignore) other auth flags so a user
-            // toggling --no-auth for a quick debug doesn't have to scrub every other CLI argument.
-            // It is, however, incompatible with --login/--logout because those imply auth state churn.
-            if (login || logout)
-            {
-                throw new UserInputException("--no-auth cannot be combined with --login or --logout.");
-            }
-
+            // --no-auth dominates. We accept other auth-related flags to make a quick toggle
+            // ergonomic, but they're cleared out so behaviour is unambiguous.
             return new AuthOverrides(NoAuth: true);
         }
 
@@ -505,9 +587,7 @@ internal static class CommandLineParser
             Kind: kind,
             Token: token,
             Profile: profile,
-            TryAll: tryAll,
-            LoginOnly: login,
-            LogoutOnly: logout);
+            TryAll: tryAll);
     }
 
     private static AuthKind ParseAuthKind(string raw)
