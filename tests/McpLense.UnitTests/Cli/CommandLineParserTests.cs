@@ -989,4 +989,207 @@ public class CommandLineParserTests
 
         parsed.Target.AuthOverrides.Scopes!.ShouldBe(new[] { "mcp.read", "mcp.write" });
     }
+
+    // -------- InteractiveBrowser (M365 / Entra ID) --------------------------------
+
+    [Theory]
+    [InlineData("interactive-browser")]
+    [InlineData("interactivebrowser")]
+    [InlineData("INTERACTIVE-BROWSER")]
+    public void Parse_AuthInteractiveBrowser_RecognisesAlias(string value)
+    {
+        var parsed = CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp",
+            "--auth", value,
+            "--client-id", "abc",
+            "--scope", "api://x/.default"
+        ]);
+
+        parsed.Target.AuthOverrides.Kind.ShouldBe(AuthKind.InteractiveBrowser);
+    }
+
+    [Fact]
+    public void Parse_AuthErrorMessageMentionsInteractiveBrowser()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp",
+            "--auth", "magic"
+        ]));
+
+        ex.Message.ShouldContain("interactive-browser");
+    }
+
+    [Fact]
+    public void Parse_ClientId_Literal_PopulatesOverride()
+    {
+        var parsed = CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp",
+            "--auth", "interactive-browser",
+            "--client-id", "aebc6443-996d-45c2-90f0-388ff96faa56",
+            "--scope", "api://x/.default"
+        ]);
+
+        parsed.Target.AuthOverrides.ClientId.ShouldBe("aebc6443-996d-45c2-90f0-388ff96faa56");
+    }
+
+    [Fact]
+    public void Parse_ClientId_EnvPrefix_IsExpanded()
+    {
+        const string varName = "MCPLENSE_TEST_CLIENT_ID";
+        Environment.SetEnvironmentVariable(varName, "expanded-client-id");
+        try
+        {
+            var parsed = CommandLineParser.Parse([
+                "inspect", "--url", "https://example.com/mcp",
+                "--auth", "interactive-browser",
+                "--client-id", $"env:{varName}",
+                "--scope", "api://x/.default"
+            ]);
+
+            parsed.Target.AuthOverrides.ClientId.ShouldBe("expanded-client-id");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(varName, null);
+        }
+    }
+
+    [Fact]
+    public void Parse_ClientId_ExpandsToEmpty_Throws()
+    {
+        const string varName = "MCPLENSE_TEST_CLIENT_ID_EMPTY";
+        Environment.SetEnvironmentVariable(varName, string.Empty);
+        try
+        {
+            var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+                "inspect", "--url", "https://example.com/mcp",
+                "--auth", "interactive-browser",
+                "--client-id", $"env:{varName}",
+                "--scope", "api://x/.default"
+            ]));
+
+            ex.Message.ShouldContain("--client-id");
+            ex.Message.ShouldContain("empty value");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(varName, null);
+        }
+    }
+
+    [Fact]
+    public void Parse_TenantId_Literal_PopulatesOverride()
+    {
+        var parsed = CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp",
+            "--auth", "interactive-browser",
+            "--client-id", "abc",
+            "--tenant-id", "common",
+            "--scope", "api://x/.default"
+        ]);
+
+        parsed.Target.AuthOverrides.TenantId.ShouldBe("common");
+    }
+
+    [Fact]
+    public void Parse_TenantId_EnvPrefix_IsExpanded()
+    {
+        const string varName = "MCPLENSE_TEST_TENANT_ID";
+        Environment.SetEnvironmentVariable(varName, "contoso.onmicrosoft.com");
+        try
+        {
+            var parsed = CommandLineParser.Parse([
+                "inspect", "--url", "https://example.com/mcp",
+                "--auth", "interactive-browser",
+                "--client-id", "abc",
+                "--tenant-id", $"env:{varName}",
+                "--scope", "api://x/.default"
+            ]);
+
+            parsed.Target.AuthOverrides.TenantId.ShouldBe("contoso.onmicrosoft.com");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(varName, null);
+        }
+    }
+
+    [Fact]
+    public void Parse_TenantId_ExpandsToEmpty_Throws()
+    {
+        const string varName = "MCPLENSE_TEST_TENANT_ID_EMPTY";
+        Environment.SetEnvironmentVariable(varName, string.Empty);
+        try
+        {
+            var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+                "inspect", "--url", "https://example.com/mcp",
+                "--auth", "interactive-browser",
+                "--client-id", "abc",
+                "--tenant-id", $"env:{varName}",
+                "--scope", "api://x/.default"
+            ]));
+
+            ex.Message.ShouldContain("--tenant-id");
+            ex.Message.ShouldContain("empty value");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(varName, null);
+        }
+    }
+
+    [Fact]
+    public void Parse_AuthInteractiveBrowserWithoutClientId_FailsAtMerge()
+    {
+        // Parser accepts the partial input; the missing clientId surfaces only when TargetResolver
+        // merges the overrides into a ResolvedAuth. This split keeps the parser purely syntactic.
+        var parsed = CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp",
+            "--auth", "interactive-browser",
+            "--scope", "api://x/.default"
+        ]);
+
+        parsed.Target.AuthOverrides.Kind.ShouldBe(AuthKind.InteractiveBrowser);
+        parsed.Target.AuthOverrides.ClientId.ShouldBeNull();
+    }
+
+    [Fact]
+    public void Parse_AllAuthFlagsTogether_IsAllowed()
+    {
+        // Spot-check that the full set of overrides survives parsing intact (kind, scopes,
+        // redirect-uri, token-cache-name, client-id, tenant-id, login).
+        var parsed = CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp",
+            "--auth", "interactive-browser",
+            "--client-id", "abc",
+            "--tenant-id", "common",
+            "--scope", "api://x/.default",
+            "--redirect-uri", "http://localhost",
+            "--token-cache-name", "mcp-proxy",
+            "--login"
+        ]);
+
+        var overrides = parsed.Target.AuthOverrides;
+        overrides.Kind.ShouldBe(AuthKind.InteractiveBrowser);
+        overrides.ClientId.ShouldBe("abc");
+        overrides.TenantId.ShouldBe("common");
+        overrides.Scopes!.ShouldBe(new[] { "api://x/.default" });
+        overrides.RedirectUri.ShouldBe("http://localhost");
+        overrides.CacheName.ShouldBe("mcp-proxy");
+        overrides.LoginOnly.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Parse_ConfigWithClientIdAndTenantId_IsAllowed()
+    {
+        var parsed = CommandLineParser.Parse([
+            "inspect", "--config", "mcp.json",
+            "--client-id", "abc",
+            "--tenant-id", "common"
+        ]);
+
+        parsed.Target.ConfigPath.ShouldBe("mcp.json");
+        parsed.Target.AuthOverrides.ClientId.ShouldBe("abc");
+        parsed.Target.AuthOverrides.TenantId.ShouldBe("common");
+    }
 }

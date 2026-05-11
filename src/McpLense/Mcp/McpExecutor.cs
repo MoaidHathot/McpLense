@@ -19,13 +19,13 @@ internal static class McpExecutor
         // target to identify which server(s) to (re-)authenticate.
         if (command.Target.AuthOverrides.LoginOnly)
         {
-            var report = await AuthSessionRunner.LoginAsync(servers, cancellationToken);
+            var report = await DispatchLoginAsync(servers, cancellationToken);
             return new ExecutionOutcome(report, report.Servers.Any(entry => !entry.Success));
         }
 
         if (command.Target.AuthOverrides.LogoutOnly)
         {
-            var report = await AuthSessionRunner.LogoutAsync(servers, cancellationToken);
+            var report = await DispatchLogoutAsync(servers, cancellationToken);
             return new ExecutionOutcome(report, report.Servers.Any(entry => !entry.Success));
         }
 
@@ -49,6 +49,106 @@ internal static class McpExecutor
             0 => throw new UserInputException("No server was resolved."),
             _ => throw new UserInputException("This command requires exactly one server. Use --server with --config to select one.")
         };
+
+    /// <summary>
+    /// Routes each resolved server to the right login implementation based on its
+    /// <see cref="AuthKind"/>. Servers without a recognised OAuth-family auth scheme surface as
+    /// per-server failures via the shared <see cref="AuthSessionEntry"/> contract.
+    /// </summary>
+    private static async Task<AuthSessionReport> DispatchLoginAsync(IReadOnlyList<ResolvedServer> servers, CancellationToken cancellationToken)
+    {
+        var (oauth, interactive, unsupported) = PartitionByAuthKind(servers);
+
+        var entries = new List<AuthSessionEntry>(servers.Count);
+        if (oauth.Count > 0)
+        {
+            entries.AddRange((await AuthSessionRunner.LoginAsync(oauth, cancellationToken).ConfigureAwait(false)).Servers);
+        }
+
+        if (interactive.Count > 0)
+        {
+            entries.AddRange((await InteractiveBrowserSessionRunner.LoginAsync(interactive, cancellationToken).ConfigureAwait(false)).Servers);
+        }
+
+        entries.AddRange(unsupported.Select(server => new AuthSessionEntry(
+            server.Name,
+            server.Target,
+            Success: false,
+            Error: $"--login requires OAuth or interactive-browser authentication on '{server.Name}'.")));
+
+        // Preserve the input ordering so the output report matches the user's --server order.
+        return new AuthSessionReport(
+            "login",
+            DateTimeOffset.UtcNow,
+            ReorderToInput(servers, entries));
+    }
+
+    private static async Task<AuthSessionReport> DispatchLogoutAsync(IReadOnlyList<ResolvedServer> servers, CancellationToken cancellationToken)
+    {
+        var (oauth, interactive, unsupported) = PartitionByAuthKind(servers);
+
+        var entries = new List<AuthSessionEntry>(servers.Count);
+        if (oauth.Count > 0)
+        {
+            entries.AddRange((await AuthSessionRunner.LogoutAsync(oauth, cancellationToken).ConfigureAwait(false)).Servers);
+        }
+
+        if (interactive.Count > 0)
+        {
+            entries.AddRange((await InteractiveBrowserSessionRunner.LogoutAsync(interactive, cancellationToken).ConfigureAwait(false)).Servers);
+        }
+
+        entries.AddRange(unsupported.Select(server => new AuthSessionEntry(
+            server.Name,
+            server.Target,
+            Success: false,
+            Error: $"--logout requires OAuth or interactive-browser authentication on '{server.Name}'.")));
+
+        return new AuthSessionReport(
+            "logout",
+            DateTimeOffset.UtcNow,
+            ReorderToInput(servers, entries));
+    }
+
+    private static (List<ResolvedServer> OAuth, List<ResolvedServer> Interactive, List<ResolvedServer> Unsupported) PartitionByAuthKind(IReadOnlyList<ResolvedServer> servers)
+    {
+        var oauth = new List<ResolvedServer>();
+        var interactive = new List<ResolvedServer>();
+        var unsupported = new List<ResolvedServer>();
+
+        foreach (var server in servers)
+        {
+            switch (server.Auth?.Kind)
+            {
+                case AuthKind.OAuth:
+                    oauth.Add(server);
+                    break;
+                case AuthKind.InteractiveBrowser:
+                    interactive.Add(server);
+                    break;
+                default:
+                    unsupported.Add(server);
+                    break;
+            }
+        }
+
+        return (oauth, interactive, unsupported);
+    }
+
+    private static IReadOnlyList<AuthSessionEntry> ReorderToInput(IReadOnlyList<ResolvedServer> servers, IReadOnlyList<AuthSessionEntry> entries)
+    {
+        var byName = entries.ToDictionary(static entry => entry.Name, StringComparer.Ordinal);
+        var ordered = new List<AuthSessionEntry>(servers.Count);
+        foreach (var server in servers)
+        {
+            if (byName.TryGetValue(server.Name, out var entry))
+            {
+                ordered.Add(entry);
+            }
+        }
+
+        return ordered;
+    }
 
     private static async Task<ExecutionOutcome> InspectAsync(IReadOnlyList<ResolvedServer> servers, TimeSpan timeout, CancellationToken cancellationToken)
     {

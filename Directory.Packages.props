@@ -11,6 +11,15 @@
     <PackageVersion Include="Spectre.Console" Version="0.54.0" />
   </ItemGroup>
 
+  <ItemGroup Label="Microsoft Entra / MSAL (interactive-browser auth)">
+    <!-- Azure.Identity gives us InteractiveBrowserCredential with TokenCachePersistenceOptions; -->
+    <!-- the two MSAL packages are explicit pins so CentralPackageTransitivePinningEnabled does -->
+    <!-- not error on the transitive closure. Versions track mcp-proxy for cache compatibility. -->
+    <PackageVersion Include="Azure.Identity" Version="1.13.2" />
+    <PackageVersion Include="Microsoft.Identity.Client" Version="4.82.1" />
+    <PackageVersion Include="Microsoft.Identity.Client.Extensions.Msal" Version="4.82.1" />
+  </ItemGroup>
+
   <ItemGroup Label="Hosting (test servers)">
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
     <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.2.0" />

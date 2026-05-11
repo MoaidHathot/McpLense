@@ -15,7 +15,15 @@ internal enum AuthKind
     /// MCP-spec OAuth 2.1 with discovery (RFC 9728 / RFC 8414), PKCE (RFC 7636),
     /// and Dynamic Client Registration (RFC 7591). Implemented in Slice B.
     /// </summary>
-    OAuth
+    OAuth,
+
+    /// <summary>
+    /// Microsoft Entra ID interactive-browser auth backed by MSAL via
+    /// <see cref="Azure.Identity.InteractiveBrowserCredential"/>. Targets pre-registered public
+    /// clients (typically the VS Code first-party client) and persists tokens in the OS
+    /// credential store. Bypasses RFC 8414 / DCR / loopback-callback handling.
+    /// </summary>
+    InteractiveBrowser
 }
 
 /// <summary>
@@ -28,12 +36,24 @@ internal enum AuthKind
 /// <param name="RedirectUri">
 /// Override for the loopback redirect URI used during the authorization-code flow.
 /// When null, the orchestrator picks an OS-assigned port on <c>127.0.0.1</c>.
+/// For <see cref="AuthKind.InteractiveBrowser"/>, when null MSAL picks an OS-assigned port on
+/// <c>http://localhost</c> (the only loopback host Entra's exception covers).
 /// </param>
 /// <param name="CacheName">
-/// Override token-cache key. When null, a stable hash of the resource URI is used.
+/// Override token-cache key. When null for OAuth, a stable hash of the resource URI is used.
+/// For <see cref="AuthKind.InteractiveBrowser"/>, this is the MSAL cache file name (defaults to
+/// <c>"mcplense"</c>); set to <c>"mcp-proxy"</c> to share the cache with the mcp-proxy tool.
 /// </param>
-/// <param name="ClientId">Pre-registered OAuth client id; bypasses Dynamic Client Registration when set.</param>
+/// <param name="ClientId">
+/// Pre-registered OAuth client id; bypasses Dynamic Client Registration when set.
+/// Required for <see cref="AuthKind.InteractiveBrowser"/>.
+/// </param>
 /// <param name="ClientSecret">Optional client secret for confidential clients (rare for native apps).</param>
+/// <param name="TenantId">
+/// Entra tenant identifier (GUID, domain, or one of <c>common</c>/<c>organizations</c>/<c>consumers</c>).
+/// Only meaningful for <see cref="AuthKind.InteractiveBrowser"/>; when null MSAL defaults to
+/// <c>common</c>.
+/// </param>
 /// <param name="Issuer">
 /// Authorization-server issuer URL. When set, discovery is performed against this URL directly
 /// instead of via Protected Resource Metadata.
@@ -55,6 +75,7 @@ internal sealed record ResolvedAuth(
     string? CacheName = null,
     string? ClientId = null,
     string? ClientSecret = null,
+    string? TenantId = null,
     string? Issuer = null,
     string? AuthorizationEndpoint = null,
     string? TokenEndpoint = null,
@@ -71,6 +92,13 @@ internal sealed record ResolvedAuth(
 /// <param name="Scopes">OAuth scopes override.</param>
 /// <param name="RedirectUri">Loopback redirect URI override.</param>
 /// <param name="CacheName">Token-cache name override.</param>
+/// <param name="ClientId">
+/// Pre-registered client id override. Used by both <see cref="AuthKind.OAuth"/> and
+/// <see cref="AuthKind.InteractiveBrowser"/>.
+/// </param>
+/// <param name="TenantId">
+/// Entra tenant override. Only consumed by <see cref="AuthKind.InteractiveBrowser"/>.
+/// </param>
 /// <param name="NoAuth">Suppress all authentication (HTTP and stdio).</param>
 /// <param name="LoginOnly">
 /// When true, the CLI runs the OAuth flow once and writes the resulting token to the cache,
@@ -86,6 +114,8 @@ internal sealed record AuthOverrides(
     IReadOnlyList<string>? Scopes = null,
     string? RedirectUri = null,
     string? CacheName = null,
+    string? ClientId = null,
+    string? TenantId = null,
     bool NoAuth = false,
     bool LoginOnly = false,
     bool LogoutOnly = false)
@@ -101,7 +131,9 @@ internal sealed record AuthOverrides(
            && Token is null
            && (Scopes is null || Scopes.Count == 0)
            && RedirectUri is null
-           && CacheName is null;
+           && CacheName is null
+           && ClientId is null
+           && TenantId is null;
 }
 
 /// <summary>

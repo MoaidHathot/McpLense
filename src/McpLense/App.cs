@@ -118,16 +118,29 @@ Target Options
   Example: mcplense inspect -- npx -y @modelcontextprotocol/server-everything
 
 Authentication
-  --auth <bearer|oauth>        Auth scheme to use for HTTP/SSE targets.
+  --auth <bearer|oauth|interactive-browser>
+                               Auth scheme to use for HTTP/SSE targets.
   --auth-token <value>         Bearer token (only used with '--auth bearer').
                                Supports environment expansion:
                                  - 'env:VAR'           (whole-string)
                                  - '${VAR}' / '${VAR:-default}'  (substring)
   --scope <scope>              OAuth scope to request. Repeat as needed.
+                               For interactive-browser auth, use the
+                               '<application-id-uri>/.default' Entra shape.
   --redirect-uri <uri>         Loopback redirect URI for the OAuth flow.
-                               Defaults to a free port on http://127.0.0.1.
+                               Defaults to a free port on http://127.0.0.1
+                               (OAuth) or http://localhost (interactive-browser).
   --token-cache-name <name>    Override the token cache key. Defaults to a stable
-                               hash of the resource URI.
+                               hash of the resource URI (OAuth) or 'mcplense'
+                               (interactive-browser). Set to 'mcp-proxy' to share
+                               the MSAL cache with the mcp-proxy tool.
+  --client-id <value>          Pre-registered public-client GUID for OAuth or
+                               interactive-browser auth. Required for
+                               interactive-browser. Supports environment expansion.
+  --tenant-id <value>          Entra tenant id (GUID, domain, or 'common',
+                               'organizations', 'consumers'). Only used by
+                               interactive-browser auth. Supports environment
+                               expansion.
   --no-auth                    Suppress all authentication on every resolved server.
 
   --login                      Run the OAuth flow once for each resolved HTTP server,
@@ -140,8 +153,9 @@ Authentication
   Auth precedence:
     1. --no-auth wins absolutely (no Authorization header sent anywhere).
     2. --auth <type> replaces any 'auth' block in the config.
-    3. --auth-token / --scope / --redirect-uri / --token-cache-name overlay
-       individual fields onto the resolved auth block.
+    3. --auth-token / --scope / --redirect-uri / --token-cache-name /
+       --client-id / --tenant-id overlay individual fields onto the resolved
+       auth block.
 
   OAuth notes:
     - Cached tokens live under '%LOCALAPPDATA%\McpLense\tokens' (Windows, DPAPI)
@@ -157,6 +171,17 @@ Authentication
       so a missing/expired token surfaces as an error. Combine with '--login'
       on a workstation to refresh the cache, then re-run headless.
 
+  Microsoft 365 / Entra ID (interactive-browser):
+    - Use 'auth.type: interactive-browser' (or '--auth interactive-browser') for
+      Microsoft 365 / Entra-protected MCP servers. Tokens are acquired via MSAL
+      using a public-client GUID you already have access to (e.g. the VS Code
+      client 'aebc6443-996d-45c2-90f0-388ff96faa56') and persisted in the OS
+      credential store (DPAPI on Windows, libsecret on Linux, Keychain on macOS).
+    - Entra's loopback redirect exception requires 'http://localhost' (any port);
+      '127.0.0.1' is rejected. MSAL picks a free localhost port automatically.
+    - Setting 'cacheName: mcp-proxy' shares the on-disk MSAL cache with the
+      mcp-proxy tool so sign-in flows are pooled across both.
+
   Config example (per-server):
     {
       "mcpServers": {
@@ -170,6 +195,15 @@ Authentication
             "type": "oauth",
             "scopes": ["mcp.read", "mcp.write"],
             "clientId": "env:OAUTH_CLIENT_ID"
+          }
+        },
+        "m365-server": {
+          "url": "https://agent365.svc.cloud.microsoft/.../servers/mcp_MailTools",
+          "auth": {
+            "type": "interactive-browser",
+            "clientId": "env:VSCODE_CLIENT_ID",
+            "tenantId": "env:CORP_TENANT_ID",
+            "scopes": ["${VSCODE_AUDIENCE}/.default"]
           }
         }
       }
@@ -218,6 +252,7 @@ Examples
   mcplense inspect --url https://api.example.com/mcp --auth bearer --auth-token env:API_TOKEN
   mcplense inspect --url https://api.example.com/mcp --auth oauth --scope mcp.read --login
   mcplense inspect --url https://api.example.com/mcp --auth oauth --scope mcp.read --logout
+  mcplense inspect --config samples/agent365.json --server agent365-mailtools --login
   mcplense call echo --url https://localhost:3000/mcp --args '{"message":"hello"}'
   dotnet run -- inspect --format dumpify -- npx -y @modelcontextprotocol/server-everything
   dotnet run -- tools --format json -- npx -y @modelcontextprotocol/server-everything

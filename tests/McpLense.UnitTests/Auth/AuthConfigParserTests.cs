@@ -171,4 +171,179 @@ public class AuthConfigParserTests
 
         parser.Parse(server, "x", new Dictionary<string, string>())!.Kind.ShouldBe(AuthKind.OAuth);
     }
+
+    // -------- InteractiveBrowser (M365 / Entra ID) --------------------------------
+
+    [Fact]
+    public void Parse_InteractiveBrowser_AcceptsShape()
+    {
+        var parser = With(new() { ["AUD"] = "api://example" });
+        var server = Parse("""
+        {
+          "url": "https://x",
+          "auth": {
+            "type": "interactive-browser",
+            "clientId": "aebc6443-996d-45c2-90f0-388ff96faa56",
+            "tenantId": "common",
+            "scopes": ["${AUD}/.default"],
+            "cacheName": "mcplense"
+          }
+        }
+        """);
+
+        var auth = parser.Parse(server, "x", new Dictionary<string, string>());
+
+        auth.ShouldNotBeNull();
+        auth.Kind.ShouldBe(AuthKind.InteractiveBrowser);
+        auth.ClientId.ShouldBe("aebc6443-996d-45c2-90f0-388ff96faa56");
+        auth.TenantId.ShouldBe("common");
+        auth.Scopes!.ShouldBe(new[] { "api://example/.default" });
+        auth.CacheName.ShouldBe("mcplense");
+    }
+
+    [Fact]
+    public void Parse_InteractiveBrowser_AliasIsCaseAndDashInsensitive()
+    {
+        var parser = With(new());
+        var server = Parse("""
+        {
+          "url": "https://x",
+          "auth": {
+            "type": "InteractiveBrowser",
+            "clientId": "abc",
+            "scopes": ["s/.default"]
+          }
+        }
+        """);
+
+        parser.Parse(server, "x", new Dictionary<string, string>())!.Kind.ShouldBe(AuthKind.InteractiveBrowser);
+    }
+
+    [Fact]
+    public void Parse_InteractiveBrowser_MissingClientId_Throws()
+    {
+        var parser = With(new());
+        var server = Parse("""
+        {
+          "url": "https://x",
+          "auth": {
+            "type": "interactive-browser",
+            "scopes": ["s/.default"]
+          }
+        }
+        """);
+
+        var ex = Should.Throw<UserInputException>(() => parser.Parse(server, "x", new Dictionary<string, string>()));
+        ex.Message.ShouldContain("clientId");
+        ex.Message.ShouldContain("interactive-browser");
+    }
+
+    [Fact]
+    public void Parse_InteractiveBrowser_EmptyClientIdAfterExpansion_Throws()
+    {
+        var parser = With(new() { ["VSCODE_CLIENT_ID"] = string.Empty });
+        var server = Parse("""
+        {
+          "url": "https://x",
+          "auth": {
+            "type": "interactive-browser",
+            "clientId": "${VSCODE_CLIENT_ID}",
+            "scopes": ["s/.default"]
+          }
+        }
+        """);
+
+        var ex = Should.Throw<UserInputException>(() => parser.Parse(server, "x", new Dictionary<string, string>()));
+        ex.Message.ShouldContain("clientId");
+    }
+
+    [Fact]
+    public void Parse_InteractiveBrowser_MissingScopes_Throws()
+    {
+        var parser = With(new());
+        var server = Parse("""
+        {
+          "url": "https://x",
+          "auth": {
+            "type": "interactive-browser",
+            "clientId": "abc"
+          }
+        }
+        """);
+
+        var ex = Should.Throw<UserInputException>(() => parser.Parse(server, "x", new Dictionary<string, string>()));
+        ex.Message.ShouldContain("scopes");
+    }
+
+    [Fact]
+    public void Parse_InteractiveBrowser_EmptyScopesArray_Throws()
+    {
+        var parser = With(new());
+        var server = Parse("""
+        {
+          "url": "https://x",
+          "auth": {
+            "type": "interactive-browser",
+            "clientId": "abc",
+            "scopes": []
+          }
+        }
+        """);
+
+        var ex = Should.Throw<UserInputException>(() => parser.Parse(server, "x", new Dictionary<string, string>()));
+        ex.Message.ShouldContain("scopes");
+    }
+
+    [Fact]
+    public void Parse_InteractiveBrowser_TenantIdOptional()
+    {
+        var parser = With(new());
+        var server = Parse("""
+        {
+          "url": "https://x",
+          "auth": {
+            "type": "interactive-browser",
+            "clientId": "abc",
+            "scopes": ["s/.default"]
+          }
+        }
+        """);
+
+        var auth = parser.Parse(server, "x", new Dictionary<string, string>());
+
+        auth!.TenantId.ShouldBeNull();
+    }
+
+    [Fact]
+    public void Parse_InteractiveBrowser_ExpandsTenantIdAndCacheName()
+    {
+        var parser = With(new() { ["TENANT"] = "contoso.onmicrosoft.com", ["CACHE"] = "my-tool" });
+        var server = Parse("""
+        {
+          "url": "https://x",
+          "auth": {
+            "type": "interactive-browser",
+            "clientId": "abc",
+            "tenantId": "${TENANT}",
+            "scopes": ["s/.default"],
+            "cacheName": "${CACHE}"
+          }
+        }
+        """);
+
+        var auth = parser.Parse(server, "x", new Dictionary<string, string>());
+
+        auth!.TenantId.ShouldBe("contoso.onmicrosoft.com");
+        auth.CacheName.ShouldBe("my-tool");
+    }
+
+    [Fact]
+    public void Parse_UnknownTypeMessageMentionsInteractiveBrowser()
+    {
+        var parser = With(new());
+        var server = Parse("""{ "url": "https://x", "auth": { "type": "magic" } }""");
+
+        var ex = Should.Throw<UserInputException>(() => parser.Parse(server, "x", new Dictionary<string, string>()));
+        ex.Message.ShouldContain("interactive-browser");
+    }
 }

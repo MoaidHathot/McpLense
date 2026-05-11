@@ -191,12 +191,13 @@ For richer authentication, use the dedicated `auth` block (config) or `--auth` f
 
 ## Authentication
 
-`mcplense` supports two authentication kinds for HTTP/SSE servers:
+`mcplense` supports three authentication kinds for HTTP/SSE servers:
 
-| Kind     | Status    | How tokens are sourced                                      |
-| -------- | --------- | ----------------------------------------------------------- |
-| `bearer` | Available | Static token from config or `--auth-token` (env-expandable) |
-| `oauth`  | Available | MCP-spec OAuth 2.1 with discovery (RFC 9728/8414), PKCE (RFC 7636), and Dynamic Client Registration (RFC 7591) |
+| Kind                  | Status    | How tokens are sourced                                      |
+| --------------------- | --------- | ----------------------------------------------------------- |
+| `bearer`              | Available | Static token from config or `--auth-token` (env-expandable) |
+| `oauth`               | Available | MCP-spec OAuth 2.1 with discovery (RFC 9728/8414), PKCE (RFC 7636), and Dynamic Client Registration (RFC 7591) |
+| `interactive-browser` | Available | Microsoft Entra ID via MSAL/`Azure.Identity` with OS-protected token cache (DPAPI / libsecret / Keychain). For Microsoft 365 and Agent365. |
 
 Stdio (process) targets do not accept authentication; an `auth` block on a stdio
 server raises an error unless `--no-auth` is supplied.
@@ -260,10 +261,72 @@ mcplense inspect --url https://example.com/mcp \
 - With `--config`, auth flags apply to **every** HTTP server in the file. Stdio
   servers are skipped (they would otherwise error).
 
-### Azure AD / other token sources
+### Microsoft 365 / Entra ID (interactive browser)
 
-Slice A intentionally does not bundle MSAL or `Azure.Identity`. To use Entra ID
-tokens today, mint them out-of-band and feed them in:
+For Microsoft 365 and Entra-protected MCP servers (Agent365, Graph-backed
+tools, internal corporate APIs), use `auth.type: interactive-browser`. McpLense
+delegates the sign-in to MSAL via `Azure.Identity.InteractiveBrowserCredential`,
+which means:
+
+- **No app registration required** if you piggy-back on a Microsoft first-party
+  public client GUID. The VS Code client
+  `aebc6443-996d-45c2-90f0-388ff96faa56` is pre-trusted for Microsoft services
+  and is the recommended starting point.
+- **OS-protected token cache**. Tokens are stored under
+  `%LOCALAPPDATA%\.IdentityService\<cacheName>` on Windows (DPAPI), the
+  freedesktop secret service on Linux (with a `chmod 600` plain-file fallback),
+  or Keychain on macOS.
+- **Cache-sharing with mcp-proxy**. Set `cacheName: "mcp-proxy"` to share the
+  MSAL cache with the [mcp-proxy](https://github.com/anomalyco/mcp-proxy) tool
+  so sign-ins flow across both.
+- **Correct loopback redirect.** Entra's loopback exception requires
+  `http://localhost` (any port); `127.0.0.1` is rejected. MSAL picks a free
+  localhost port automatically. Set `redirectUri` only when you registered a
+  specific port in your own Entra app.
+
+```json
+{
+  "servers": [
+    {
+      "name": "agent365-mailtools",
+      "url": "https://agent365.svc.cloud.microsoft/.../servers/mcp_MailTools",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "interactive-browser",
+        "clientId": "env:VSCODE_CLIENT_ID",
+        "tenantId": "env:CORP_TENANT_ID",
+        "scopes": ["${VSCODE_AUDIENCE}/.default"],
+        "cacheName": "mcplense"
+      }
+    }
+  ]
+}
+```
+
+`scopes` follows the Entra `<application-id-uri>/.default` convention: it asks
+Entra to issue an access token carrying every statically-consented permission
+for the target resource. `tenantId` is optional &mdash; omit it (or set it to
+`common`) to accept any work/school/personal account.
+
+CLI overrides for ad-hoc connections without a config file:
+
+```bash
+mcplense inspect `
+  --url https://agent365.svc.cloud.microsoft/.../servers/mcp_MailTools `
+  --auth interactive-browser `
+  --client-id env:VSCODE_CLIENT_ID `
+  --tenant-id env:CORP_TENANT_ID `
+  --scope '${VSCODE_AUDIENCE}/.default' `
+  --login
+```
+
+A full worked example lives in [`samples/agent365.json`](samples/agent365.json).
+
+### Azure AD via out-of-band tokens (legacy)
+
+If you prefer to mint tokens with `az account get-access-token` (or any other
+mechanism) and feed them in as static bearer values, the bearer path still
+works:
 
 ```bash
 $env:AAD_TOKEN = (az account get-access-token --resource api://my-mcp-app `
@@ -332,10 +395,13 @@ malformed JSON or missing `authorization_endpoint`/`token_endpoint` stops the la
 the failure &mdash; the server clearly meant to respond at that URL. If all three forms exhaust, the
 error message lists every URL attempted with its status to ease diagnosis.
 
-> **Worked Microsoft Entra ID example:** see [`samples/agent365.json`](samples/agent365.json) for a
-> full config that connects to Microsoft Agent365 via Entra ID. Entra does not implement RFC 7591
-> Dynamic Client Registration, so you must register a public client in your tenant's Entra portal
-> manually and supply its application (client) ID via `env:AGENT365_CLIENT_ID`.
+> **Worked Microsoft Entra ID example:** see [`samples/agent365.json`](samples/agent365.json)
+> for a full Microsoft 365 config that connects to Microsoft Agent365 via the
+> MSAL-backed `interactive-browser` auth kind. Prefer that approach over the
+> bare `oauth` kind for any Microsoft 365 / Entra ID target &mdash; Entra does not
+> implement RFC 7591 Dynamic Client Registration and its loopback exception only
+> covers `http://localhost`, both of which `interactive-browser` handles
+> transparently via MSAL.
 
 #### CLI flags
 
@@ -344,6 +410,8 @@ error message lists every URL attempted with its status to ease diagnosis.
 | `--scope <s>`          | OAuth scope to request (repeatable). Env-expandable.                   |
 | `--redirect-uri <uri>` | Override loopback redirect URI (defaults to a free port on `127.0.0.1`).|
 | `--token-cache-name`   | Override token cache key. Defaults to a stable hash of the resource URI.|
+| `--client-id <id>`     | Pre-registered public-client GUID. Required for `interactive-browser`. |
+| `--tenant-id <id>`     | Entra tenant id (GUID, domain, `common`, `organizations`, `consumers`). Only used by `interactive-browser`. |
 | `--login`              | Run the OAuth flow once, cache the token, then exit.                   |
 | `--logout`             | Delete cached OAuth tokens for the resolved server(s) and exit.        |
 

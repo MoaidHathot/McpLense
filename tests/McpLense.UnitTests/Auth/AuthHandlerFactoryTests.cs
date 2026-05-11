@@ -80,4 +80,51 @@ public class AuthHandlerFactoryTests
         var ex = Should.Throw<McpLenseAuthException>(() => AuthHandlerFactory.Create(auth));
         ex.Message.ShouldContain("resourceUri");
     }
+
+    // -------- InteractiveBrowser (M365 / Entra ID) --------------------------------
+
+    [Fact]
+    public void Create_InteractiveBrowser_ReturnsInteractiveBrowserHandler()
+    {
+        var auth = new ResolvedAuth(
+            AuthKind.InteractiveBrowser,
+            Scopes: new[] { "api://res/.default" },
+            ClientId: "aebc6443-996d-45c2-90f0-388ff96faa56");
+
+        var handler = AuthHandlerFactory.Create(auth);
+
+        handler.ShouldBeOfType<InteractiveBrowserHandler>();
+        handler.Dispose();
+    }
+
+    [Fact]
+    public void Create_InteractiveBrowser_MissingClientId_Throws()
+    {
+        var auth = new ResolvedAuth(AuthKind.InteractiveBrowser, Scopes: new[] { "s" });
+
+        var ex = Should.Throw<McpLenseAuthException>(() => AuthHandlerFactory.Create(auth));
+        ex.Message.ShouldContain("clientId");
+    }
+
+    [Fact]
+    public void Create_InteractiveBrowser_MissingScopes_Throws()
+    {
+        var auth = new ResolvedAuth(AuthKind.InteractiveBrowser, ClientId: "abc");
+
+        var ex = Should.Throw<McpLenseAuthException>(() => AuthHandlerFactory.Create(auth));
+        ex.Message.ShouldContain("scope");
+    }
+
+    [Fact]
+    public void Create_InteractiveBrowser_MalformedRedirectUri_Throws()
+    {
+        var auth = new ResolvedAuth(
+            AuthKind.InteractiveBrowser,
+            Scopes: new[] { "s" },
+            ClientId: "abc",
+            RedirectUri: "not a uri");
+
+        var ex = Should.Throw<McpLenseAuthException>(() => AuthHandlerFactory.Create(auth));
+        ex.Message.ShouldContain("redirectUri");
+    }
 }

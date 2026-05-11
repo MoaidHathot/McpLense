@@ -17,6 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.Identity" />
     <PackageReference Include="Dumpify" />
     <PackageReference Include="ModelContextProtocol" />
     <PackageReference Include="Spectre.Console" />

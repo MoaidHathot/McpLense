@@ -1,3 +1,5 @@
+using Azure.Identity;
+
 namespace McpLense;
 
 /// <summary>
@@ -7,6 +9,9 @@ namespace McpLense;
 /// </summary>
 internal static class AuthHandlerFactory
 {
+    /// <summary>Default MSAL cache file name when no per-server override is supplied.</summary>
+    internal const string DefaultInteractiveBrowserCacheName = "mcplense";
+
     /// <summary>
     /// Builds the auth-aware <see cref="HttpMessageHandler"/> chain for the supplied
     /// <see cref="ResolvedAuth"/>. The returned handler still needs an
@@ -38,6 +43,7 @@ internal static class AuthHandlerFactory
             AuthKind.None => null,
             AuthKind.Bearer => CreateBearer(auth),
             AuthKind.OAuth => CreateOAuth(auth, serverUrl),
+            AuthKind.InteractiveBrowser => CreateInteractiveBrowser(auth),
             _ => throw new McpLenseAuthException($"Unsupported authentication kind '{auth.Kind}'.")
         };
     }
@@ -69,6 +75,65 @@ internal static class AuthHandlerFactory
             cache,
             orchestrator,
             ownedResource: orchestratorHttp);
+    }
+
+    private static DelegatingHandler CreateInteractiveBrowser(ResolvedAuth auth)
+    {
+        var credential = BuildInteractiveBrowserCredential(auth);
+        return new InteractiveBrowserHandler(credential, auth.Scopes!);
+    }
+
+    /// <summary>
+    /// Builds an <see cref="InteractiveBrowserCredential"/> from a resolved interactive-browser
+    /// auth block. Centralised here so <see cref="InteractiveBrowserSessionRunner"/> can reuse the
+    /// exact same composition for <c>--login</c>/<c>--logout</c>.
+    /// </summary>
+    internal static InteractiveBrowserCredential BuildInteractiveBrowserCredential(ResolvedAuth auth)
+    {
+        if (string.IsNullOrEmpty(auth.ClientId))
+        {
+            throw new McpLenseAuthException(
+                "Interactive-browser authentication requires a non-empty 'clientId'. " +
+                "Set it via the config 'auth.clientId' field or '--client-id'.");
+        }
+
+        if (auth.Scopes is null || auth.Scopes.Count == 0)
+        {
+            throw new McpLenseAuthException(
+                "Interactive-browser authentication requires at least one scope. " +
+                "Add 'auth.scopes' to the config or pass '--scope'.");
+        }
+
+        var options = new InteractiveBrowserCredentialOptions
+        {
+            ClientId = auth.ClientId,
+            // TokenCachePersistenceOptions enables MSAL's encrypted on-disk cache. Default path on
+            // Windows: %LOCALAPPDATA%\.IdentityService\<Name>. We default Name to "mcplense" so
+            // mcplense never accidentally pollutes another tool's cache; setting cacheName to
+            // "mcp-proxy" in config opts into a shared cache with that tool.
+            TokenCachePersistenceOptions = new TokenCachePersistenceOptions
+            {
+                Name = string.IsNullOrEmpty(auth.CacheName) ? DefaultInteractiveBrowserCacheName : auth.CacheName
+            }
+        };
+
+        if (!string.IsNullOrEmpty(auth.TenantId))
+        {
+            options.TenantId = auth.TenantId;
+        }
+
+        if (!string.IsNullOrEmpty(auth.RedirectUri))
+        {
+            if (!Uri.TryCreate(auth.RedirectUri, UriKind.Absolute, out var redirect))
+            {
+                throw new McpLenseAuthException(
+                    $"Interactive-browser 'redirectUri' must be an absolute URI but was '{auth.RedirectUri}'.");
+            }
+
+            options.RedirectUri = redirect;
+        }
+
+        return new InteractiveBrowserCredential(options);
     }
 
     /// <summary>

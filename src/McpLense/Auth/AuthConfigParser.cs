@@ -49,6 +49,7 @@ internal sealed class AuthConfigParser
         {
             AuthKind.Bearer => ParseBearer(authObject, basePath),
             AuthKind.OAuth => ParseOAuth(authObject, basePath),
+            AuthKind.InteractiveBrowser => ParseInteractiveBrowser(authObject, basePath),
             _ => throw new UserInputException($"{basePath}.type '{typeRaw}' is not supported.")
         };
     }
@@ -59,8 +60,9 @@ internal sealed class AuthConfigParser
         {
             "bearer" => AuthKind.Bearer,
             "oauth" or "oauthdiscovery" => AuthKind.OAuth,
+            "interactive-browser" or "interactivebrowser" => AuthKind.InteractiveBrowser,
             _ => throw new UserInputException(
-                $"{basePath}.type '{raw}' is not recognised. Supported values: 'bearer', 'oauth'.")
+                $"{basePath}.type '{raw}' is not recognised. Supported values: 'bearer', 'oauth', 'interactive-browser'.")
         };
     }
 
@@ -73,6 +75,43 @@ internal sealed class AuthConfigParser
         }
 
         return new ResolvedAuth(AuthKind.Bearer, Token: token);
+    }
+
+    private ResolvedAuth ParseInteractiveBrowser(JsonObject authObject, string basePath)
+    {
+        // Entra ID v2.0 interactive-browser flow via MSAL/Azure.Identity. clientId is required:
+        // public-client GUIDs (e.g. the VS Code first-party client) cannot be auto-discovered, and
+        // Entra does not support RFC 7591 Dynamic Client Registration. tenantId is optional; when
+        // null MSAL falls back to "common" which accepts any work/school/personal account.
+        var clientId = GetExpandedString(authObject, "clientId", $"{basePath}.clientId");
+        if (string.IsNullOrEmpty(clientId))
+        {
+            throw new UserInputException(
+                $"{basePath}.clientId is required when type is 'interactive-browser'. " +
+                "Use the application (client) ID from your Entra app registration, or the VS Code " +
+                "public client 'aebc6443-996d-45c2-90f0-388ff96faa56' for first-party Microsoft services.");
+        }
+
+        var scopes = ParseScopes(authObject, $"{basePath}.scopes");
+        if (scopes is null || scopes.Count == 0)
+        {
+            throw new UserInputException(
+                $"{basePath}.scopes is required when type is 'interactive-browser'. " +
+                "Use '<application-id-uri>/.default' to request every statically-consented permission " +
+                "for the target resource.");
+        }
+
+        var tenantId = GetExpandedString(authObject, "tenantId", $"{basePath}.tenantId");
+        var cacheName = GetExpandedString(authObject, "cacheName", $"{basePath}.cacheName");
+        var redirectUri = GetExpandedString(authObject, "redirectUri", $"{basePath}.redirectUri");
+
+        return new ResolvedAuth(
+            AuthKind.InteractiveBrowser,
+            Scopes: scopes,
+            RedirectUri: redirectUri,
+            CacheName: cacheName,
+            ClientId: clientId,
+            TenantId: tenantId);
     }
 
     private ResolvedAuth ParseOAuth(JsonObject authObject, string basePath)

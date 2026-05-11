@@ -245,6 +245,8 @@ internal static class CommandLineParser
             "scope",
             "redirect-uri",
             "token-cache-name",
+            "client-id",
+            "tenant-id",
             "login",
             "logout"
         };
@@ -360,7 +362,8 @@ internal static class CommandLineParser
             {
                 throw new UserInputException(
                     "When using --config, only --server, --format, --timeout, --auth, --auth-token, " +
-                    "--scope, --redirect-uri, --token-cache-name, --login, --logout, and --no-auth may be added.");
+                    "--scope, --redirect-uri, --token-cache-name, --client-id, --tenant-id, --login, " +
+                    "--logout, and --no-auth may be added.");
             }
 
             return new TargetOptions(configPath, serverNames, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), authOverrides);
@@ -424,6 +427,8 @@ internal static class CommandLineParser
         var tokenRaw = GetSingle(options, "auth-token");
         var redirectRaw = GetSingle(options, "redirect-uri");
         var cacheNameRaw = GetSingle(options, "token-cache-name");
+        var clientIdRaw = GetSingle(options, "client-id");
+        var tenantIdRaw = GetSingle(options, "tenant-id");
         var scopes = GetMany(options, "scope");
 
         if (noAuth)
@@ -477,6 +482,26 @@ internal static class CommandLineParser
             }
         }
 
+        string? clientId = null;
+        if (clientIdRaw is not null)
+        {
+            clientId = expander.Expand(clientIdRaw, "--client-id");
+            if (string.IsNullOrEmpty(clientId))
+            {
+                throw new UserInputException("--client-id resolved to an empty value.");
+            }
+        }
+
+        string? tenantId = null;
+        if (tenantIdRaw is not null)
+        {
+            tenantId = expander.Expand(tenantIdRaw, "--tenant-id");
+            if (string.IsNullOrEmpty(tenantId))
+            {
+                throw new UserInputException("--tenant-id resolved to an empty value.");
+            }
+        }
+
         IReadOnlyList<string>? expandedScopes = null;
         if (scopes.Count > 0)
         {
@@ -500,6 +525,8 @@ internal static class CommandLineParser
             Scopes: expandedScopes,
             RedirectUri: redirectUri,
             CacheName: cacheName,
+            ClientId: clientId,
+            TenantId: tenantId,
             LoginOnly: login,
             LogoutOnly: logout);
     }
@@ -510,8 +537,9 @@ internal static class CommandLineParser
         {
             "bearer" => AuthKind.Bearer,
             "oauth" or "oauthdiscovery" => AuthKind.OAuth,
+            "interactive-browser" or "interactivebrowser" => AuthKind.InteractiveBrowser,
             _ => throw new UserInputException(
-                $"Unknown --auth value '{raw}'. Supported: 'bearer', 'oauth'.")
+                $"Unknown --auth value '{raw}'. Supported: 'bearer', 'oauth', 'interactive-browser'.")
         };
     }
 

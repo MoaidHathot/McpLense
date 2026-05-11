@@ -274,7 +274,9 @@ internal static class TargetResolver
                     if (overrides.Kind.HasValue || overrides.Token is not null
                         || (overrides.Scopes is { Count: > 0 })
                         || overrides.RedirectUri is not null
-                        || overrides.CacheName is not null)
+                        || overrides.CacheName is not null
+                        || overrides.ClientId is not null
+                        || overrides.TenantId is not null)
                     {
                         // CLI overrides target HTTP servers. For stdio we silently skip the overlay
                         // (no token to apply) but still enforce the stdio + config-auth rule below.
@@ -330,7 +332,19 @@ internal static class TargetResolver
                         AuthKind.OAuth,
                         Scopes: overrides.Scopes,
                         RedirectUri: overrides.RedirectUri,
-                        CacheName: overrides.CacheName),
+                        CacheName: overrides.CacheName,
+                        ClientId: overrides.ClientId),
+                    AuthKind.InteractiveBrowser => new ResolvedAuth(
+                        AuthKind.InteractiveBrowser,
+                        Scopes: overrides.Scopes
+                            ?? throw new UserInputException(
+                                $"Server '{serverName}': '--auth interactive-browser' requires at least one '--scope <value>'."),
+                        RedirectUri: overrides.RedirectUri,
+                        CacheName: overrides.CacheName,
+                        ClientId: overrides.ClientId
+                            ?? throw new UserInputException(
+                                $"Server '{serverName}': '--auth interactive-browser' requires '--client-id <value>'."),
+                        TenantId: overrides.TenantId),
                     AuthKind.None => null,
                     _ => throw new UserInputException(
                         $"Server '{serverName}': unsupported '--auth' value '{overrides.Kind.Value}'.")
@@ -343,10 +357,12 @@ internal static class TargetResolver
                 if (overrides.Token is not null
                     || (overrides.Scopes is { Count: > 0 })
                     || overrides.RedirectUri is not null
-                    || overrides.CacheName is not null)
+                    || overrides.CacheName is not null
+                    || overrides.ClientId is not null
+                    || overrides.TenantId is not null)
                 {
                     throw new UserInputException(
-                        $"Server '{serverName}': auth field overrides (--auth-token, --scope, --redirect-uri, --token-cache-name) " +
+                        $"Server '{serverName}': auth field overrides (--auth-token, --scope, --redirect-uri, --token-cache-name, --client-id, --tenant-id) " +
                         "require either '--auth <type>' or an 'auth' block in the config.");
                 }
 
@@ -358,7 +374,9 @@ internal static class TargetResolver
                 Token = overrides.Token ?? configAuth.Token,
                 Scopes = overrides.Scopes ?? configAuth.Scopes,
                 RedirectUri = overrides.RedirectUri ?? configAuth.RedirectUri,
-                CacheName = overrides.CacheName ?? configAuth.CacheName
+                CacheName = overrides.CacheName ?? configAuth.CacheName,
+                ClientId = overrides.ClientId ?? configAuth.ClientId,
+                TenantId = overrides.TenantId ?? configAuth.TenantId
             };
         }
 
