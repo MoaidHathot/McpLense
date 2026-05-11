@@ -45,6 +45,7 @@ public class HttpExecutorTests
         var target = new TargetOptions(
             ConfigPath: null,
             ServerNames: [],
+            ProfilePaths: [],
             DisplayName: "http-test-server",
             Url: new Uri(url, UriKind.Absolute),
             Transport: transport,

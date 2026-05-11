@@ -36,36 +36,49 @@ dotnet tool install --global --add-source ./src/McpLense/bin/Release McpLense
 ## Quick start
 
 ```bash
-# Inspect a public remote MCP server (context7) over streamable-http
-mcplense inspect --url https://mcp.context7.com/mcp
+# Inspect a public remote MCP server (positional URL)
+mcplense inspect https://mcp.context7.com/mcp
 
 # List its tools as JSON
-mcplense tools --url https://mcp.context7.com/mcp --format json
+mcplense tools https://mcp.context7.com/mcp --format json
 
-# Open the TUI against an mcp.json config
+# Open the TUI against an mcp.json config (stdio servers)
 mcplense tui --config mcp.json
 ```
 
 ## Commands
 
 ```text
-mcplense inspect
+mcplense inspect [<url>]
 mcplense tui
-mcplense tools
-mcplense resources
-mcplense prompts
-mcplense call <tool-name>
-mcplense read <uri-or-template>
-mcplense prompt <prompt-name>
+mcplense tools [<url>]
+mcplense resources [<url>]
+mcplense prompts [<url>]
+mcplense call <tool-name> [<url>]
+mcplense read <uri-or-template> [<url>]
+mcplense prompt <prompt-name> [<url>]
 ```
 
 ## Targets
 
-You can point `mcplense` at a server in three different ways: a config file, a URL, or a stdio command.
+You can point `mcplense` at an MCP server in three ways: a positional URL (or
+`--url`), a `--config` file (stdio MCPs only), or a stdio command (`--command`
+or `-- <cmd ...>`).
 
-### Config file
+### Positional URL (HTTP MCPs)
 
-Works with the common `mcpServers` shape:
+```bash
+mcplense inspect https://localhost:3000/mcp
+mcplense inspect https://localhost:3000/mcp --transport streamable-http
+mcplense inspect https://localhost:3000/sse --transport sse
+mcplense inspect https://localhost:3000/mcp --header Authorization="Bearer token"
+```
+
+`--url <url>` works as the long form. HTTP MCP servers can no longer be defined
+inside `--config` files; their auth lives in profile files (see
+[Authentication](#authentication)) and the URL is passed positionally.
+
+### Config file (stdio MCPs only)
 
 ```json
 {
@@ -73,19 +86,12 @@ Works with the common `mcpServers` shape:
     "everything": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-everything"]
-    },
-    "remote": {
-      "url": "https://example.com/mcp",
-      "transport": "streamable-http",
-      "headers": {
-        "Authorization": "Bearer token"
-      }
     }
   }
 }
 ```
 
-It also supports a custom `servers` array:
+Or the array form:
 
 ```json
 {
@@ -101,15 +107,6 @@ It also supports a custom `servers` array:
     }
   ]
 }
-```
-
-### URL
-
-```bash
-mcplense inspect --url https://localhost:3000/mcp
-mcplense inspect --url https://localhost:3000/mcp --transport streamable-http
-mcplense inspect --url https://localhost:3000/sse --transport sse
-mcplense inspect --url https://localhost:3000/mcp --header Authorization="Bearer token"
 ```
 
 ### Stdio command
@@ -134,23 +131,22 @@ mcplense inspect -- npx -y @modelcontextprotocol/server-everything
 | `streamable-http`         | Server speaks the modern Streamable HTTP MCP transport.      | `https://host/mcp`                   |
 | `sse`                     | Server only exposes the legacy Server-Sent Events transport. | `https://host/sse`                   |
 
-`--transport` is ignored for stdio targets and config-file entries that already declare their transport.
+`--transport` is ignored for stdio targets.
 
 ## Remote MCP servers
 
-`mcplense` can talk to any publicly reachable MCP server over HTTPS. For example, the [context7](https://context7.com) public MCP endpoint:
+`mcplense` can talk to any publicly reachable MCP server over HTTPS:
 
 ```bash
 # auto-detect transport
-mcplense inspect --url https://mcp.context7.com/mcp --format json
+mcplense inspect https://mcp.context7.com/mcp --format json
 
 # call resolve-library-id
-mcplense call resolve-library-id \
-  --url https://mcp.context7.com/mcp \
+mcplense call resolve-library-id https://mcp.context7.com/mcp \
   --args '{"libraryName":"spectre.console"}'
 ```
 
-### Headers and authentication
+### Headers
 
 Pass `--header NAME=VALUE` once per header. Quoting differs by shell:
 
@@ -158,7 +154,7 @@ PowerShell (Windows / pwsh):
 
 ```powershell
 $env:CTX7_TOKEN = "your-token-here"
-mcplense inspect --url https://mcp.context7.com/mcp `
+mcplense inspect https://mcp.context7.com/mcp `
   --header "Authorization=Bearer $env:CTX7_TOKEN"
 ```
 
@@ -166,100 +162,126 @@ bash / zsh:
 
 ```bash
 export CTX7_TOKEN=your-token-here
-mcplense inspect --url https://mcp.context7.com/mcp \
+mcplense inspect https://mcp.context7.com/mcp \
   --header "Authorization=Bearer $CTX7_TOKEN"
 ```
 
-In a config file, headers go under the server entry:
-
-```json
-{
-  "mcpServers": {
-    "context7": {
-      "url": "https://mcp.context7.com/mcp",
-      "transport": "streamable-http",
-      "headers": {
-        "Authorization": "Bearer ${CTX7_TOKEN}"
-      }
-    }
-  }
-}
-```
-
-For richer authentication, use the dedicated `auth` block (config) or `--auth` flags
-(CLI). See [Authentication](#authentication) below.
+For richer authentication, use auth profiles (recommended) or the `--auth bearer`
+ad-hoc shortcut. See [Authentication](#authentication) below.
 
 ## Authentication
 
-`mcplense` supports three authentication kinds for HTTP/SSE servers:
+`mcplense` uses **auth profiles**: named, reusable authentication recipes that
+describe HOW to authenticate, decoupled from any specific URL. The same profile
+services every MCP server it can authenticate to (every Agent365 MCP under your
+tenant, every GitHub MCP for one account, etc.) without per-server duplication.
 
-| Kind                  | Status    | How tokens are sourced                                      |
-| --------------------- | --------- | ----------------------------------------------------------- |
-| `bearer`              | Available | Static token from config or `--auth-token` (env-expandable) |
-| `oauth`               | Available | MCP-spec OAuth 2.1 with discovery (RFC 9728/8414), PKCE (RFC 7636), and Dynamic Client Registration (RFC 7591) |
-| `interactive-browser` | Available | Microsoft Entra ID via MSAL/`Azure.Identity` with OS-protected token cache (DPAPI / libsecret / Keychain). For Microsoft 365 and Agent365. |
+| Kind                  | How tokens are sourced                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------- |
+| `bearer`              | Static token from the profile, or `--auth-token` (env-expandable).                                      |
+| `oauth`               | MCP-spec OAuth 2.1 with discovery (RFC 9728/8414), PKCE (RFC 7636), and Dynamic Client Registration.    |
+| `interactive-browser` | Microsoft Entra ID via MSAL/`Azure.Identity` with OS-protected token cache. For Microsoft 365/Agent365. |
 
-Stdio (process) targets do not accept authentication; an `auth` block on a stdio
-server raises an error unless `--no-auth` is supplied.
+Stdio (process) targets never carry authentication.
 
-### Environment-variable expansion
+### Profile files
 
-All string values in config files (and the value of `--auth-token`) accept these
-forms:
-
-| Form               | Meaning                                                                 |
-| ------------------ | ----------------------------------------------------------------------- |
-| `env:VAR`          | Whole-string only. Errors when `VAR` is unset.                          |
-| `${VAR}`           | Substring. Errors when `VAR` is unset (empty string is preserved).      |
-| `${VAR:-default}`  | Substring with default. Uses `default` when `VAR` is unset **or** empty (bash `:-` semantics). |
-| `$$`               | Literal `$`.                                                            |
-
-Errors include the JSON path (e.g. `servers.remote.auth.token`) or the CLI flag
-name.
-
-### Bearer auth via config
+Profile files contain ONLY `authProfiles` &mdash; no URLs, no server names. The
+URL is always passed positionally on the command line.
 
 ```json
 {
-  "mcpServers": {
-    "remote": {
-      "url": "https://example.com/mcp",
-      "transport": "streamable-http",
+  "authProfiles": [
+    {
+      "name": "agent365",
       "auth": {
-        "type": "bearer",
-        "token": "${REMOTE_TOKEN}"
+        "type": "interactive-browser",
+        "clientId": "env:VSCODE_CLIENT_ID",
+        "tenantId": "env:CORP_TENANT_ID",
+        "scopes": ["${VSCODE_AUDIENCE}/.default"]
       }
+    },
+    {
+      "name": "github",
+      "auth": { "type": "bearer", "token": "env:GITHUB_TOKEN" }
     }
-  }
+  ]
 }
 ```
 
-Setting both an `auth` block and a literal `Authorization` header on the same
-server is a hard error.
+### Auto-discovery (XDG paths)
 
-### Bearer auth via CLI
+McpLense auto-loads profile files from your config home:
+
+| Source                                                                | Loaded? |
+| --------------------------------------------------------------------- | ------- |
+| `$XDG_CONFIG_HOME/McpLense/McpLense.Profiles.json`                    | yes     |
+| `$XDG_CONFIG_HOME/McpLense/profiles/*.json` (alphabetised)            | yes     |
+| Windows fallback when `XDG_CONFIG_HOME` unset: `%APPDATA%\McpLense\…` | yes     |
+| Unix fallback when `XDG_CONFIG_HOME` unset: `~/.config/McpLense/…`    | yes     |
+
+Profiles from all loaded files are merged. Duplicate names across files raise
+an error showing both source paths.
+
+Use `--profiles <path>` to load a specific file (overrides auto-discovery is
+NOT performed when `--profiles` is given). Use `--profile <name>` to force a
+specific loaded profile.
+
+### Profile auto-pick
+
+When you run `mcplense inspect <url>` (no `--profile`), McpLense:
+
+1. Probes the URL for an RFC 9728 `WWW-Authenticate` header. If absent, connects
+   plain (the server doesn't appear to need auth).
+2. Filters loaded profiles by advertised scopes (when the probe surfaced any).
+3. Picks the unique profile that already has a cached account.
+4. If multiple cached candidates remain &rarr; errors and asks for `--profile`.
+5. If exactly one candidate remains (cached or not) &rarr; uses it. The runtime
+   triggers interactive auth on first request.
+
+### Ad-hoc Bearer (no profile required)
+
+For one-off Bearer connections, the CLI shortcut still works:
 
 ```bash
-# Token straight from an env var
-mcplense inspect --url https://example.com/mcp \
-  --auth bearer --auth-token env:REMOTE_TOKEN
-
-# Inline (not recommended for shared shells)
-mcplense inspect --url https://example.com/mcp \
-  --auth bearer --auth-token "eyJhbGciOi..."
+mcplense inspect https://example.com/mcp --auth bearer --auth-token env:REMOTE_TOKEN
 ```
 
-### Precedence and overrides
+OAuth and `interactive-browser` are profile-only on the CLI. To use them
+ad-hoc, drop a small profile file in your config home (or pass `--profiles
+./my-profile.json`) and refer to it via `--profile <name>`.
 
-- `--auth <type>` **replaces** the config `auth` block entirely; you must
-  re-supply `--auth-token` (and any future kind-specific flags).
-- Without `--auth`, individual flags such as `--auth-token` overlay the matching
-  field in the config block. They error out if no `auth` block exists for that
-  server.
-- `--no-auth` suppresses authentication on every server in the run, both HTTP
-  and stdio. Other auth flags are accepted but ignored.
-- With `--config`, auth flags apply to **every** HTTP server in the file. Stdio
-  servers are skipped (they would otherwise error).
+### Environment-variable expansion
+
+Every string value in profile files, `--config` files, and the auth-related CLI
+flags accepts these forms:
+
+| Form               | Meaning                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------ |
+| `env:VAR`          | Whole-string only. Errors when `VAR` is unset.                                                   |
+| `${VAR}`           | Substring. Errors when `VAR` is unset (empty string is preserved).                               |
+| `${VAR:-default}`  | Substring with default. Uses `default` when `VAR` is unset **or** empty (bash `:-` semantics).   |
+| `$$`               | Literal `$`.                                                                                     |
+
+Errors include the JSON path (e.g. `authProfiles[agent365].auth.clientId`) or
+the CLI flag name.
+
+### CLI flags (auth surface)
+
+| Flag                   | Purpose                                                                |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `--profiles <path>`    | Load profile entries from a specific file (overrides XDG defaults).    |
+| `--profile <name>`     | Force a specific loaded profile by name. Env-expandable.               |
+| `--try-all`            | Walk every loaded profile sequentially. Currently `--login`-only.      |
+| `--auth bearer`        | Send a static `Authorization: Bearer <token>` header.                  |
+| `--auth-token <value>` | Bearer token paired with `--auth bearer`. Env-expandable.              |
+| `--no-auth`            | Suppress all authentication.                                           |
+| `--login`              | Run the auth flow once for the resolved profile, cache, and exit.      |
+| `--logout`             | Clear cached tokens for the resolved profile and exit.                 |
+
+`--login` and `--logout` reuse the same target/profile resolution as the
+underlying command. They will move to top-level `mcplense login` / `mcplense
+logout` commands in a future release.
 
 ### Microsoft 365 / Entra ID (interactive browser)
 
@@ -275,52 +297,32 @@ which means:
 - **OS-protected token cache**. Tokens are stored under
   `%LOCALAPPDATA%\.IdentityService\<cacheName>` on Windows (DPAPI), the
   freedesktop secret service on Linux (with a `chmod 600` plain-file fallback),
-  or Keychain on macOS.
-- **Cache-sharing with mcp-proxy**. Set `cacheName: "mcp-proxy"` to share the
-  MSAL cache with the [mcp-proxy](https://github.com/anomalyco/mcp-proxy) tool
-  so sign-ins flow across both.
-- **Correct loopback redirect.** Entra's loopback exception requires
-  `http://localhost` (any port); `127.0.0.1` is rejected. MSAL picks a free
-  localhost port automatically. Set `redirectUri` only when you registered a
-  specific port in your own Entra app.
-
-```json
-{
-  "servers": [
-    {
-      "name": "agent365-mailtools",
-      "url": "https://agent365.svc.cloud.microsoft/.../servers/mcp_MailTools",
-      "transport": "streamable-http",
-      "auth": {
-        "type": "interactive-browser",
-        "clientId": "env:VSCODE_CLIENT_ID",
-        "tenantId": "env:CORP_TENANT_ID",
-        "scopes": ["${VSCODE_AUDIENCE}/.default"],
-        "cacheName": "mcplense"
-      }
-    }
-  ]
-}
-```
+  or Keychain on macOS. `cacheName` defaults to the profile's `name`.
+- **Cache-sharing with mcp-proxy**. Set `cacheName: "mcp-proxy"` on the
+  profile to share the MSAL cache with the
+  [mcp-proxy](https://github.com/anomalyco/mcp-proxy) tool.
+- **Correct loopback redirect.** MSAL handles Entra's `http://localhost`-only
+  loopback exception transparently.
 
 `scopes` follows the Entra `<application-id-uri>/.default` convention: it asks
 Entra to issue an access token carrying every statically-consented permission
-for the target resource. `tenantId` is optional &mdash; omit it (or set it to
-`common`) to accept any work/school/personal account.
+for the target resource. `tenantId` is optional &mdash; omit it to default to
+`common`, which accepts any work/school/personal account.
 
-CLI overrides for ad-hoc connections without a config file:
+A worked example lives in [`samples/agent365.json`](samples/agent365.json):
 
 ```bash
-mcplense inspect `
-  --url https://agent365.svc.cloud.microsoft/.../servers/mcp_MailTools `
-  --auth interactive-browser `
-  --client-id env:VSCODE_CLIENT_ID `
-  --tenant-id env:CORP_TENANT_ID `
-  --scope '${VSCODE_AUDIENCE}/.default' `
-  --login
-```
+$env:VSCODE_CLIENT_ID = 'aebc6443-996d-45c2-90f0-388ff96faa56'
+$env:CORP_TENANT_ID   = '<your-tenant-guid-or-common>'
+$env:VSCODE_AUDIENCE  = '<agent365-application-id-uri>'
 
-A full worked example lives in [`samples/agent365.json`](samples/agent365.json).
+mcplense inspect https://agent365.svc.cloud.microsoft/.../mcp_MailTools `
+  --profiles samples/agent365.json --profile agent365 --login
+
+# Subsequent commands re-use the cached token automatically:
+mcplense tools https://agent365.svc.cloud.microsoft/.../mcp_MailTools `
+  --profiles samples/agent365.json
+```
 
 ### Azure AD via out-of-band tokens (legacy)
 
@@ -332,7 +334,7 @@ works:
 $env:AAD_TOKEN = (az account get-access-token --resource api://my-mcp-app `
   --query accessToken -o tsv)
 
-mcplense inspect --url https://my-mcp-app.example.com/mcp `
+mcplense inspect https://my-mcp-app.example.com/mcp `
   --auth bearer --auth-token env:AAD_TOKEN
 ```
 
@@ -341,20 +343,19 @@ mcplense inspect --url https://my-mcp-app.example.com/mcp `
 For MCP servers that publish [Protected Resource Metadata
 (RFC 9728)](https://www.rfc-editor.org/rfc/rfc9728), `mcplense` performs the
 full OAuth 2.1 + PKCE + Dynamic Client Registration dance for you. Zero MSAL,
-zero Azure SDK — only the BCL.
+zero Azure SDK &mdash; only the BCL. Define an `oauth` profile:
 
 ```json
 {
-  "mcpServers": {
-    "remote": {
-      "url": "https://api.example.com/mcp",
-      "transport": "streamable-http",
+  "authProfiles": [
+    {
+      "name": "self-hosted-mcp",
       "auth": {
         "type": "oauth",
         "scopes": ["mcp.read", "mcp.write"]
       }
     }
-  }
+  ]
 }
 ```
 
@@ -362,9 +363,9 @@ For servers that don't publish PRM, you can wire endpoints in by hand:
 
 ```json
 {
-  "mcpServers": {
-    "manual": {
-      "url": "https://api.example.com/mcp",
+  "authProfiles": [
+    {
+      "name": "manual-oauth",
       "auth": {
         "type": "oauth",
         "scopes": ["mcp.read"],
@@ -374,7 +375,7 @@ For servers that don't publish PRM, you can wire endpoints in by hand:
         "clientId": "env:OAUTH_CLIENT_ID"
       }
     }
-  }
+  ]
 }
 ```
 
@@ -384,51 +385,20 @@ Once `mcplense` knows the issuer (from PRM or `auth.issuer`), it locates the
 authorization and token endpoints by trying three well-known URLs in order:
 
 1. **RFC 8414 strict path-insert** &mdash; `{issuer_origin}/.well-known/oauth-authorization-server{issuer_path}`.
-2. **RFC 8414 path-append variant** &mdash; `{issuer}/.well-known/oauth-authorization-server` (used by some
-   identity providers that did append-style instead of insert).
+2. **RFC 8414 path-append variant** &mdash; `{issuer}/.well-known/oauth-authorization-server`.
 3. **OIDC Discovery 1.0** &mdash; `{issuer}/.well-known/openid-configuration`. Per RFC 8414 §5,
    OIDC documents are a superset of ASM for the fields `mcplense` consumes; this fallback covers
    OIDC-only authorization servers, notably **Microsoft Entra ID v2.0**.
 
 A 404 (or any other non-2xx) on a given form falls through to the next form. A 2xx response with
 malformed JSON or missing `authorization_endpoint`/`token_endpoint` stops the ladder and surfaces
-the failure &mdash; the server clearly meant to respond at that URL. If all three forms exhaust, the
-error message lists every URL attempted with its status to ease diagnosis.
-
-> **Worked Microsoft Entra ID example:** see [`samples/agent365.json`](samples/agent365.json)
-> for a full Microsoft 365 config that connects to Microsoft Agent365 via the
-> MSAL-backed `interactive-browser` auth kind. Prefer that approach over the
-> bare `oauth` kind for any Microsoft 365 / Entra ID target &mdash; Entra does not
-> implement RFC 7591 Dynamic Client Registration and its loopback exception only
-> covers `http://localhost`, both of which `interactive-browser` handles
-> transparently via MSAL.
-
-#### CLI flags
-
-| Flag                   | Purpose                                                                |
-| ---------------------- | ---------------------------------------------------------------------- |
-| `--scope <s>`          | OAuth scope to request (repeatable). Env-expandable.                   |
-| `--redirect-uri <uri>` | Override loopback redirect URI (defaults to a free port on `127.0.0.1`).|
-| `--token-cache-name`   | Override token cache key. Defaults to a stable hash of the resource URI.|
-| `--client-id <id>`     | Pre-registered public-client GUID. Required for `interactive-browser`. |
-| `--tenant-id <id>`     | Entra tenant id (GUID, domain, `common`, `organizations`, `consumers`). Only used by `interactive-browser`. |
-| `--login`              | Run the OAuth flow once, cache the token, then exit.                   |
-| `--logout`             | Delete cached OAuth tokens for the resolved server(s) and exit.        |
-
-`--login` and `--logout` reuse the same target resolution as the actual command
-they're attached to, so you can put any command in front:
-
-```bash
-# Warm the cache before running headless commands.
-mcplense inspect --url https://api.example.com/mcp --auth oauth --scope mcp.read --login
-
-# Sign out.
-mcplense inspect --url https://api.example.com/mcp --auth oauth --scope mcp.read --logout
-```
+the failure. For Microsoft Entra ID and other Microsoft-first-party services, prefer the
+`interactive-browser` auth kind &mdash; it bypasses RFC 7591 (which Entra doesn't implement) and
+handles the loopback exception correctly out of the box.
 
 #### Token cache
 
-Tokens (and any DCR-issued client credentials) are cached per-resource so
+OAuth tokens (and any DCR-issued client credentials) are cached per-resource so
 subsequent runs reuse them without re-prompting:
 
 | OS         | Location                                                          | Encryption                         |
@@ -436,6 +406,10 @@ subsequent runs reuse them without re-prompting:
 | Windows    | `%LOCALAPPDATA%\McpLense\tokens\<name>.bin`                       | DPAPI (`CurrentUser`)              |
 | Linux      | `${XDG_DATA_HOME:-~/.local/share}/mcplense/tokens/<name>.json`    | Plain JSON, `chmod 600`            |
 | macOS      | `~/Library/Application Support/McpLense/tokens/<name>.json`       | Plain JSON, `chmod 600`            |
+
+`interactive-browser` profiles use the MSAL cache (named after the profile by
+default) instead, stored under `%LOCALAPPDATA%\.IdentityService\<cacheName>` on
+Windows and equivalent OS-protected stores on Linux/macOS.
 
 #### Headless / CI environments
 
@@ -450,7 +424,7 @@ runners.
 
 ## Examples
 
-Inspect all servers in a config:
+Inspect all servers in a (stdio) config:
 
 ```bash
 mcplense inspect --config mcp.json
@@ -468,10 +442,10 @@ Inspect one server from a config:
 mcplense inspect --config mcp.json --server everything
 ```
 
-List tools as JSON:
+List tools as JSON for a remote HTTP MCP:
 
 ```bash
-mcplense tools --config mcp.json --server everything --format json
+mcplense tools https://mcp.context7.com/mcp --format json
 ```
 
 List tools as Dumpify text:
@@ -498,10 +472,10 @@ Read a resource template:
 mcplense read docs://articles/{id} --config mcp.json --server docs --args '{"id":"getting-started"}'
 ```
 
-Resolve a prompt:
+Resolve a prompt against a remote HTTP MCP:
 
 ```bash
-mcplense prompt code_review --url https://localhost:3000/mcp --args '{"language":"csharp","code":"Console.WriteLine(1);"}'
+mcplense prompt code_review https://localhost:3000/mcp --args '{"language":"csharp","code":"Console.WriteLine(1);"}'
 ```
 
 Use Dumpify output:

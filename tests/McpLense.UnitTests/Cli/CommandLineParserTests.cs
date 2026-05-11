@@ -190,6 +190,143 @@ public class CommandLineParserTests
         ])).Message.ShouldContain("exactly one target");
     }
 
+    // -------- Positional URL (Phase A) -------------------------------------------
+
+    [Fact]
+    public void Parse_PositionalUrl_OnInspect_PopulatesTarget()
+    {
+        var parsed = CommandLineParser.Parse(["inspect", "https://example.com/mcp"]);
+
+        parsed.Target.Url.ShouldNotBeNull();
+        parsed.Target.Url!.ToString().ShouldStartWith("https://example.com/mcp");
+        parsed.Target.ConfigPath.ShouldBeNull();
+    }
+
+    [Fact]
+    public void Parse_PositionalUrl_OnTools_PopulatesTarget()
+    {
+        var parsed = CommandLineParser.Parse(["tools", "https://example.com/mcp"]);
+
+        parsed.Command.ShouldBe(AppCommand.Tools);
+        parsed.Target.Url.ShouldNotBeNull();
+    }
+
+    [Fact]
+    public void Parse_PositionalUrl_AndCallSubject_BothAccepted()
+    {
+        var parsed = CommandLineParser.Parse(["call", "echo", "https://example.com/mcp"]);
+
+        parsed.Subject.ShouldBe("echo");
+        parsed.Target.Url!.ToString().ShouldStartWith("https://example.com/mcp");
+    }
+
+    [Fact]
+    public void Parse_PositionalUrl_AndExplicitUrl_Throws()
+    {
+        Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "inspect", "https://example.com/mcp", "--url", "https://other.example.com/mcp"
+        ])).Message.ShouldContain("Specify the URL positionally OR via --url");
+    }
+
+    [Fact]
+    public void Parse_NonUrlPositional_OnInspect_Throws()
+    {
+        Should.Throw<UserInputException>(() => CommandLineParser.Parse(["inspect", "extra"]))
+            .Message.ShouldContain("at most a single positional URL");
+    }
+
+    // -------- Profile flags (Phase A) --------------------------------------------
+
+    [Fact]
+    public void Parse_ProfilesFlag_PopulatesProfilePaths()
+    {
+        var parsed = CommandLineParser.Parse([
+            "inspect", "https://example.com/mcp", "--profiles", "/tmp/profiles.json"
+        ]);
+
+        parsed.Target.ProfilePaths.ShouldBe(new[] { "/tmp/profiles.json" });
+    }
+
+    [Fact]
+    public void Parse_ProfilesFlag_Repeatable()
+    {
+        var parsed = CommandLineParser.Parse([
+            "inspect", "https://example.com/mcp",
+            "--profiles", "a.json", "--profiles", "b.json"
+        ]);
+
+        parsed.Target.ProfilePaths.ShouldBe(new[] { "a.json", "b.json" });
+    }
+
+    [Fact]
+    public void Parse_ProfileFlag_PopulatesProfile()
+    {
+        var parsed = CommandLineParser.Parse([
+            "inspect", "https://example.com/mcp", "--profile", "agent365"
+        ]);
+
+        parsed.Target.AuthOverrides.Profile.ShouldBe("agent365");
+    }
+
+    [Fact]
+    public void Parse_ProfileFlag_EnvExpanded()
+    {
+        const string varName = "MCPLENSE_TEST_PROFILE_NAME";
+        Environment.SetEnvironmentVariable(varName, "from-env");
+        try
+        {
+            var parsed = CommandLineParser.Parse([
+                "inspect", "https://example.com/mcp", "--profile", $"env:{varName}"
+            ]);
+
+            parsed.Target.AuthOverrides.Profile.ShouldBe("from-env");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(varName, null);
+        }
+    }
+
+    [Fact]
+    public void Parse_ProfileFlag_EnvExpandsToEmpty_Throws()
+    {
+        const string varName = "MCPLENSE_TEST_PROFILE_EMPTY";
+        Environment.SetEnvironmentVariable(varName, string.Empty);
+        try
+        {
+            var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+                "inspect", "https://example.com/mcp", "--profile", $"env:{varName}"
+            ]));
+
+            ex.Message.ShouldContain("--profile");
+            ex.Message.ShouldContain("empty value");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(varName, null);
+        }
+    }
+
+    [Fact]
+    public void Parse_TryAll_IsBoolean_NoValueRequired()
+    {
+        var parsed = CommandLineParser.Parse([
+            "inspect", "https://example.com/mcp", "--try-all"
+        ]);
+
+        parsed.Target.AuthOverrides.TryAll.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Parse_TryAllAndProfile_Together_Throws()
+    {
+        Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "inspect", "https://example.com/mcp", "--try-all", "--profile", "x"
+        ])).Message.ShouldContain("--try-all and --profile cannot be combined");
+    }
+
+    // -------- Output format / timeout / args / progress -------------------------
+
     [Theory]
     [InlineData("text", nameof(OutputFormat.Text))]
     [InlineData("json", nameof(OutputFormat.Json))]
@@ -257,14 +394,6 @@ public class CommandLineParserTests
         Should.Throw<UserInputException>(() => CommandLineParser.Parse([
             "call", "--url", "https://example.com/mcp"
         ])).Message.ShouldContain("requires a name");
-    }
-
-    [Fact]
-    public void Parse_InspectRejectsPositionals()
-    {
-        Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "inspect", "extra", "--url", "https://example.com/mcp"
-        ])).Message.ShouldContain("does not accept positional");
     }
 
     [Fact]
@@ -468,6 +597,8 @@ public class CommandLineParserTests
         parsed.Target.ServerNames.ShouldBe(new[] { "a", "b" });
     }
 
+    // -------- Auth overrides (Phase A surface: bearer + no-auth + login/logout) ---
+
     [Fact]
     public void Parse_NoAuthFlags_DefaultsToEmptyOverrides()
     {
@@ -548,28 +679,36 @@ public class CommandLineParserTests
     }
 
     [Fact]
+    public void Parse_AuthOAuth_NoLongerAccepted()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp", "--auth", "oauth"
+        ]));
+
+        ex.Message.ShouldContain("oauth");
+        ex.Message.ShouldContain("--profile");
+    }
+
+    [Fact]
+    public void Parse_AuthInteractiveBrowser_NoLongerAccepted()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "inspect", "--url", "https://example.com/mcp", "--auth", "interactive-browser"
+        ]));
+
+        ex.Message.ShouldContain("interactive-browser");
+        ex.Message.ShouldContain("--profile");
+    }
+
+    [Fact]
     public void Parse_AuthUnknownKind_Throws()
     {
         var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "magic"
+            "inspect", "--url", "https://example.com/mcp", "--auth", "magic"
         ]));
 
         ex.Message.ShouldContain("Unknown --auth value");
         ex.Message.ShouldContain("magic");
-    }
-
-    [Theory]
-    [InlineData("oauth")]
-    [InlineData("OAuthDiscovery")]
-    public void Parse_AuthOAuth_AcceptedAtParseTime(string value)
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", value
-        ]);
-
-        parsed.Target.AuthOverrides.Kind.ShouldBe(AuthKind.OAuth);
     }
 
     [Fact]
@@ -635,199 +774,26 @@ public class CommandLineParserTests
         parsed.Target.AuthOverrides.NoAuth.ShouldBeTrue();
     }
 
-    // -------- OAuth-specific overrides (Slice B) ----------------------------------
-
     [Fact]
-    public void Parse_Scope_Single_PopulatesScopes()
+    public void Parse_ConfigWithProfileFlags_IsAllowed()
     {
         var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--scope", "mcp.read"
+            "inspect", "--config", "mcp.json",
+            "--profiles", "p.json", "--profile", "agent365"
         ]);
 
-        parsed.Target.AuthOverrides.Scopes.ShouldNotBeNull();
-        parsed.Target.AuthOverrides.Scopes!.ShouldBe(new[] { "mcp.read" });
+        parsed.Target.ConfigPath.ShouldBe("mcp.json");
+        parsed.Target.ProfilePaths.ShouldBe(new[] { "p.json" });
+        parsed.Target.AuthOverrides.Profile.ShouldBe("agent365");
     }
 
-    [Fact]
-    public void Parse_Scope_Repeated_CollectsAllValuesInOrder()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth",
-            "--scope", "mcp.read",
-            "--scope", "mcp.write",
-            "--scope", "offline_access"
-        ]);
-
-        parsed.Target.AuthOverrides.Scopes!.ShouldBe(new[] { "mcp.read", "mcp.write", "offline_access" });
-    }
-
-    [Fact]
-    public void Parse_Scope_EnvPrefix_IsExpandedAtParseTime()
-    {
-        const string varName = "MCPLENSE_TEST_SCOPE";
-        Environment.SetEnvironmentVariable(varName, "mcp.admin");
-        try
-        {
-            var parsed = CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "oauth", "--scope", $"env:{varName}"
-            ]);
-
-            parsed.Target.AuthOverrides.Scopes!.Single().ShouldBe("mcp.admin");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_Scope_EnvUnset_Throws()
-    {
-        const string varName = "MCPLENSE_TEST_SCOPE_UNSET_XYZ";
-        Environment.SetEnvironmentVariable(varName, null);
-
-        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--scope", $"env:{varName}"
-        ]));
-
-        ex.Message.ShouldContain("--scope");
-        ex.Message.ShouldContain(varName);
-    }
-
-    [Fact]
-    public void Parse_Scope_EnvExpandsToEmpty_Throws()
-    {
-        const string varName = "MCPLENSE_TEST_SCOPE_EMPTY";
-        Environment.SetEnvironmentVariable(varName, string.Empty);
-        try
-        {
-            var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "oauth", "--scope", $"env:{varName}"
-            ]));
-
-            ex.Message.ShouldContain("empty value");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_RedirectUri_Literal_PopulatesOverride()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--redirect-uri", "http://127.0.0.1:5050/callback"
-        ]);
-
-        parsed.Target.AuthOverrides.RedirectUri.ShouldBe("http://127.0.0.1:5050/callback");
-    }
-
-    [Fact]
-    public void Parse_RedirectUri_EnvPrefix_IsExpanded()
-    {
-        const string varName = "MCPLENSE_TEST_REDIRECT";
-        Environment.SetEnvironmentVariable(varName, "http://127.0.0.1:6060/cb");
-        try
-        {
-            var parsed = CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "oauth", "--redirect-uri", $"env:{varName}"
-            ]);
-
-            parsed.Target.AuthOverrides.RedirectUri.ShouldBe("http://127.0.0.1:6060/cb");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_RedirectUri_ExpandsToEmpty_Throws()
-    {
-        const string varName = "MCPLENSE_TEST_REDIRECT_EMPTY";
-        Environment.SetEnvironmentVariable(varName, string.Empty);
-        try
-        {
-            var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "oauth", "--redirect-uri", $"env:{varName}"
-            ]));
-
-            ex.Message.ShouldContain("--redirect-uri");
-            ex.Message.ShouldContain("empty value");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_TokenCacheName_Literal_PopulatesOverride()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--token-cache-name", "my-server"
-        ]);
-
-        parsed.Target.AuthOverrides.CacheName.ShouldBe("my-server");
-    }
-
-    [Fact]
-    public void Parse_TokenCacheName_EnvPrefix_IsExpanded()
-    {
-        const string varName = "MCPLENSE_TEST_CACHE_NAME";
-        Environment.SetEnvironmentVariable(varName, "alias-cache");
-        try
-        {
-            var parsed = CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "oauth", "--token-cache-name", $"env:{varName}"
-            ]);
-
-            parsed.Target.AuthOverrides.CacheName.ShouldBe("alias-cache");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_TokenCacheName_ExpandsToEmpty_Throws()
-    {
-        const string varName = "MCPLENSE_TEST_CACHE_NAME_EMPTY";
-        Environment.SetEnvironmentVariable(varName, string.Empty);
-        try
-        {
-            var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "oauth", "--token-cache-name", $"env:{varName}"
-            ]));
-
-            ex.Message.ShouldContain("--token-cache-name");
-            ex.Message.ShouldContain("empty value");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
+    // -------- --login / --logout (Phase A; removed in Phase C) -------------------
 
     [Fact]
     public void Parse_Login_IsBoolean_NoValueRequired()
     {
         var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--login"
+            "inspect", "--url", "https://example.com/mcp", "--login"
         ]);
 
         parsed.Target.AuthOverrides.LoginOnly.ShouldBeTrue();
@@ -835,23 +801,10 @@ public class CommandLineParserTests
     }
 
     [Fact]
-    public void Parse_Login_DoesNotConsumeNextArg()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--login", "--scope", "mcp.read"
-        ]);
-
-        parsed.Target.AuthOverrides.LoginOnly.ShouldBeTrue();
-        parsed.Target.AuthOverrides.Scopes!.ShouldBe(new[] { "mcp.read" });
-    }
-
-    [Fact]
     public void Parse_Logout_IsBoolean_NoValueRequired()
     {
         var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--logout"
+            "inspect", "--url", "https://example.com/mcp", "--logout"
         ]);
 
         parsed.Target.AuthOverrides.LogoutOnly.ShouldBeTrue();
@@ -862,8 +815,7 @@ public class CommandLineParserTests
     public void Parse_LoginAndLogoutTogether_Throws()
     {
         var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--login", "--logout"
+            "inspect", "--url", "https://example.com/mcp", "--login", "--logout"
         ]));
 
         ex.Message.ShouldContain("--login");
@@ -883,25 +835,10 @@ public class CommandLineParserTests
     }
 
     [Fact]
-    public void Parse_NoAuthWithLogout_Throws()
-    {
-        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--no-auth", "--logout"
-        ]));
-
-        ex.Message.ShouldContain("--no-auth");
-        ex.Message.ShouldContain("--logout");
-    }
-
-    [Fact]
     public void Parse_TuiWithLogin_Throws()
     {
-        // TuiApp casts McpExecutor's payload to InspectReport. --login short-circuits to an
-        // AuthSessionReport, which would trip an internal exception. Reject up front.
         var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "tui", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--login"
+            "tui", "--url", "https://example.com/mcp", "--login"
         ]));
 
         ex.Message.ShouldContain("--login");
@@ -913,283 +850,11 @@ public class CommandLineParserTests
     public void Parse_TuiWithLogout_Throws()
     {
         var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "tui", "--url", "https://example.com/mcp",
-            "--auth", "oauth", "--logout"
+            "tui", "--url", "https://example.com/mcp", "--logout"
         ]));
 
         ex.Message.ShouldContain("--logout");
         ex.Message.ShouldContain("tui");
         ex.Message.ShouldContain("inspect");
-    }
-
-    [Fact]
-    public void Parse_ConfigWithOAuthFlags_IsAllowed()
-    {
-        // The full set of OAuth-related overrides should be permitted alongside --config.
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--config", "mcp.json",
-            "--auth", "oauth",
-            "--scope", "mcp.read",
-            "--redirect-uri", "http://127.0.0.1:5050/callback",
-            "--token-cache-name", "my-cache"
-        ]);
-
-        var overrides = parsed.Target.AuthOverrides;
-        parsed.Target.ConfigPath.ShouldBe("mcp.json");
-        overrides.Kind.ShouldBe(AuthKind.OAuth);
-        overrides.Scopes!.ShouldBe(new[] { "mcp.read" });
-        overrides.RedirectUri.ShouldBe("http://127.0.0.1:5050/callback");
-        overrides.CacheName.ShouldBe("my-cache");
-    }
-
-    [Fact]
-    public void Parse_ConfigWithLoginFlag_IsAllowed()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--config", "mcp.json", "--login"
-        ]);
-
-        parsed.Target.ConfigPath.ShouldBe("mcp.json");
-        parsed.Target.AuthOverrides.LoginOnly.ShouldBeTrue();
-    }
-
-    [Fact]
-    public void Parse_ConfigWithLogoutFlag_IsAllowed()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--config", "mcp.json", "--logout"
-        ]);
-
-        parsed.Target.ConfigPath.ShouldBe("mcp.json");
-        parsed.Target.AuthOverrides.LogoutOnly.ShouldBeTrue();
-    }
-
-    [Fact]
-    public void Parse_LoginWithoutAuthFlag_StillSetsLoginOnly()
-    {
-        // --login should be parseable on its own; the per-server auth resolution decides whether
-        // OAuth is actually configured, surfacing the error at runtime if not.
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp", "--login"
-        ]);
-
-        parsed.Target.AuthOverrides.LoginOnly.ShouldBeTrue();
-        parsed.Target.AuthOverrides.Kind.ShouldBeNull();
-    }
-
-    [Fact]
-    public void Parse_ScopeSpecifiedTwiceWithEqualsForm_BothCollected()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "oauth",
-            "--scope=mcp.read",
-            "--scope=mcp.write"
-        ]);
-
-        parsed.Target.AuthOverrides.Scopes!.ShouldBe(new[] { "mcp.read", "mcp.write" });
-    }
-
-    // -------- InteractiveBrowser (M365 / Entra ID) --------------------------------
-
-    [Theory]
-    [InlineData("interactive-browser")]
-    [InlineData("interactivebrowser")]
-    [InlineData("INTERACTIVE-BROWSER")]
-    public void Parse_AuthInteractiveBrowser_RecognisesAlias(string value)
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", value,
-            "--client-id", "abc",
-            "--scope", "api://x/.default"
-        ]);
-
-        parsed.Target.AuthOverrides.Kind.ShouldBe(AuthKind.InteractiveBrowser);
-    }
-
-    [Fact]
-    public void Parse_AuthErrorMessageMentionsInteractiveBrowser()
-    {
-        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "magic"
-        ]));
-
-        ex.Message.ShouldContain("interactive-browser");
-    }
-
-    [Fact]
-    public void Parse_ClientId_Literal_PopulatesOverride()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "interactive-browser",
-            "--client-id", "aebc6443-996d-45c2-90f0-388ff96faa56",
-            "--scope", "api://x/.default"
-        ]);
-
-        parsed.Target.AuthOverrides.ClientId.ShouldBe("aebc6443-996d-45c2-90f0-388ff96faa56");
-    }
-
-    [Fact]
-    public void Parse_ClientId_EnvPrefix_IsExpanded()
-    {
-        const string varName = "MCPLENSE_TEST_CLIENT_ID";
-        Environment.SetEnvironmentVariable(varName, "expanded-client-id");
-        try
-        {
-            var parsed = CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "interactive-browser",
-                "--client-id", $"env:{varName}",
-                "--scope", "api://x/.default"
-            ]);
-
-            parsed.Target.AuthOverrides.ClientId.ShouldBe("expanded-client-id");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_ClientId_ExpandsToEmpty_Throws()
-    {
-        const string varName = "MCPLENSE_TEST_CLIENT_ID_EMPTY";
-        Environment.SetEnvironmentVariable(varName, string.Empty);
-        try
-        {
-            var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "interactive-browser",
-                "--client-id", $"env:{varName}",
-                "--scope", "api://x/.default"
-            ]));
-
-            ex.Message.ShouldContain("--client-id");
-            ex.Message.ShouldContain("empty value");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_TenantId_Literal_PopulatesOverride()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "interactive-browser",
-            "--client-id", "abc",
-            "--tenant-id", "common",
-            "--scope", "api://x/.default"
-        ]);
-
-        parsed.Target.AuthOverrides.TenantId.ShouldBe("common");
-    }
-
-    [Fact]
-    public void Parse_TenantId_EnvPrefix_IsExpanded()
-    {
-        const string varName = "MCPLENSE_TEST_TENANT_ID";
-        Environment.SetEnvironmentVariable(varName, "contoso.onmicrosoft.com");
-        try
-        {
-            var parsed = CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "interactive-browser",
-                "--client-id", "abc",
-                "--tenant-id", $"env:{varName}",
-                "--scope", "api://x/.default"
-            ]);
-
-            parsed.Target.AuthOverrides.TenantId.ShouldBe("contoso.onmicrosoft.com");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_TenantId_ExpandsToEmpty_Throws()
-    {
-        const string varName = "MCPLENSE_TEST_TENANT_ID_EMPTY";
-        Environment.SetEnvironmentVariable(varName, string.Empty);
-        try
-        {
-            var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
-                "inspect", "--url", "https://example.com/mcp",
-                "--auth", "interactive-browser",
-                "--client-id", "abc",
-                "--tenant-id", $"env:{varName}",
-                "--scope", "api://x/.default"
-            ]));
-
-            ex.Message.ShouldContain("--tenant-id");
-            ex.Message.ShouldContain("empty value");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(varName, null);
-        }
-    }
-
-    [Fact]
-    public void Parse_AuthInteractiveBrowserWithoutClientId_FailsAtMerge()
-    {
-        // Parser accepts the partial input; the missing clientId surfaces only when TargetResolver
-        // merges the overrides into a ResolvedAuth. This split keeps the parser purely syntactic.
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "interactive-browser",
-            "--scope", "api://x/.default"
-        ]);
-
-        parsed.Target.AuthOverrides.Kind.ShouldBe(AuthKind.InteractiveBrowser);
-        parsed.Target.AuthOverrides.ClientId.ShouldBeNull();
-    }
-
-    [Fact]
-    public void Parse_AllAuthFlagsTogether_IsAllowed()
-    {
-        // Spot-check that the full set of overrides survives parsing intact (kind, scopes,
-        // redirect-uri, token-cache-name, client-id, tenant-id, login).
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--url", "https://example.com/mcp",
-            "--auth", "interactive-browser",
-            "--client-id", "abc",
-            "--tenant-id", "common",
-            "--scope", "api://x/.default",
-            "--redirect-uri", "http://localhost",
-            "--token-cache-name", "mcp-proxy",
-            "--login"
-        ]);
-
-        var overrides = parsed.Target.AuthOverrides;
-        overrides.Kind.ShouldBe(AuthKind.InteractiveBrowser);
-        overrides.ClientId.ShouldBe("abc");
-        overrides.TenantId.ShouldBe("common");
-        overrides.Scopes!.ShouldBe(new[] { "api://x/.default" });
-        overrides.RedirectUri.ShouldBe("http://localhost");
-        overrides.CacheName.ShouldBe("mcp-proxy");
-        overrides.LoginOnly.ShouldBeTrue();
-    }
-
-    [Fact]
-    public void Parse_ConfigWithClientIdAndTenantId_IsAllowed()
-    {
-        var parsed = CommandLineParser.Parse([
-            "inspect", "--config", "mcp.json",
-            "--client-id", "abc",
-            "--tenant-id", "common"
-        ]);
-
-        parsed.Target.ConfigPath.ShouldBe("mcp.json");
-        parsed.Target.AuthOverrides.ClientId.ShouldBe("abc");
-        parsed.Target.AuthOverrides.TenantId.ShouldBe("common");
     }
 }

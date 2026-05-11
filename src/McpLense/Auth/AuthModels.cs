@@ -13,7 +13,7 @@ internal enum AuthKind
 
     /// <summary>
     /// MCP-spec OAuth 2.1 with discovery (RFC 9728 / RFC 8414), PKCE (RFC 7636),
-    /// and Dynamic Client Registration (RFC 7591). Implemented in Slice B.
+    /// and Dynamic Client Registration (RFC 7591).
     /// </summary>
     OAuth,
 
@@ -27,8 +27,8 @@ internal enum AuthKind
 }
 
 /// <summary>
-/// Auth configuration resolved from a config file and/or CLI overrides for a single server.
-/// All string-typed fields have already been environment-expanded.
+/// Auth configuration resolved from a profile file (or derived from CLI ad-hoc overrides for
+/// simple Bearer cases). All string-typed fields have already been environment-expanded.
 /// </summary>
 /// <param name="Kind">Auth scheme to use.</param>
 /// <param name="Token">Static bearer token (when <see cref="Kind"/> is <see cref="AuthKind.Bearer"/>).</param>
@@ -41,8 +41,8 @@ internal enum AuthKind
 /// </param>
 /// <param name="CacheName">
 /// Override token-cache key. When null for OAuth, a stable hash of the resource URI is used.
-/// For <see cref="AuthKind.InteractiveBrowser"/>, this is the MSAL cache file name (defaults to
-/// <c>"mcplense"</c>); set to <c>"mcp-proxy"</c> to share the cache with the mcp-proxy tool.
+/// For <see cref="AuthKind.InteractiveBrowser"/>, this is the MSAL cache file name. Profiles
+/// default this to the profile name so each profile gets its own cache.
 /// </param>
 /// <param name="ClientId">
 /// Pre-registered OAuth client id; bypasses Dynamic Client Registration when set.
@@ -84,38 +84,37 @@ internal sealed record ResolvedAuth(
     string? ResourceUri = null);
 
 /// <summary>
-/// CLI-provided overlay applied on top of (or in place of) the per-server <c>auth</c> block
-/// resolved from a config file. <see cref="NoAuth"/> trumps every other field.
+/// CLI-provided overlay describing how to handle authentication for the resolved target(s).
+/// In Phase A the per-field auth knobs (clientId/tenantId/scopes/redirectUri/cacheName) are gone:
+/// rich auth lives in named profiles, while the CLI exposes only profile selection plus the
+/// simple ad-hoc Bearer escape hatch.
 /// </summary>
-/// <param name="Kind">Auth scheme to use; replaces the config <c>auth</c> block when set.</param>
-/// <param name="Token">Bearer token override.</param>
-/// <param name="Scopes">OAuth scopes override.</param>
-/// <param name="RedirectUri">Loopback redirect URI override.</param>
-/// <param name="CacheName">Token-cache name override.</param>
-/// <param name="ClientId">
-/// Pre-registered client id override. Used by both <see cref="AuthKind.OAuth"/> and
-/// <see cref="AuthKind.InteractiveBrowser"/>.
+/// <param name="Kind">
+/// Auth scheme to apply ad-hoc (only <see cref="AuthKind.Bearer"/> is supported here; richer
+/// schemes must come from a profile).
 /// </param>
-/// <param name="TenantId">
-/// Entra tenant override. Only consumed by <see cref="AuthKind.InteractiveBrowser"/>.
+/// <param name="Token">Bearer token paired with <paramref name="Kind"/> = Bearer.</param>
+/// <param name="Profile">
+/// Profile name forced via <c>--profile</c>. When set, profile auto-selection is skipped and the
+/// resolver looks up this exact profile by name.
+/// </param>
+/// <param name="TryAll">
+/// When true, the resolver walks every loaded profile sequentially (prompting interactively as
+/// needed) instead of auto-picking. Mutually exclusive with <see cref="Profile"/>.
 /// </param>
 /// <param name="NoAuth">Suppress all authentication (HTTP and stdio).</param>
 /// <param name="LoginOnly">
-/// When true, the CLI runs the OAuth flow once and writes the resulting token to the cache,
-/// then exits 0 without dispatching the underlying command.
+/// Run the auth flow once for the resolved profile, prime the cache, then exit 0 without
+/// dispatching the underlying command.
 /// </param>
 /// <param name="LogoutOnly">
-/// When true, the CLI clears the cached OAuth tokens for the resolved server(s)
-/// then exits 0 without dispatching the underlying command.
+/// Clear the cached account(s) for the resolved profile, then exit 0 without dispatching.
 /// </param>
 internal sealed record AuthOverrides(
     AuthKind? Kind = null,
     string? Token = null,
-    IReadOnlyList<string>? Scopes = null,
-    string? RedirectUri = null,
-    string? CacheName = null,
-    string? ClientId = null,
-    string? TenantId = null,
+    string? Profile = null,
+    bool TryAll = false,
     bool NoAuth = false,
     bool LoginOnly = false,
     bool LogoutOnly = false)
@@ -127,13 +126,10 @@ internal sealed record AuthOverrides(
         => !NoAuth
            && !LoginOnly
            && !LogoutOnly
+           && !TryAll
            && Kind is null
            && Token is null
-           && (Scopes is null || Scopes.Count == 0)
-           && RedirectUri is null
-           && CacheName is null
-           && ClientId is null
-           && TenantId is null;
+           && Profile is null;
 }
 
 /// <summary>

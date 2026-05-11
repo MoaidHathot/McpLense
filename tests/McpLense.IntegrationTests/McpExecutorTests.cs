@@ -34,6 +34,7 @@ public class McpExecutorTests
         var target = new TargetOptions(
             ConfigPath: null,
             ServerNames: [],
+            ProfilePaths: [],
             DisplayName: "test-server",
             Url: null,
             Transport: TransportPreference.Auto,
@@ -258,6 +259,7 @@ public class McpExecutorTests
         var target = new TargetOptions(
             ConfigPath: null,
             ServerNames: [],
+            ProfilePaths: [],
             DisplayName: "missing",
             Url: null,
             Transport: TransportPreference.Auto,

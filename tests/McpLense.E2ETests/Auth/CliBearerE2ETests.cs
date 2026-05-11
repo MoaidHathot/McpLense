@@ -109,25 +109,19 @@ public class CliBearerE2ETests
     }
 
     [Fact]
-    public async Task Inspect_AuthOauth_AgainstBearerOnlyServer_ReportsDiscoveryFailure()
+    public async Task Inspect_AuthOauth_AdHoc_NoLongerSupported()
     {
-        // The bearer-only test server doesn't expose OAuth Protected Resource Metadata, so the
-        // OAuthDiscoveryHandler's first hop (PRM fetch) is rejected by the global bearer gate.
-        // McpExecutor catches the per-server McpLenseAuthException and surfaces it via the inspect
-        // report's Error field (HasErrors=true => exit 1).
-        var cacheName = $"e2e-bearer-oauth-stale-{Guid.NewGuid():N}";
+        // Phase A breaking change: '--auth oauth' is no longer accepted ad-hoc; OAuth requires
+        // a profile (--profile <name>). Verify the migration hint surfaces clearly.
         var result = await CliRunner.RunAsync([
             "inspect",
             "--url", _fixture.BaseUrl,
             "--auth", "oauth",
-            "--token-cache-name", cacheName,
             "--format", "json",
             "--timeout", "30"
         ], DefaultTimeout);
 
         result.ExitCode.ShouldNotBe(0);
-        var combined = result.StandardOutput + result.StandardError;
-        combined.ShouldContain("McpLenseAuthException", Case.Sensitive);
-        combined.ShouldContain("Protected Resource Metadata", Case.Sensitive);
+        result.StandardError.ShouldContain("--profile");
     }
 }

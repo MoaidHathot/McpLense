@@ -43,6 +43,7 @@ internal sealed record ParsedCommand(
 internal sealed record TargetOptions(
     string? ConfigPath,
     IReadOnlyList<string> ServerNames,
+    IReadOnlyList<string> ProfilePaths,
     string? DisplayName,
     Uri? Url,
     TransportPreference Transport,
@@ -62,7 +63,8 @@ internal static class CommandLineParser
     {
         "no-auth",
         "login",
-        "logout"
+        "logout",
+        "try-all"
     };
 
     public static ParsedCommand Parse(string[] args)
@@ -127,9 +129,9 @@ internal static class CommandLineParser
 
         ValidateOptions(options, command);
 
-        var subject = ParseSubject(command, positionals);
+        var (subject, urlPositional) = ParseSubjectAndUrl(command, positionals);
         var arguments = ParseArguments(command, GetSingle(options, "args"));
-        var target = ParseTarget(options, stdioTokens);
+        var target = ParseTarget(options, stdioTokens, urlPositional);
         var format = ParseFormat(GetSingle(options, "format"));
         var timeout = ParseTimeout(GetSingle(options, "timeout"));
         var progress = ParseProgress(GetSingle(options, "progress"), command);
@@ -150,7 +152,7 @@ internal static class CommandLineParser
 
     private static ParsedCommand HelpCommand() => new(AppCommand.Help, null, null, OutputFormat.Text, TimeSpan.FromSeconds(30), EmptyTarget(), false);
 
-    private static TargetOptions EmptyTarget() => new(null, [], null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), AuthOverrides.Empty);
+    private static TargetOptions EmptyTarget() => new(null, [], [], null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), AuthOverrides.Empty);
 
     private static AppCommand ParseCommand(string value) => value.ToLowerInvariant() switch
     {
@@ -227,6 +229,9 @@ internal static class CommandLineParser
         {
             "config",
             "server",
+            "profiles",
+            "profile",
+            "try-all",
             "name",
             "url",
             "transport",
@@ -242,11 +247,6 @@ internal static class CommandLineParser
             "auth",
             "auth-token",
             "no-auth",
-            "scope",
-            "redirect-uri",
-            "token-cache-name",
-            "client-id",
-            "tenant-id",
             "login",
             "logout"
         };
@@ -270,23 +270,38 @@ internal static class CommandLineParser
         }
     }
 
-    private static string? ParseSubject(AppCommand command, List<string> positionals)
+    /// <summary>
+    /// Splits positional arguments into the (optional) subject for call/read/prompt and the
+    /// (optional) URL positional accepted by every other command.
+    /// </summary>
+    private static (string? Subject, string? UrlPositional) ParseSubjectAndUrl(AppCommand command, List<string> positionals)
     {
-        return command switch
+        switch (command)
         {
-            AppCommand.Call or AppCommand.Read or AppCommand.Prompt => positionals.Count switch
-            {
-                0 => throw new UserInputException($"{command.ToString().ToLowerInvariant()} requires a name or URI."),
-                1 => positionals[0],
-                _ => throw new UserInputException($"{command.ToString().ToLowerInvariant()} accepts a single name or URI.")
-            },
-            _ => positionals.Count switch
-            {
-                0 => null,
-                _ => throw new UserInputException($"{command.ToString().ToLowerInvariant()} does not accept positional arguments.")
-            }
-        };
+            case AppCommand.Call or AppCommand.Read or AppCommand.Prompt:
+                return positionals.Count switch
+                {
+                    0 => throw new UserInputException($"{command.ToString().ToLowerInvariant()} requires a name or URI."),
+                    1 => (positionals[0], null),
+                    2 when LooksLikeUrl(positionals[1]) => (positionals[0], positionals[1]),
+                    _ => throw new UserInputException(
+                        $"{command.ToString().ToLowerInvariant()} accepts a single name or URI, optionally followed by a target URL.")
+                };
+
+            default:
+                return positionals.Count switch
+                {
+                    0 => (null, null),
+                    1 when LooksLikeUrl(positionals[0]) => (null, positionals[0]),
+                    _ => throw new UserInputException(
+                        $"{command.ToString().ToLowerInvariant()} accepts at most a single positional URL.")
+                };
+        }
     }
+
+    private static bool LooksLikeUrl(string value)
+        => value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+           || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
     private static JsonObject? ParseArguments(AppCommand command, string? value)
     {
@@ -313,12 +328,18 @@ internal static class CommandLineParser
         return obj;
     }
 
-    private static TargetOptions ParseTarget(Dictionary<string, List<string>> options, string[] stdioTokens)
+    private static TargetOptions ParseTarget(Dictionary<string, List<string>> options, string[] stdioTokens, string? urlPositional)
     {
         var configPath = GetSingle(options, "config");
-        var urlText = GetSingle(options, "url");
+        var urlText = GetSingle(options, "url") ?? urlPositional;
         var command = GetSingle(options, "command");
         var commandArgs = GetMany(options, "command-arg").ToList();
+        var profilePaths = GetMany(options, "profiles");
+
+        if (urlPositional is not null && options.ContainsKey("url"))
+        {
+            throw new UserInputException("Specify the URL positionally OR via --url, not both.");
+        }
 
         if (stdioTokens.Length > 0)
         {
@@ -338,12 +359,12 @@ internal static class CommandLineParser
 
         if (directCount == 0)
         {
-            throw new UserInputException("Specify a target with --config, --url, --command, or '-- <command ...>'.");
+            throw new UserInputException("Specify a target with a positional URL, --config, --url, --command, or '-- <command ...>'.");
         }
 
         if (directCount > 1)
         {
-            throw new UserInputException("Specify exactly one target source: config, URL, or stdio command.");
+            throw new UserInputException("Specify exactly one target source: positional URL, --config, --url, --command, or '-- <command ...>'.");
         }
 
         var serverNames = GetMany(options, "server");
@@ -356,17 +377,16 @@ internal static class CommandLineParser
 
         if (hasConfig)
         {
-            // Config files already carry target definitions; only --server, --format, --timeout
-            // and the auth-related overrides may be added on top.
+            // Config files are stdio-only; only --server, --format, --timeout, the auth-related
+            // overrides, and --profiles may be added on top.
             if (headers.Count > 0 || environment.Count > 0 || workingDirectory is not null || displayName is not null || commandArgs.Count > 0 || command is not null || hasUrl)
             {
                 throw new UserInputException(
-                    "When using --config, only --server, --format, --timeout, --auth, --auth-token, " +
-                    "--scope, --redirect-uri, --token-cache-name, --client-id, --tenant-id, --login, " +
-                    "--logout, and --no-auth may be added.");
+                    "When using --config, only --server, --format, --timeout, --profiles, --profile, " +
+                    "--try-all, --auth, --auth-token, --login, --logout, and --no-auth may be added.");
             }
 
-            return new TargetOptions(configPath, serverNames, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), authOverrides);
+            return new TargetOptions(configPath, serverNames, profilePaths, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), authOverrides);
         }
 
         if (hasUrl)
@@ -386,7 +406,7 @@ internal static class CommandLineParser
                 throw new UserInputException($"Invalid URL '{urlText}'.");
             }
 
-            return new TargetOptions(null, [], displayName, uri, transport, headers, null, [], null, new Dictionary<string, string>(), authOverrides);
+            return new TargetOptions(null, [], profilePaths, displayName, uri, transport, headers, null, [], null, new Dictionary<string, string>(), authOverrides);
         }
 
         if (headers.Count > 0)
@@ -404,7 +424,12 @@ internal static class CommandLineParser
             throw new UserInputException("--transport only applies to URL targets.");
         }
 
-        return new TargetOptions(null, [], displayName, null, TransportPreference.Auto, new Dictionary<string, string>(), command, commandArgs, workingDirectory, environment, authOverrides);
+        if (profilePaths.Count > 0 && !hasUrl && !hasConfig)
+        {
+            throw new UserInputException("--profiles is only meaningful when targeting an HTTP MCP via URL or --config.");
+        }
+
+        return new TargetOptions(null, [], profilePaths, displayName, null, TransportPreference.Auto, new Dictionary<string, string>(), command, commandArgs, workingDirectory, environment, authOverrides);
     }
 
     private static AuthOverrides ParseAuthOverrides(Dictionary<string, List<string>> options)
@@ -418,6 +443,9 @@ internal static class CommandLineParser
         var logoutRaw = GetSingle(options, "logout");
         var logout = string.Equals(logoutRaw, "true", StringComparison.OrdinalIgnoreCase);
 
+        var tryAllRaw = GetSingle(options, "try-all");
+        var tryAll = string.Equals(tryAllRaw, "true", StringComparison.OrdinalIgnoreCase);
+
         if (login && logout)
         {
             throw new UserInputException("--login and --logout cannot be combined.");
@@ -425,17 +453,18 @@ internal static class CommandLineParser
 
         var authRaw = GetSingle(options, "auth");
         var tokenRaw = GetSingle(options, "auth-token");
-        var redirectRaw = GetSingle(options, "redirect-uri");
-        var cacheNameRaw = GetSingle(options, "token-cache-name");
-        var clientIdRaw = GetSingle(options, "client-id");
-        var tenantIdRaw = GetSingle(options, "tenant-id");
-        var scopes = GetMany(options, "scope");
+        var profileRaw = GetSingle(options, "profile");
+
+        if (tryAll && !string.IsNullOrEmpty(profileRaw))
+        {
+            throw new UserInputException("--try-all and --profile cannot be combined.");
+        }
 
         if (noAuth)
         {
             // --no-auth is the dominant flag. We still accept (and ignore) other auth flags so a user
             // toggling --no-auth for a quick debug doesn't have to scrub every other CLI argument.
-            // It is, however, incompatible with --login/--logout because those imply OAuth state churn.
+            // It is, however, incompatible with --login/--logout because those imply auth state churn.
             if (login || logout)
             {
                 throw new UserInputException("--no-auth cannot be combined with --login or --logout.");
@@ -462,71 +491,21 @@ internal static class CommandLineParser
             }
         }
 
-        string? redirectUri = null;
-        if (redirectRaw is not null)
+        string? profile = null;
+        if (profileRaw is not null)
         {
-            redirectUri = expander.Expand(redirectRaw, "--redirect-uri");
-            if (string.IsNullOrEmpty(redirectUri))
+            profile = expander.Expand(profileRaw, "--profile");
+            if (string.IsNullOrEmpty(profile))
             {
-                throw new UserInputException("--redirect-uri resolved to an empty value.");
+                throw new UserInputException("--profile resolved to an empty value.");
             }
-        }
-
-        string? cacheName = null;
-        if (cacheNameRaw is not null)
-        {
-            cacheName = expander.Expand(cacheNameRaw, "--token-cache-name");
-            if (string.IsNullOrEmpty(cacheName))
-            {
-                throw new UserInputException("--token-cache-name resolved to an empty value.");
-            }
-        }
-
-        string? clientId = null;
-        if (clientIdRaw is not null)
-        {
-            clientId = expander.Expand(clientIdRaw, "--client-id");
-            if (string.IsNullOrEmpty(clientId))
-            {
-                throw new UserInputException("--client-id resolved to an empty value.");
-            }
-        }
-
-        string? tenantId = null;
-        if (tenantIdRaw is not null)
-        {
-            tenantId = expander.Expand(tenantIdRaw, "--tenant-id");
-            if (string.IsNullOrEmpty(tenantId))
-            {
-                throw new UserInputException("--tenant-id resolved to an empty value.");
-            }
-        }
-
-        IReadOnlyList<string>? expandedScopes = null;
-        if (scopes.Count > 0)
-        {
-            var collected = new List<string>(scopes.Count);
-            foreach (var scope in scopes)
-            {
-                var resolved = expander.Expand(scope, "--scope");
-                if (string.IsNullOrEmpty(resolved))
-                {
-                    throw new UserInputException("--scope resolved to an empty value.");
-                }
-                collected.Add(resolved);
-            }
-
-            expandedScopes = collected;
         }
 
         return new AuthOverrides(
             Kind: kind,
             Token: token,
-            Scopes: expandedScopes,
-            RedirectUri: redirectUri,
-            CacheName: cacheName,
-            ClientId: clientId,
-            TenantId: tenantId,
+            Profile: profile,
+            TryAll: tryAll,
             LoginOnly: login,
             LogoutOnly: logout);
     }
@@ -536,10 +515,9 @@ internal static class CommandLineParser
         return raw.ToLowerInvariant() switch
         {
             "bearer" => AuthKind.Bearer,
-            "oauth" or "oauthdiscovery" => AuthKind.OAuth,
-            "interactive-browser" or "interactivebrowser" => AuthKind.InteractiveBrowser,
             _ => throw new UserInputException(
-                $"Unknown --auth value '{raw}'. Supported: 'bearer', 'oauth', 'interactive-browser'.")
+                $"Unknown --auth value '{raw}'. The CLI ad-hoc form only supports 'bearer'; " +
+                "use a profile (via --profile <name> + --profiles <path>) for OAuth or interactive-browser auth.")
         };
     }
 

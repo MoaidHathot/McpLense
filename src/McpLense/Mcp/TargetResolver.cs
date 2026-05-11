@@ -10,27 +10,28 @@ internal static class TargetResolver
     /// <summary>For tests: resolve with a custom <see cref="EnvironmentExpander"/>.</summary>
     internal static async Task<IReadOnlyList<ResolvedServer>> ResolveAsync(TargetOptions options, EnvironmentExpander expander, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(expander);
+
         var resolver = new ResolverImpl(expander);
-        var servers = await resolver.ResolveCoreAsync(options, cancellationToken);
+        var servers = await resolver.ResolveCoreAsync(options, cancellationToken).ConfigureAwait(false);
         return resolver.ApplyAuthOverrides(servers, options.AuthOverrides);
     }
 
     private sealed class ResolverImpl
     {
         private readonly EnvironmentExpander _expander;
-        private readonly AuthConfigParser _authParser;
 
         public ResolverImpl(EnvironmentExpander expander)
         {
             _expander = expander;
-            _authParser = new AuthConfigParser(expander);
         }
 
         public async Task<IReadOnlyList<ResolvedServer>> ResolveCoreAsync(TargetOptions options, CancellationToken cancellationToken)
         {
             if (options.ConfigPath is not null)
             {
-                return await ResolveFromConfigAsync(options, cancellationToken);
+                return await ResolveFromConfigAsync(options, cancellationToken).ConfigureAwait(false);
             }
 
             if (options.Url is not null)
@@ -83,14 +84,14 @@ internal static class TargetResolver
                 throw new UserInputException($"Config file '{configPath}' was not found.");
             }
 
-            var text = await File.ReadAllTextAsync(configPath, cancellationToken);
+            var text = await File.ReadAllTextAsync(configPath, cancellationToken).ConfigureAwait(false);
 
             JsonNode? root;
             try
             {
                 root = JsonNode.Parse(text);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 throw new UserInputException($"Failed to parse config JSON: {ex.Message}");
             }
@@ -100,8 +101,17 @@ internal static class TargetResolver
                 throw new UserInputException("Config file is empty.");
             }
 
+            // Profile files and stdio configs are explicitly different artefacts. A user pointing
+            // --config at a profile file probably meant --profiles; surface that loudly.
+            if (root is JsonObject rootObj && rootObj.ContainsKey("authProfiles"))
+            {
+                throw new UserInputException(
+                    $"Config file '{configPath}' contains an 'authProfiles' block. " +
+                    "Pass profile files via --profiles instead of --config.");
+            }
+
             var baseDirectory = Path.GetDirectoryName(configPath) ?? Environment.CurrentDirectory;
-            var servers = ParseServers(root, baseDirectory);
+            var servers = ParseStdioServers(root, baseDirectory);
 
             if (servers.Count == 0)
             {
@@ -124,7 +134,12 @@ internal static class TargetResolver
             return filtered;
         }
 
-        private List<ResolvedServer> ParseServers(JsonNode root, string baseDirectory)
+        /// <summary>
+        /// Reads stdio MCP definitions from a config file. HTTP definitions and per-server
+        /// 'auth' blocks are rejected with an actionable error so the user moves auth into
+        /// profile files.
+        /// </summary>
+        private List<ResolvedServer> ParseStdioServers(JsonNode root, string baseDirectory)
         {
             var servers = new List<ResolvedServer>();
 
@@ -137,7 +152,7 @@ internal static class TargetResolver
                         {
                             if (entry.Value is JsonObject serverObject)
                             {
-                                servers.Add(ParseServerDefinition(serverObject, entry.Key, baseDirectory));
+                                servers.Add(ParseStdioDefinition(serverObject, entry.Key, baseDirectory));
                             }
                         }
                     }
@@ -146,7 +161,7 @@ internal static class TargetResolver
                     {
                         foreach (var item in serverArray.OfType<JsonObject>())
                         {
-                            servers.Add(ParseServerDefinition(item, GetExpandedString(item, "name", "servers[].name"), baseDirectory));
+                            servers.Add(ParseStdioDefinition(item, GetExpandedString(item, "name", "servers[].name"), baseDirectory));
                         }
                     }
 
@@ -156,21 +171,21 @@ internal static class TargetResolver
                         {
                             if (entry.Value is JsonObject serverObject)
                             {
-                                servers.Add(ParseServerDefinition(serverObject, entry.Key, baseDirectory));
+                                servers.Add(ParseStdioDefinition(serverObject, entry.Key, baseDirectory));
                             }
                         }
                     }
 
                     if (servers.Count == 0 && LooksLikeServerDefinition(obj))
                     {
-                        servers.Add(ParseServerDefinition(obj, GetExpandedString(obj, "name", "name") ?? "default", baseDirectory));
+                        servers.Add(ParseStdioDefinition(obj, GetExpandedString(obj, "name", "name") ?? "default", baseDirectory));
                     }
                     break;
 
                 case JsonArray array:
                     foreach (var item in array.OfType<JsonObject>())
                     {
-                        servers.Add(ParseServerDefinition(item, GetExpandedString(item, "name", "name") ?? $"server-{servers.Count + 1}", baseDirectory));
+                        servers.Add(ParseStdioDefinition(item, GetExpandedString(item, "name", "name") ?? $"server-{servers.Count + 1}", baseDirectory));
                     }
                     break;
             }
@@ -181,7 +196,7 @@ internal static class TargetResolver
         private static bool LooksLikeServerDefinition(JsonObject obj)
             => obj.ContainsKey("command") || obj.ContainsKey("url") || obj.ContainsKey("endpoint");
 
-        private ResolvedServer ParseServerDefinition(JsonObject obj, string? nameHint, string baseDirectory)
+        private ResolvedServer ParseStdioDefinition(JsonObject obj, string? nameHint, string baseDirectory)
         {
             var name = GetExpandedString(obj, "name", "name") ?? nameHint ?? throw new UserInputException("Each server definition needs a name.");
             var serverPath = $"servers.{name}";
@@ -189,49 +204,30 @@ internal static class TargetResolver
             var command = GetExpandedString(obj, "command", $"{serverPath}.command");
             var urlText = GetExpandedString(obj, "url", $"{serverPath}.url") ?? GetExpandedString(obj, "endpoint", $"{serverPath}.endpoint");
 
-            if (!string.IsNullOrWhiteSpace(command) && !string.IsNullOrWhiteSpace(urlText))
-            {
-                throw new UserInputException($"Server '{name}' cannot define both a command and a URL.");
-            }
-
-            if (string.IsNullOrWhiteSpace(command) && string.IsNullOrWhiteSpace(urlText))
-            {
-                throw new UserInputException($"Server '{name}' must define either a command or a URL.");
-            }
-
+            // Phase A breaking change: HTTP servers and per-server auth blocks no longer live in
+            // --config files. They moved to profile files (auth) + positional URLs (target).
             if (!string.IsNullOrWhiteSpace(urlText))
             {
-                if (!Uri.TryCreate(urlText, UriKind.Absolute, out var uri))
-                {
-                    throw new UserInputException($"Server '{name}' has an invalid URL '{urlText}'.");
-                }
+                throw new UserInputException(
+                    $"Server '{name}' defines a URL. HTTP MCP servers must be passed positionally " +
+                    "(e.g. 'mcplense inspect <url> --profile <name>'). Config files are stdio-only.");
+            }
 
-                var headers = ParseObjectMap(obj["headers"] as JsonObject, $"{serverPath}.headers");
-                var auth = _authParser.Parse(obj, name, headers);
+            if (obj.ContainsKey("auth"))
+            {
+                throw new UserInputException(
+                    $"Server '{name}' has an 'auth' block. Per-server auth is no longer supported; " +
+                    "move authentication into a profile file and pass it via --profiles.");
+            }
 
-                return new ResolvedServer(
-                    Name: name,
-                    Kind: ConnectionKind.Http,
-                    Target: uri.ToString(),
-                    Source: "config",
-                    Command: null,
-                    CommandArguments: [],
-                    WorkingDirectory: null,
-                    Environment: new Dictionary<string, string>(),
-                    Url: uri,
-                    Transport: ParseTransport(GetExpandedString(obj, "transport", $"{serverPath}.transport")),
-                    Headers: headers,
-                    Auth: auth);
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                throw new UserInputException($"Server '{name}' must define a 'command' (config files are stdio-only).");
             }
 
             var arguments = ParseStringArray(obj["args"] as JsonArray, $"{serverPath}.args");
             var workingDirectory = ResolvePath(baseDirectory, GetExpandedString(obj, "cwd", $"{serverPath}.cwd") ?? GetExpandedString(obj, "workingDirectory", $"{serverPath}.workingDirectory"));
             var environment = ParseObjectMap(obj["env"] as JsonObject, $"{serverPath}.env");
-
-            // For stdio servers, an 'auth' block is parsed and validated here so misconfigurations
-            // (typo'd 'authh', missing token, etc.) surface immediately. The stdio + auth combo is
-            // rejected later in ApplyAuthOverrides unless --no-auth is set.
-            var stdioAuth = _authParser.Parse(obj, name, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
 
             return new ResolvedServer(
                 Name: name,
@@ -245,14 +241,13 @@ internal static class TargetResolver
                 Url: null,
                 Transport: TransportPreference.Auto,
                 Headers: new Dictionary<string, string>(),
-                Auth: stdioAuth);
+                Auth: null);
         }
 
         public IReadOnlyList<ResolvedServer> ApplyAuthOverrides(IReadOnlyList<ResolvedServer> servers, AuthOverrides overrides)
         {
             if (overrides is null || overrides.IsEmpty)
             {
-                EnforceStdioAuthRule(servers, noAuth: false);
                 return servers;
             }
 
@@ -264,129 +259,36 @@ internal static class TargetResolver
                     .ToArray();
             }
 
-            var result = new ResolvedServer[servers.Count];
-            for (var index = 0; index < servers.Count; index++)
+            // Ad-hoc Bearer is the only direct-CLI auth path remaining: every other scheme MUST
+            // come from a profile (resolved by McpExecutor before opening transports).
+            if (overrides.Kind == AuthKind.Bearer)
             {
-                var server = servers[index];
-
-                if (server.Kind == ConnectionKind.Stdio)
+                if (string.IsNullOrEmpty(overrides.Token))
                 {
-                    if (overrides.Kind.HasValue || overrides.Token is not null
-                        || (overrides.Scopes is { Count: > 0 })
-                        || overrides.RedirectUri is not null
-                        || overrides.CacheName is not null
-                        || overrides.ClientId is not null
-                        || overrides.TenantId is not null)
-                    {
-                        // CLI overrides target HTTP servers. For stdio we silently skip the overlay
-                        // (no token to apply) but still enforce the stdio + config-auth rule below.
-                        result[index] = server;
-                    }
-                    else
-                    {
-                        result[index] = server;
-                    }
-
-                    continue;
+                    throw new UserInputException("'--auth bearer' requires '--auth-token <value>'.");
                 }
 
-                var merged = MergeAuth(server.Auth, overrides, server.Name);
-                result[index] = server with { Auth = merged };
+                var bearerAuth = new ResolvedAuth(AuthKind.Bearer, Token: overrides.Token);
+                return servers
+                    .Select(server => server.Kind == ConnectionKind.Http ? server with { Auth = bearerAuth } : server)
+                    .ToArray();
             }
 
-            EnforceStdioAuthRule(result, noAuth: false);
-            return result;
+            if (overrides.Kind.HasValue && overrides.Kind != AuthKind.Bearer)
+            {
+                throw new UserInputException(
+                    $"--auth {overrides.Kind.Value.ToString().ToLowerInvariant()} is no longer accepted ad-hoc; " +
+                    "create an authProfiles entry and pass --profile <name> instead.");
+            }
+
+            // No --auth, but a Token without --auth bearer still fails fast.
+            if (overrides.Token is not null)
+            {
+                throw new UserInputException("--auth-token requires '--auth bearer'.");
+            }
+
+            return servers;
         }
-
-        private static void EnforceStdioAuthRule(IReadOnlyList<ResolvedServer> servers, bool noAuth)
-        {
-            if (noAuth)
-            {
-                return;
-            }
-
-            foreach (var server in servers)
-            {
-                if (server.Kind == ConnectionKind.Stdio && server.Auth is not null)
-                {
-                    throw new UserInputException(
-                        $"Server '{server.Name}': authentication only applies to HTTP/SSE targets. " +
-                        "Use '--no-auth' to suppress the configured 'auth' block when running this server.");
-                }
-            }
-        }
-
-        private static ResolvedAuth? MergeAuth(ResolvedAuth? configAuth, AuthOverrides overrides, string serverName)
-        {
-            // --auth replaces the config auth block entirely.
-            if (overrides.Kind.HasValue)
-            {
-                return overrides.Kind.Value switch
-                {
-                    AuthKind.Bearer => new ResolvedAuth(
-                        AuthKind.Bearer,
-                        Token: overrides.Token
-                            ?? throw new UserInputException(
-                                $"Server '{serverName}': '--auth bearer' requires '--auth-token <value>'.")),
-                    AuthKind.OAuth => new ResolvedAuth(
-                        AuthKind.OAuth,
-                        Scopes: overrides.Scopes,
-                        RedirectUri: overrides.RedirectUri,
-                        CacheName: overrides.CacheName,
-                        ClientId: overrides.ClientId),
-                    AuthKind.InteractiveBrowser => new ResolvedAuth(
-                        AuthKind.InteractiveBrowser,
-                        Scopes: overrides.Scopes
-                            ?? throw new UserInputException(
-                                $"Server '{serverName}': '--auth interactive-browser' requires at least one '--scope <value>'."),
-                        RedirectUri: overrides.RedirectUri,
-                        CacheName: overrides.CacheName,
-                        ClientId: overrides.ClientId
-                            ?? throw new UserInputException(
-                                $"Server '{serverName}': '--auth interactive-browser' requires '--client-id <value>'."),
-                        TenantId: overrides.TenantId),
-                    AuthKind.None => null,
-                    _ => throw new UserInputException(
-                        $"Server '{serverName}': unsupported '--auth' value '{overrides.Kind.Value}'.")
-                };
-            }
-
-            // No --auth: overlay individual fields onto config.
-            if (configAuth is null)
-            {
-                if (overrides.Token is not null
-                    || (overrides.Scopes is { Count: > 0 })
-                    || overrides.RedirectUri is not null
-                    || overrides.CacheName is not null
-                    || overrides.ClientId is not null
-                    || overrides.TenantId is not null)
-                {
-                    throw new UserInputException(
-                        $"Server '{serverName}': auth field overrides (--auth-token, --scope, --redirect-uri, --token-cache-name, --client-id, --tenant-id) " +
-                        "require either '--auth <type>' or an 'auth' block in the config.");
-                }
-
-                return null;
-            }
-
-            return configAuth with
-            {
-                Token = overrides.Token ?? configAuth.Token,
-                Scopes = overrides.Scopes ?? configAuth.Scopes,
-                RedirectUri = overrides.RedirectUri ?? configAuth.RedirectUri,
-                CacheName = overrides.CacheName ?? configAuth.CacheName,
-                ClientId = overrides.ClientId ?? configAuth.ClientId,
-                TenantId = overrides.TenantId ?? configAuth.TenantId
-            };
-        }
-
-        private TransportPreference ParseTransport(string? value) => value?.ToLowerInvariant() switch
-        {
-            null or "auto" => TransportPreference.Auto,
-            "streamable-http" or "streamablehttp" or "http" => TransportPreference.StreamableHttp,
-            "sse" => TransportPreference.Sse,
-            _ => throw new UserInputException($"Unknown transport '{value}'.")
-        };
 
         private static string ResolvePath(string baseDirectory, string? value)
         {

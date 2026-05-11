@@ -44,6 +44,7 @@ public class BearerAuthIntegrationTests
         var target = new TargetOptions(
             ConfigPath: null,
             ServerNames: [],
+            ProfilePaths: [],
             DisplayName: "bearer-test-server",
             Url: new Uri(url, UriKind.Absolute),
             Transport: TransportPreference.Auto,

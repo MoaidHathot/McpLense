@@ -1,0 +1,238 @@
+using System;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using McpLense;
+using Shouldly;
+using Xunit;
+
+namespace McpLense.UnitTests.Auth;
+
+public class AuthProbeTests
+{
+    /// <summary>
+    /// Fake <see cref="HttpMessageHandler"/> that returns a queued response for every call. Used
+    /// to simulate the multi-hop probe (HEAD -> GET fallback, then PRM fetch) without a real HTTP
+    /// stack.
+    /// </summary>
+    private sealed class QueuedHandler : HttpMessageHandler
+    {
+        private readonly Queue<HttpResponseMessage> _responses = new();
+
+        public List<HttpRequestMessage> Requests { get; } = new();
+
+        public void Enqueue(HttpStatusCode status, string? body = null, string? wwwAuthenticate = null)
+        {
+            var response = new HttpResponseMessage(status);
+            if (wwwAuthenticate is not null)
+            {
+                response.Headers.TryAddWithoutValidation("WWW-Authenticate", wwwAuthenticate);
+            }
+
+            if (body is not null)
+            {
+                response.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            }
+            _responses.Enqueue(response);
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            if (_responses.Count == 0)
+            {
+                throw new InvalidOperationException("QueuedHandler ran out of responses.");
+            }
+
+            return Task.FromResult(_responses.Dequeue());
+        }
+    }
+
+    private static (AuthProbe Probe, QueuedHandler Handler, List<string> StderrSink) Build()
+    {
+        var handler = new QueuedHandler();
+        var http = new HttpClient(handler);
+        var stderr = new List<string>();
+        var probe = new AuthProbe(http, stderr.Add);
+        return (probe, handler, stderr);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_Server200NoHeaders_ReturnsEmpty()
+    {
+        var (probe, handler, _) = Build();
+        handler.Enqueue(HttpStatusCode.OK);
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.IsEmpty.ShouldBeTrue();
+        result.RequiresAuth.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task ProbeAsync_Server401NoMetadata_RequiresAuthButNoMetadata()
+    {
+        var (probe, handler, stderr) = Build();
+        handler.Enqueue(HttpStatusCode.Unauthorized, body: "Unauthorized");
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+        result.ResourceMetadataUrl.ShouldBeNull();
+        stderr.Count.ShouldBeGreaterThan(0);
+        string.Join(" ", stderr).ShouldContain("no RFC 9728");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_Server401WithResourceMetadata_FetchesAndParses()
+    {
+        var (probe, handler, _) = Build();
+
+        // First response: HEAD returns 401 + WWW-Authenticate pointing at the PRM document.
+        handler.Enqueue(
+            HttpStatusCode.Unauthorized,
+            wwwAuthenticate: "Bearer resource_metadata=\"https://example.com/.well-known/oauth-protected-resource\"");
+
+        // Second response: PRM document.
+        const string metadata = """
+        {
+          "resource": "https://example.com/",
+          "scopes_supported": ["mcp.read", "mcp.write"],
+          "authorization_servers": ["https://login.example.com"]
+        }
+        """;
+        handler.Enqueue(HttpStatusCode.OK, body: metadata);
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+        result.ResourceMetadataUrl.ShouldBe("https://example.com/.well-known/oauth-protected-resource");
+        result.Scopes!.ShouldBe(new[] { "mcp.read", "mcp.write" });
+        result.AuthorizationServers!.ShouldBe(new[] { "https://login.example.com" });
+    }
+
+    [Fact]
+    public async Task ProbeAsync_HeadReturns405_FallsBackToGet()
+    {
+        var (probe, handler, _) = Build();
+        handler.Enqueue(HttpStatusCode.MethodNotAllowed);
+        handler.Enqueue(HttpStatusCode.OK);
+
+        await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        handler.Requests.Count.ShouldBe(2);
+        handler.Requests[0].Method.ShouldBe(HttpMethod.Head);
+        handler.Requests[1].Method.ShouldBe(HttpMethod.Get);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_HeadReturns501_FallsBackToGet()
+    {
+        var (probe, handler, _) = Build();
+        handler.Enqueue(HttpStatusCode.NotImplemented);
+        handler.Enqueue(HttpStatusCode.OK);
+
+        await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        handler.Requests.Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_NetworkError_LogsAndReturnsEmpty()
+    {
+        var stderr = new List<string>();
+        var failingHandler = new HttpClientHandler();
+        // Force connection refused by pointing at port 1.
+        var http = new HttpClient(failingHandler) { Timeout = TimeSpan.FromSeconds(2) };
+        var probe = new AuthProbe(http, stderr.Add);
+
+        var result = await probe.ProbeAsync(new Uri("http://127.0.0.1:1/"), CancellationToken.None);
+
+        result.IsEmpty.ShouldBeTrue();
+        stderr.Count.ShouldBeGreaterThan(0);
+        string.Join(" ", stderr).ShouldContain("probing");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_PrmReturnsNon2xx_RequiresAuthSetButNoFurtherFields()
+    {
+        var (probe, handler, stderr) = Build();
+        handler.Enqueue(
+            HttpStatusCode.Unauthorized,
+            wwwAuthenticate: "Bearer resource_metadata=\"https://example.com/.well-known/oauth-protected-resource\"");
+        handler.Enqueue(HttpStatusCode.NotFound, body: "missing");
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+        result.ResourceMetadataUrl.ShouldBe("https://example.com/.well-known/oauth-protected-resource");
+        result.Scopes.ShouldBeNull();
+        string.Join(" ", stderr).ShouldContain("404");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_PrmReturnsMalformedJson_LogsAndReturnsRequiresAuth()
+    {
+        var (probe, handler, stderr) = Build();
+        handler.Enqueue(
+            HttpStatusCode.Unauthorized,
+            wwwAuthenticate: "Bearer resource_metadata=\"https://example.com/.well-known/oauth-protected-resource\"");
+        handler.Enqueue(HttpStatusCode.OK, body: "{not-json");
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+        result.ResourceMetadataUrl.ShouldBe("https://example.com/.well-known/oauth-protected-resource");
+        string.Join(" ", stderr).ShouldContain("not valid JSON");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_PrmUrlNotAbsolute_Logs_RequiresAuthOnly()
+    {
+        var (probe, handler, stderr) = Build();
+        handler.Enqueue(
+            HttpStatusCode.Unauthorized,
+            wwwAuthenticate: "Bearer resource_metadata=\"/relative/url\"");
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        // Header was present (so RequiresAuth=true), but the URL was unusable.
+        result.RequiresAuth.ShouldBeTrue();
+        result.Scopes.ShouldBeNull();
+        result.AuthorizationServers.ShouldBeNull();
+        string.Join(" ", stderr).ShouldContain("not absolute");
+    }
+
+    [Theory]
+    [InlineData("Bearer", null)]
+    [InlineData("Bearer realm=\"foo\"", null)]
+    [InlineData("Bearer resource_metadata=\"https://x/y\"", "https://x/y")]
+    [InlineData("Bearer realm=\"foo\", resource_metadata=\"https://x/y\"", "https://x/y")]
+    [InlineData("Bearer resource_metadata=\"https://x/y\", scope=\"mcp.read\"", "https://x/y")]
+    public void TryExtractResourceMetadataUrl_ParsesVariousChallengeShapes(string headerValue, string? expected)
+    {
+        var response = new HttpResponseMessage();
+        response.Headers.TryAddWithoutValidation("WWW-Authenticate", headerValue);
+
+        AuthProbe.TryExtractResourceMetadataUrl(response).ShouldBe(expected);
+    }
+
+    [Fact]
+    public void TryExtractResourceMetadataUrl_NoBearerChallenge_ReturnsNull()
+    {
+        var response = new HttpResponseMessage();
+        response.Headers.TryAddWithoutValidation("WWW-Authenticate", "Basic realm=\"foo\"");
+
+        AuthProbe.TryExtractResourceMetadataUrl(response).ShouldBeNull();
+    }
+
+    [Fact]
+    public void TryExtractResourceMetadataUrl_NoHeader_ReturnsNull()
+    {
+        var response = new HttpResponseMessage();
+
+        AuthProbe.TryExtractResourceMetadataUrl(response).ShouldBeNull();
+    }
+}

@@ -97,8 +97,11 @@ public class HttpCliE2ETests
     }
 
     [Fact]
-    public async Task Inspect_HttpUrlInConfigFile_ResolvesAndReturnsZero()
+    public async Task Inspect_HttpUrlInConfigFile_RejectsWithMigrationHint()
     {
+        // Phase A breaking change: HTTP servers in --config files are rejected. Users must move
+        // to positional URLs (or --url) and place auth in profile files. Verify the rejection
+        // surfaces a clear, actionable message.
         using var dir = new TempDirectory();
         var configPath = dir.WriteFile("mcp.json", $$"""
         {
@@ -117,8 +120,24 @@ public class HttpCliE2ETests
             "--timeout", "30"
         ], DefaultTimeout);
 
+        result.ExitCode.ShouldBe(1);
+        result.StandardError.ShouldContain("HTTP MCP servers must be passed positionally");
+    }
+
+    [Fact]
+    public async Task Inspect_PositionalUrl_AgainstHttpTestServer_ReturnsZero()
+    {
+        // Phase A: positional URL is the canonical way to inspect an HTTP MCP. No --url, no
+        // --config, no --profile, no auth setup needed for unauthenticated servers.
+        var result = await CliRunner.RunAsync([
+            "inspect",
+            _fixture.BaseUrl,
+            "--format", "json",
+            "--timeout", "30"
+        ], DefaultTimeout);
+
         result.ExitCode.ShouldBe(0);
-        result.StandardOutput.ShouldContain("\"http-fixture\"");
+        result.StandardOutput.ShouldContain("\"servers\":");
         result.StandardOutput.ShouldContain("\"Echo\"");
     }
 }

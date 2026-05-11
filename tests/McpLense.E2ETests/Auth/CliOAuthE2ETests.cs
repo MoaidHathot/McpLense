@@ -48,81 +48,20 @@ public class CliOAuthE2ETests
     }
 
     [Fact]
-    public async Task Inspect_AuthOauth_NoCachedToken_HeadlessFlow_ReportsLoginGuidance()
+    public async Task Inspect_AuthOauth_AdHoc_NoLongerSupported_ReturnsNonZero()
     {
-        // With MCPLENSE_NO_INTERACTIVE_FLOW=1, the OAuthDiscoveryHandler refuses to launch the
-        // browser flow and instead throws a McpLenseAuthException pointing the user at --login.
-        // McpExecutor catches per-server exceptions and reports them in the inspect report's Error
-        // field; HasErrors=true => exit 1.
-        var cacheName = $"e2e-no-interactive-{Guid.NewGuid():N}";
-        var psi = new System.Diagnostics.ProcessStartInfo
-        {
-            FileName = "dotnet",
-            WorkingDirectory = BuildArtifacts.RepoRoot,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            StandardOutputEncoding = System.Text.Encoding.UTF8,
-            StandardErrorEncoding = System.Text.Encoding.UTF8
-        };
-        psi.Environment["MCPLENSE_NO_INTERACTIVE_FLOW"] = "1";
-
-        var result = await RunWithEnvAsync(psi, [
-            "inspect",
-            "--url", _fixture.BaseUrl,
-            "--auth", "oauth",
-            "--token-cache-name", cacheName,
-            "--format", "json",
-            "--timeout", "30"
-        ], DefaultTimeout);
-
-        result.ExitCode.ShouldNotBe(0, $"stdout=<<{result.StandardOutput}>> stderr=<<{result.StandardError}>>");
-        var combined = result.StandardOutput + result.StandardError;
-        combined.ShouldContain("--login", Case.Sensitive);
-        combined.ShouldContain("MCPLENSE_NO_INTERACTIVE_FLOW", Case.Sensitive);
-    }
-
-    [Fact]
-    public async Task Logout_NoCachedEntry_ReturnsZero_AndReportsNoEntry()
-    {
-        // Use a unique cache name so we never collide with an actual cached token on the dev box.
-        var cacheName = $"e2e-no-entry-{Guid.NewGuid():N}";
-
+        // Phase A breaking change: ad-hoc '--auth oauth' is no longer accepted; OAuth (and
+        // interactive-browser) auth must come from a profile (--profile <name>).
         var result = await CliRunner.RunAsync([
             "inspect",
             "--url", _fixture.BaseUrl,
             "--auth", "oauth",
-            "--token-cache-name", cacheName,
-            "--logout",
             "--format", "json",
             "--timeout", "30"
         ], DefaultTimeout);
 
-        result.ExitCode.ShouldBe(0, $"stdout=<<{result.StandardOutput}>> stderr=<<{result.StandardError}>>");
-        result.StandardOutput.ShouldContain("\"action\": \"logout\"");
-        result.StandardOutput.ShouldContain("\"success\": true");
-        result.StandardOutput.ShouldContain("no cache entry to remove");
-    }
-
-    [Fact]
-    public async Task Logout_TextFormat_NoCachedEntry_ShowsHumanReadableSummary()
-    {
-        var cacheName = $"e2e-text-no-entry-{Guid.NewGuid():N}";
-
-        var result = await CliRunner.RunAsync([
-            "inspect",
-            "--url", _fixture.BaseUrl,
-            "--auth", "oauth",
-            "--token-cache-name", cacheName,
-            "--logout",
-            "--timeout", "30"
-        ], DefaultTimeout);
-
-        result.ExitCode.ShouldBe(0, $"stdout=<<{result.StandardOutput}>> stderr=<<{result.StandardError}>>");
-        result.StandardOutput.ShouldContain("logout: 1/1 succeeded");
-        result.StandardOutput.ShouldContain("status: ok");
-        result.StandardOutput.ShouldContain("no cache entry to remove");
+        result.ExitCode.ShouldNotBe(0);
+        result.StandardError.ShouldContain("--profile");
     }
 
     [Fact]
@@ -131,7 +70,6 @@ public class CliOAuthE2ETests
         var result = await CliRunner.RunAsync([
             "inspect",
             "--url", _fixture.BaseUrl,
-            "--auth", "oauth",
             "--login",
             "--logout"
         ], DefaultTimeout);
@@ -166,61 +104,5 @@ public class CliOAuthE2ETests
 
         result.ExitCode.ShouldNotBe(0);
         result.StandardError.ShouldContain("--no-auth cannot be combined with --login or --logout");
-    }
-
-    /// <summary>
-    /// Runs <c>mcplense</c> as a subprocess via <c>dotnet exec</c> with a caller-supplied
-    /// <see cref="System.Diagnostics.ProcessStartInfo"/> so tests can pre-configure environment
-    /// variables (e.g. <c>MCPLENSE_NO_INTERACTIVE_FLOW=1</c>) without polluting the test runner's
-    /// own process environment.
-    /// </summary>
-    private static async Task<CliResult> RunWithEnvAsync(
-        System.Diagnostics.ProcessStartInfo psi,
-        System.Collections.Generic.IReadOnlyList<string> mcplenseArgs,
-        TimeSpan timeout)
-    {
-        psi.ArgumentList.Add("exec");
-        psi.ArgumentList.Add(BuildArtifacts.MainAppDll);
-        foreach (var arg in mcplenseArgs)
-        {
-            psi.ArgumentList.Add(arg);
-        }
-
-        using var process = new System.Diagnostics.Process { StartInfo = psi };
-        var stdout = new System.Text.StringBuilder();
-        var stderr = new System.Text.StringBuilder();
-
-        process.OutputDataReceived += (_, args) =>
-        {
-            if (args.Data is not null) stdout.AppendLine(args.Data);
-        };
-
-        process.ErrorDataReceived += (_, args) =>
-        {
-            if (args.Data is not null) stderr.AppendLine(args.Data);
-        };
-
-        if (!process.Start())
-        {
-            throw new InvalidOperationException("Failed to start mcplense subprocess.");
-        }
-
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        using var cts = new System.Threading.CancellationTokenSource(timeout);
-        try
-        {
-            await process.WaitForExitAsync(cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            try { process.Kill(entireProcessTree: true); } catch { /* ignored */ }
-            throw new TimeoutException(
-                $"mcplense subprocess did not exit within {timeout}. " +
-                $"stdout=<<{stdout}>> stderr=<<{stderr}>>");
-        }
-
-        return new CliResult(process.ExitCode, stdout.ToString(), stderr.ToString());
     }
 }

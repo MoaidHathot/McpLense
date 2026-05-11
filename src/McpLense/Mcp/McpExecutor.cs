@@ -13,6 +13,14 @@ internal static class McpExecutor
     {
         var servers = await TargetResolver.ResolveAsync(command.Target, cancellationToken);
 
+        // Resolve auth profiles for HTTP servers that don't already have inline auth (i.e.
+        // anything other than --auth bearer). --no-auth short-circuits this entirely so quick
+        // local debugging works without any profile setup.
+        if (!command.Target.AuthOverrides.NoAuth)
+        {
+            servers = await AttachProfilesAsync(servers, command.Target, cancellationToken).ConfigureAwait(false);
+        }
+
         // --login and --logout short-circuit BEFORE the per-command dispatch so they reuse the
         // same target resolution + auth merging the underlying command would have used. The
         // selected AppCommand is intentionally ignored on this path; the user just needs a valid
@@ -40,6 +48,109 @@ internal static class McpExecutor
             AppCommand.Prompt => await GetPromptAsync(SingleServer(servers), command.Subject!, command.Arguments!, command.Timeout, cancellationToken),
             _ => throw new UserInputException($"Unsupported command '{command.Command}'.")
         };
+    }
+
+    /// <summary>
+    /// Attaches a resolved <see cref="AuthProfile"/>'s auth block onto every HTTP server that
+    /// doesn't already have inline auth (e.g. set via <c>--auth bearer</c> in
+    /// <see cref="TargetResolver.ApplyAuthOverrides"/>). Stdio servers are left alone.
+    ///
+    /// Profile attachment is conditional:
+    /// <list type="bullet">
+    ///   <item>If <c>--profile</c> is set explicitly → attach the named profile (error if missing).</item>
+    ///   <item>If profiles are loaded (explicitly via <c>--profiles</c> OR auto-discovered from
+    ///   the XDG default location) → probe the server URL; attach only when the probe says auth
+    ///   is required (RFC 9728 metadata present, or the server emitted a <c>401</c>).</item>
+    ///   <item>Otherwise → leave <c>Auth</c> at <c>null</c> (plain connection; the server will
+    ///   surface a 401 if needed, which the user can resolve by adding a profile).</item>
+    /// </list>
+    /// Profiles come from the merged set of <c>--profiles</c> paths plus the XDG defaults
+    /// (<see cref="DefaultConfigPaths"/>); duplicates across files raise a
+    /// <see cref="UserInputException"/>.
+    /// </summary>
+    private static async Task<IReadOnlyList<ResolvedServer>> AttachProfilesAsync(
+        IReadOnlyList<ResolvedServer> servers,
+        TargetOptions target,
+        CancellationToken cancellationToken)
+    {
+        var httpWithoutAuth = servers
+            .Where(server => server.Kind == ConnectionKind.Http && server.Auth is null)
+            .ToList();
+
+        if (httpWithoutAuth.Count == 0)
+        {
+            return servers;
+        }
+
+        var explicitProfile = target.AuthOverrides.Profile;
+        var profilePaths = ResolveProfilePaths(target.ProfilePaths);
+
+        // No profiles, no --profile, no --try-all: skip the entire dance and let the runtime
+        // attempt a plain connection. This preserves "just hit the URL" UX for servers that
+        // don't need auth at all (the most common dev/test case).
+        if (string.IsNullOrEmpty(explicitProfile) && !target.AuthOverrides.TryAll && profilePaths.Count == 0)
+        {
+            return servers;
+        }
+
+        var profiles = await ProfileLoader.LoadAsync(profilePaths, new EnvironmentExpander(), cancellationToken).ConfigureAwait(false);
+
+        // --try-all is a runtime-only opt-in for now; runtime command paths still need a single
+        // profile choice. Surface a clean error rather than silently picking one.
+        if (target.AuthOverrides.TryAll)
+        {
+            throw new UserInputException(
+                "--try-all is currently only supported with --login. Pick a profile with --profile <name> for runtime commands.");
+        }
+
+        using var probe = new AuthProbe();
+        var resolver = new AuthProfileResolver(probe, new MsalCacheInspector());
+
+        var result = new ResolvedServer[servers.Count];
+        for (var index = 0; index < servers.Count; index++)
+        {
+            var server = servers[index];
+            if (server.Kind != ConnectionKind.Http || server.Auth is not null)
+            {
+                result[index] = server;
+                continue;
+            }
+
+            // When --profile was set explicitly, respect it unconditionally (no probe required).
+            // Otherwise probe first; only attach a profile when the server signals auth is
+            // required (status 401 or RFC 9728 metadata present).
+            if (string.IsNullOrEmpty(explicitProfile))
+            {
+                var probeResult = await probe.ProbeAsync(server.Url!, cancellationToken).ConfigureAwait(false);
+                if (probeResult.IsEmpty)
+                {
+                    // Server appears to need no auth (or it doesn't speak RFC 9728). Connect plain.
+                    result[index] = server;
+                    continue;
+                }
+            }
+
+            var profile = await resolver.ResolveAsync(server.Url!, profiles, explicitProfile, cancellationToken).ConfigureAwait(false);
+            result[index] = profile is null ? server : server with { Auth = profile.Auth };
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Combines the user-supplied <c>--profiles</c> paths with the XDG default search results.
+    /// Returns an empty list when nothing is found; the resolver surfaces a helpful error in
+    /// that case.
+    /// </summary>
+    private static IReadOnlyList<string> ResolveProfilePaths(IReadOnlyList<string> explicitPaths)
+    {
+        if (explicitPaths.Count > 0)
+        {
+            return explicitPaths;
+        }
+
+        var root = DefaultConfigPaths.ResolveRoot();
+        return DefaultConfigPaths.EnumerateProfileFiles(root);
     }
 
     private static ResolvedServer SingleServer(IReadOnlyList<ResolvedServer> servers)
