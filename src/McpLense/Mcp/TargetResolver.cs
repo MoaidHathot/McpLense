@@ -29,9 +29,9 @@ internal static class TargetResolver
 
         public async Task<IReadOnlyList<ResolvedServer>> ResolveCoreAsync(TargetOptions options, CancellationToken cancellationToken)
         {
-            if (options.ConfigPath is not null)
+            if (options.ConfigPaths.Count > 0)
             {
-                return await ResolveFromConfigAsync(options, cancellationToken).ConfigureAwait(false);
+                return await ResolveFromConfigsAsync(options, cancellationToken).ConfigureAwait(false);
             }
 
             if (options.Url is not null)
@@ -75,56 +75,75 @@ internal static class TargetResolver
             throw new UserInputException("No target was resolved.");
         }
 
-        private async Task<IReadOnlyList<ResolvedServer>> ResolveFromConfigAsync(TargetOptions options, CancellationToken cancellationToken)
+        private async Task<IReadOnlyList<ResolvedServer>> ResolveFromConfigsAsync(TargetOptions options, CancellationToken cancellationToken)
         {
-            var configPath = Path.GetFullPath(options.ConfigPath!);
+            // Merge servers across every supplied --config path. Duplicate names raise an error
+            // showing both source files so users can disambiguate locally.
+            var sourceByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var merged = new List<ResolvedServer>();
 
-            if (!File.Exists(configPath))
+            foreach (var rawPath in options.ConfigPaths)
             {
-                throw new UserInputException($"Config file '{configPath}' was not found.");
+                var configPath = Path.GetFullPath(rawPath);
+
+                if (!File.Exists(configPath))
+                {
+                    throw new UserInputException($"Config file '{configPath}' was not found.");
+                }
+
+                var text = await File.ReadAllTextAsync(configPath, cancellationToken).ConfigureAwait(false);
+
+                JsonNode? root;
+                try
+                {
+                    root = JsonNode.Parse(text);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw new UserInputException($"Failed to parse config JSON in '{configPath}': {ex.Message}");
+                }
+
+                if (root is null)
+                {
+                    throw new UserInputException($"Config file '{configPath}' is empty.");
+                }
+
+                // Profile files and stdio configs are explicitly different artefacts. A user pointing
+                // --config at a profile file probably meant --profiles; surface that loudly.
+                if (root is JsonObject rootObj && rootObj.ContainsKey("authProfiles"))
+                {
+                    throw new UserInputException(
+                        $"Config file '{configPath}' contains an 'authProfiles' block. " +
+                        "Pass profile files via --profiles instead of --config.");
+                }
+
+                var baseDirectory = Path.GetDirectoryName(configPath) ?? Environment.CurrentDirectory;
+                foreach (var server in ParseStdioServers(root, baseDirectory))
+                {
+                    if (sourceByName.TryGetValue(server.Name, out var existingPath))
+                    {
+                        throw new UserInputException(
+                            $"Duplicate stdio server name '{server.Name}' (defined in '{existingPath}' and '{configPath}'). " +
+                            "Rename one of them.");
+                    }
+
+                    sourceByName[server.Name] = configPath;
+                    merged.Add(server);
+                }
             }
 
-            var text = await File.ReadAllTextAsync(configPath, cancellationToken).ConfigureAwait(false);
-
-            JsonNode? root;
-            try
+            if (merged.Count == 0)
             {
-                root = JsonNode.Parse(text);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                throw new UserInputException($"Failed to parse config JSON: {ex.Message}");
-            }
-
-            if (root is null)
-            {
-                throw new UserInputException("Config file is empty.");
-            }
-
-            // Profile files and stdio configs are explicitly different artefacts. A user pointing
-            // --config at a profile file probably meant --profiles; surface that loudly.
-            if (root is JsonObject rootObj && rootObj.ContainsKey("authProfiles"))
-            {
-                throw new UserInputException(
-                    $"Config file '{configPath}' contains an 'authProfiles' block. " +
-                    "Pass profile files via --profiles instead of --config.");
-            }
-
-            var baseDirectory = Path.GetDirectoryName(configPath) ?? Environment.CurrentDirectory;
-            var servers = ParseStdioServers(root, baseDirectory);
-
-            if (servers.Count == 0)
-            {
-                throw new UserInputException("No MCP servers were found in the config file.");
+                throw new UserInputException("No MCP servers were found in the config file(s).");
             }
 
             if (options.ServerNames.Count == 0)
             {
-                return servers;
+                return merged;
             }
 
             var names = new HashSet<string>(options.ServerNames, StringComparer.OrdinalIgnoreCase);
-            var filtered = servers.Where(server => names.Contains(server.Name)).ToArray();
+            var filtered = merged.Where(server => names.Contains(server.Name)).ToArray();
 
             if (filtered.Length == 0)
             {

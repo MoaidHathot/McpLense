@@ -42,7 +42,7 @@ public class BearerAuthIntegrationTests
         IReadOnlyDictionary<string, string>? headers = null)
     {
         var target = new TargetOptions(
-            ConfigPath: null,
+            ConfigPaths: [],
             ServerNames: [],
             ProfilePaths: [],
             DisplayName: "bearer-test-server",

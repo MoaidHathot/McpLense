@@ -76,9 +76,20 @@ public class CommandLineParserTests
     {
         var parsed = CommandLineParser.Parse(["inspect", "--config", "mcp.json"]);
 
-        parsed.Target.ConfigPath.ShouldBe("mcp.json");
+        parsed.Target.ConfigPaths.ShouldBe(new[] { "mcp.json" });
         parsed.Target.Url.ShouldBeNull();
         parsed.Target.Command.ShouldBeNull();
+    }
+
+    [Fact]
+    public void Parse_ConfigFlag_Repeatable_CollectsAllPaths()
+    {
+        // Phase B: --config is repeatable. Multiple stdio config files are merged at resolve time.
+        var parsed = CommandLineParser.Parse([
+            "inspect", "--config", "a.json", "--config", "b.json", "--config", "c.json"
+        ]);
+
+        parsed.Target.ConfigPaths.ShouldBe(new[] { "a.json", "b.json", "c.json" });
     }
 
     [Fact]
@@ -199,7 +210,7 @@ public class CommandLineParserTests
 
         parsed.Target.Url.ShouldNotBeNull();
         parsed.Target.Url!.ToString().ShouldStartWith("https://example.com/mcp");
-        parsed.Target.ConfigPath.ShouldBeNull();
+        parsed.Target.ConfigPaths.Count.ShouldBe(0);
     }
 
     [Fact]
@@ -758,7 +769,7 @@ public class CommandLineParserTests
             "--auth", "bearer", "--auth-token", "abc"
         ]);
 
-        parsed.Target.ConfigPath.ShouldBe("mcp.json");
+        parsed.Target.ConfigPaths.ShouldBe(new[] { "mcp.json" });
         parsed.Target.AuthOverrides.Kind.ShouldBe(AuthKind.Bearer);
         parsed.Target.AuthOverrides.Token.ShouldBe("abc");
     }
@@ -770,7 +781,7 @@ public class CommandLineParserTests
             "inspect", "--config", "mcp.json", "--no-auth"
         ]);
 
-        parsed.Target.ConfigPath.ShouldBe("mcp.json");
+        parsed.Target.ConfigPaths.ShouldBe(new[] { "mcp.json" });
         parsed.Target.AuthOverrides.NoAuth.ShouldBeTrue();
     }
 
@@ -782,7 +793,7 @@ public class CommandLineParserTests
             "--profiles", "p.json", "--profile", "agent365"
         ]);
 
-        parsed.Target.ConfigPath.ShouldBe("mcp.json");
+        parsed.Target.ConfigPaths.ShouldBe(new[] { "mcp.json" });
         parsed.Target.ProfilePaths.ShouldBe(new[] { "p.json" });
         parsed.Target.AuthOverrides.Profile.ShouldBe("agent365");
     }

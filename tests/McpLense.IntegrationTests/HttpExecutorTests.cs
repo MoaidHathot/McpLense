@@ -43,7 +43,7 @@ public class HttpExecutorTests
         TimeSpan? timeout = null)
     {
         var target = new TargetOptions(
-            ConfigPath: null,
+            ConfigPaths: [],
             ServerNames: [],
             ProfilePaths: [],
             DisplayName: "http-test-server",

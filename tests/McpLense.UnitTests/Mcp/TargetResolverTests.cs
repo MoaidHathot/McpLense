@@ -26,7 +26,7 @@ public class TargetResolverTests
         IReadOnlyDictionary<string, string>? environment = null,
         AuthOverrides? authOverrides = null)
         => new(
-            configPath,
+            configPath is null ? [] : [configPath],
             serverNames ?? [],
             profilePaths ?? [],
             displayName,
@@ -37,6 +37,24 @@ public class TargetResolverTests
             commandArguments ?? [],
             workingDirectory,
             environment ?? new Dictionary<string, string>(),
+            authOverrides ?? AuthOverrides.Empty);
+
+    private static TargetOptions ConfigsTarget(
+        IReadOnlyList<string> configPaths,
+        IReadOnlyList<string>? serverNames = null,
+        AuthOverrides? authOverrides = null)
+        => new(
+            configPaths,
+            serverNames ?? [],
+            [],
+            null,
+            null,
+            TransportPreference.Auto,
+            new Dictionary<string, string>(),
+            null,
+            [],
+            null,
+            new Dictionary<string, string>(),
             authOverrides ?? AuthOverrides.Empty);
 
     private static EnvironmentExpander FixedEnv(IDictionary<string, string?> values)
@@ -495,5 +513,122 @@ public class TargetResolverTests
         servers[0].Command.ShouldBe("node");
         servers[0].CommandArguments.ShouldBe(new[] { "server.js" });
         servers[0].Environment["NODE_ENV"].ShouldBe("dev");
+    }
+
+    // -------- Phase B: multi-config (--config repeatable) ------------------------
+
+    [Fact]
+    public async Task ResolveAsync_MultipleConfigs_MergesServers()
+    {
+        const string a = """
+        { "mcpServers": { "alpha": { "command": "node", "args": ["a.js"] } } }
+        """;
+        const string b = """
+        { "mcpServers": { "beta":  { "command": "node", "args": ["b.js"] } } }
+        """;
+
+        using var fileA = new TempFile(a);
+        using var fileB = new TempFile(b);
+
+        var options = ConfigsTarget(new[] { fileA.Path, fileB.Path });
+
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        servers.Count.ShouldBe(2);
+        servers.Select(s => s.Name).ShouldBe(new[] { "alpha", "beta" });
+    }
+
+    [Fact]
+    public async Task ResolveAsync_MultipleConfigs_DuplicateNameAcrossFiles_Throws()
+    {
+        const string content = """
+        { "mcpServers": { "alpha": { "command": "node" } } }
+        """;
+
+        using var fileA = new TempFile(content);
+        using var fileB = new TempFile(content);
+
+        var options = ConfigsTarget(new[] { fileA.Path, fileB.Path });
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => TargetResolver.ResolveAsync(options, CancellationToken.None));
+
+        ex.Message.ShouldContain("Duplicate stdio server name 'alpha'");
+        ex.Message.ShouldContain(fileA.Path);
+        ex.Message.ShouldContain(fileB.Path);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_MultipleConfigs_FilterByServerName_AppliesAcrossMergedSet()
+    {
+        const string a = """
+        { "mcpServers": { "alpha": { "command": "node" } } }
+        """;
+        const string b = """
+        { "mcpServers": { "beta":  { "command": "python" } } }
+        """;
+
+        using var fileA = new TempFile(a);
+        using var fileB = new TempFile(b);
+
+        var options = ConfigsTarget(
+            new[] { fileA.Path, fileB.Path },
+            serverNames: new[] { "beta" });
+
+        var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+        servers.Count.ShouldBe(1);
+        servers[0].Name.ShouldBe("beta");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_MultipleConfigs_OneMissing_ThrowsOnFirstMissing()
+    {
+        const string a = """
+        { "mcpServers": { "alpha": { "command": "node" } } }
+        """;
+
+        using var fileA = new TempFile(a);
+        var bogus = Path.Combine(Path.GetTempPath(), $"missing-{System.Guid.NewGuid():N}.json");
+
+        var options = ConfigsTarget(new[] { fileA.Path, bogus });
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => TargetResolver.ResolveAsync(options, CancellationToken.None));
+
+        ex.Message.ShouldContain("was not found");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_MultipleConfigs_OneInvalidJson_ThrowsWithPath()
+    {
+        const string a = """
+        { "mcpServers": { "alpha": { "command": "node" } } }
+        """;
+
+        using var fileA = new TempFile(a);
+        using var fileBad = new TempFile("not-json");
+
+        var options = ConfigsTarget(new[] { fileA.Path, fileBad.Path });
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => TargetResolver.ResolveAsync(options, CancellationToken.None));
+
+        ex.Message.ShouldContain("Failed to parse config JSON");
+        ex.Message.ShouldContain(fileBad.Path);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_MultipleConfigs_AllEmpty_ThrowsNoServers()
+    {
+        using var file1 = new TempFile("{}");
+        using var file2 = new TempFile("{}");
+
+        var options = ConfigsTarget(new[] { file1.Path, file2.Path });
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => TargetResolver.ResolveAsync(options, CancellationToken.None));
+
+        ex.Message.ShouldContain("No MCP servers");
     }
 }

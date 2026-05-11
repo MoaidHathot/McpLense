@@ -41,7 +41,7 @@ internal sealed record ParsedCommand(
     bool ProgressEnabled);
 
 internal sealed record TargetOptions(
-    string? ConfigPath,
+    IReadOnlyList<string> ConfigPaths,
     IReadOnlyList<string> ServerNames,
     IReadOnlyList<string> ProfilePaths,
     string? DisplayName,
@@ -152,7 +152,7 @@ internal static class CommandLineParser
 
     private static ParsedCommand HelpCommand() => new(AppCommand.Help, null, null, OutputFormat.Text, TimeSpan.FromSeconds(30), EmptyTarget(), false);
 
-    private static TargetOptions EmptyTarget() => new(null, [], [], null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), AuthOverrides.Empty);
+    private static TargetOptions EmptyTarget() => new([], [], [], null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), AuthOverrides.Empty);
 
     private static AppCommand ParseCommand(string value) => value.ToLowerInvariant() switch
     {
@@ -330,7 +330,7 @@ internal static class CommandLineParser
 
     private static TargetOptions ParseTarget(Dictionary<string, List<string>> options, string[] stdioTokens, string? urlPositional)
     {
-        var configPath = GetSingle(options, "config");
+        var configPaths = GetMany(options, "config");
         var urlText = GetSingle(options, "url") ?? urlPositional;
         var command = GetSingle(options, "command");
         var commandArgs = GetMany(options, "command-arg").ToList();
@@ -352,7 +352,7 @@ internal static class CommandLineParser
             commandArgs = stdioTokens.Skip(1).ToList();
         }
 
-        var hasConfig = !string.IsNullOrWhiteSpace(configPath);
+        var hasConfig = configPaths.Count > 0;
         var hasUrl = !string.IsNullOrWhiteSpace(urlText);
         var hasCommand = !string.IsNullOrWhiteSpace(command);
         var directCount = (hasConfig ? 1 : 0) + (hasUrl ? 1 : 0) + (hasCommand ? 1 : 0);
@@ -386,7 +386,7 @@ internal static class CommandLineParser
                     "--try-all, --auth, --auth-token, --login, --logout, and --no-auth may be added.");
             }
 
-            return new TargetOptions(configPath, serverNames, profilePaths, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), authOverrides);
+            return new TargetOptions(configPaths, serverNames, profilePaths, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), authOverrides);
         }
 
         if (hasUrl)
@@ -406,7 +406,7 @@ internal static class CommandLineParser
                 throw new UserInputException($"Invalid URL '{urlText}'.");
             }
 
-            return new TargetOptions(null, [], profilePaths, displayName, uri, transport, headers, null, [], null, new Dictionary<string, string>(), authOverrides);
+            return new TargetOptions([], [], profilePaths, displayName, uri, transport, headers, null, [], null, new Dictionary<string, string>(), authOverrides);
         }
 
         if (headers.Count > 0)
@@ -429,7 +429,7 @@ internal static class CommandLineParser
             throw new UserInputException("--profiles is only meaningful when targeting an HTTP MCP via URL or --config.");
         }
 
-        return new TargetOptions(null, [], profilePaths, displayName, null, TransportPreference.Auto, new Dictionary<string, string>(), command, commandArgs, workingDirectory, environment, authOverrides);
+        return new TargetOptions([], [], profilePaths, displayName, null, TransportPreference.Auto, new Dictionary<string, string>(), command, commandArgs, workingDirectory, environment, authOverrides);
     }
 
     private static AuthOverrides ParseAuthOverrides(Dictionary<string, List<string>> options)

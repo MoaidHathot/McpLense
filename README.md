@@ -80,6 +80,9 @@ inside `--config` files; their auth lives in profile files (see
 
 ### Config file (stdio MCPs only)
 
+Pass `--config <path>` once per file (repeatable; merges across files; duplicate
+server names raise an error):
+
 ```json
 {
   "mcpServers": {
@@ -270,7 +273,7 @@ the CLI flag name.
 
 | Flag                   | Purpose                                                                |
 | ---------------------- | ---------------------------------------------------------------------- |
-| `--profiles <path>`    | Load profile entries from a specific file (overrides XDG defaults).    |
+| `--profiles <path>`    | Load profile entries from a specific file (repeatable; merges across files). |
 | `--profile <name>`     | Force a specific loaded profile by name. Env-expandable.               |
 | `--try-all`            | Walk every loaded profile sequentially. Currently `--login`-only.      |
 | `--auth bearer`        | Send a static `Authorization: Bearer <token>` header.                  |

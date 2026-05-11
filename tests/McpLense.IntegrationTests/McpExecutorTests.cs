@@ -32,7 +32,7 @@ public class McpExecutorTests
         bool progressEnabled = false)
     {
         var target = new TargetOptions(
-            ConfigPath: null,
+            ConfigPaths: [],
             ServerNames: [],
             ProfilePaths: [],
             DisplayName: "test-server",
@@ -257,7 +257,7 @@ public class McpExecutorTests
     public async Task Inspect_FailingCommand_ReportsError()
     {
         var target = new TargetOptions(
-            ConfigPath: null,
+            ConfigPaths: [],
             ServerNames: [],
             ProfilePaths: [],
             DisplayName: "missing",

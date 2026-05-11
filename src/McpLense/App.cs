@@ -106,6 +106,8 @@ Target Options
   servers from a JSON file (HTTP servers are no longer supported in --config files).
 
   --config <path>              Load one or more stdio MCP servers from a JSON config file.
+                               Repeat to merge multiple config files; duplicate server names
+                               across files raise an error.
   --server <name>              Filter --config servers by name. Repeat as needed.
 
   --url <url>                  Connect to an HTTP MCP endpoint (alternative to positional URL).
@@ -134,6 +136,8 @@ Authentication (auth profiles)
     $XDG_CONFIG_HOME/McpLense/profiles/*.json          (multiple per-profile files, merged)
 
   --profiles <path>            Load profile entries from a specific file (overrides defaults).
+                               Repeat to merge multiple profile files; duplicate profile
+                               names across files raise an error.
   --profile <name>             Force a specific loaded profile by name.
                                Supports environment expansion ('env:VAR', '${VAR}').
   --try-all                    Walk every loaded profile sequentially. Currently only valid
