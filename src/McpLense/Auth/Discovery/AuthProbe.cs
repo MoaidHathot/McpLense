@@ -104,8 +104,18 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
 
         try
         {
-            var requiresAuth = response.StatusCode == System.Net.HttpStatusCode.Unauthorized
-                               || response.Headers.WwwAuthenticate.Count > 0;
+            var isSuccessStatus = response.IsSuccessStatusCode;
+            var hasAuthChallenge = response.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                                   || response.Headers.WwwAuthenticate.Count > 0;
+
+            // Anything that isn't a clean 2xx is treated as "auth probably required". This is
+            // conservative on purpose: servers that flake on HEAD (e.g. Agent365 sometimes
+            // returns 503 to unauthenticated probes), block HEAD entirely, or return non-401
+            // 4xx for missing credentials would otherwise be misdiagnosed as "no auth needed"
+            // and connect plain. When profiles are loaded the cost of false-positive attach is
+            // zero (handler just adds a Bearer header), while the cost of false-negative skip is
+            // a confusing error from the runtime path.
+            var requiresAuth = hasAuthChallenge || !isSuccessStatus;
             var resourceMetadataUrl = TryExtractResourceMetadataUrl(response);
 
             if (string.IsNullOrEmpty(resourceMetadataUrl))
@@ -116,7 +126,19 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
                     return AuthProbeResult.Empty;
                 }
 
-                _writeStderr($"AuthProbe: {serverUrl} returned no RFC 9728 'resource_metadata' header; falling back to cache-only auto-pick.");
+                if (!hasAuthChallenge)
+                {
+                    // Server returned non-2xx but no explicit auth challenge. Could be a flake,
+                    // could be "wrong endpoint", could be auth required behind a generic error.
+                    // Flag for the caller and treat as auth-required so a loaded profile is
+                    // attached and the runtime gets an authoritative answer.
+                    _writeStderr($"AuthProbe: {serverUrl} returned {(int)response.StatusCode} on the unauthenticated probe; attaching the configured profile so the runtime hits the server with credentials.");
+                }
+                else
+                {
+                    _writeStderr($"AuthProbe: {serverUrl} returned no RFC 9728 'resource_metadata' header; falling back to cache-only auto-pick.");
+                }
+
                 return new AuthProbeResult(RequiresAuth: true);
             }
 

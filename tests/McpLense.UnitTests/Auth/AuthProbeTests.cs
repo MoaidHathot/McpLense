@@ -205,6 +205,50 @@ public class AuthProbeTests
         string.Join(" ", stderr).ShouldContain("not absolute");
     }
 
+    [Fact]
+    public async Task ProbeAsync_Server503NoAuthChallenge_TreatedAsAuthRequired()
+    {
+        // Some MCP servers (e.g. Agent365) return 503 to unauthenticated HEAD requests because
+        // they execute the authentication middleware before the application code that would
+        // respond properly. Treat any non-2xx without an explicit challenge as "auth required"
+        // so a loaded profile gets attached and the runtime can talk to the server with creds.
+        var (probe, handler, stderr) = Build();
+        handler.Enqueue(System.Net.HttpStatusCode.ServiceUnavailable, body: """{"code":"UnexpectedError","message":"An unexpected error occurred."}""");
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+        result.ResourceMetadataUrl.ShouldBeNull();
+        string.Join(" ", stderr).ShouldContain("503");
+        string.Join(" ", stderr).ShouldContain("attaching the configured profile");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_Server500NoAuthChallenge_TreatedAsAuthRequired()
+    {
+        var (probe, handler, _) = Build();
+        handler.Enqueue(System.Net.HttpStatusCode.InternalServerError);
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task ProbeAsync_Server404NoAuthChallenge_TreatedAsAuthRequired()
+    {
+        // 404 without an auth challenge is ambiguous: could be "wrong endpoint" or could be
+        // "auth required, hidden behind a generic error". Err on the side of attaching the
+        // profile; if the endpoint is genuinely wrong the runtime path will surface a clearer
+        // error with auth attached anyway.
+        var (probe, handler, _) = Build();
+        handler.Enqueue(System.Net.HttpStatusCode.NotFound);
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+    }
+
     [Theory]
     [InlineData("Bearer", null)]
     [InlineData("Bearer realm=\"foo\"", null)]
