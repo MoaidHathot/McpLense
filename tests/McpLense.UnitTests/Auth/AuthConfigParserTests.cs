@@ -501,4 +501,72 @@ public class AuthConfigParserTests
         var ex = Should.Throw<UserInputException>(() => parser.ParseAuthProfiles(root));
         ex.Message.ShouldContain("azure-cli");
     }
+
+    // -------- Per-profile priority override ---------------------------------------
+
+    [Fact]
+    public void ParseAuthProfiles_PriorityField_IsCapturedOnProfile()
+    {
+        var parser = With(new());
+        var root = Parse("""
+        {
+          "authProfiles": [
+            {
+              "name": "agent365",
+              "priority": 500,
+              "auth": { "type": "interactive-browser", "clientId": "abc", "scopes": ["s/.default"] }
+            }
+          ]
+        }
+        """);
+
+        parser.ParseAuthProfiles(root)[0].Priority.ShouldBe(500);
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_PriorityField_AcceptsNegative()
+    {
+        var parser = With(new());
+        var root = Parse("""
+        {
+          "authProfiles": [
+            { "name": "x", "priority": -10, "auth": { "type": "bearer", "token": "t" } }
+          ]
+        }
+        """);
+
+        parser.ParseAuthProfiles(root)[0].Priority.ShouldBe(-10);
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_PriorityOmitted_DefaultsToNull()
+    {
+        var parser = With(new());
+        var root = Parse("""
+        {
+          "authProfiles": [
+            { "name": "x", "auth": { "type": "bearer", "token": "t" } }
+          ]
+        }
+        """);
+
+        parser.ParseAuthProfiles(root)[0].Priority.ShouldBeNull();
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_PriorityNonInteger_Throws()
+    {
+        var parser = With(new());
+        var root = Parse("""
+        {
+          "authProfiles": [
+            { "name": "x", "priority": "high", "auth": { "type": "bearer", "token": "t" } }
+          ]
+        }
+        """);
+
+        var ex = Should.Throw<UserInputException>(() => parser.ParseAuthProfiles(root));
+        ex.Message.ShouldContain("priority");
+        ex.Message.ShouldContain("integer");
+    }
 }

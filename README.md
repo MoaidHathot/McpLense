@@ -257,9 +257,30 @@ When you run `mcplense inspect <url>` (no `--profile`), McpLense:
    plain (the server doesn't appear to need auth).
 2. Filters loaded profiles by advertised scopes (when the probe surfaced any).
 3. Picks the unique profile that already has a cached account.
-4. If multiple cached candidates remain &rarr; errors and asks for `--profile`.
-5. If exactly one candidate remains (cached or not) &rarr; uses it. The runtime
-   triggers interactive auth on first request.
+4. **Tiebreaker** — when multiple candidates remain (or none has cached creds
+   but multiple plausibly fit), prefer the higher-priority kind:
+
+   | Default rank | Auth kind            | Rationale                                                  |
+   | ------------ | -------------------- | ---------------------------------------------------------- |
+   | **400 (highest)** | `azure-cli`     | Silent; inherits `az login`; never pops a browser.         |
+   | 300          | `interactive-browser`| MSAL; silent when cached; browser pop on first run.        |
+   | 200          | `oauth`              | Generic OAuth; full discovery + possible DCR (slow).       |
+   | 100 (lowest) | `bearer`             | Static token; rarely conflicts in practice.                |
+
+   Override per-profile with an explicit `priority` JSON field (higher wins):
+
+   ```json
+   {
+     "name": "agent365-prefer-browser",
+     "priority": 500,
+     "auth": { "type": "interactive-browser", ... }
+   }
+   ```
+
+5. If profiles tie at the same effective priority, McpLense errors and asks
+   for `--profile <name>`. Within-kind ambiguity (two `interactive-browser`
+   profiles for different tenants, both cached) always falls into this path
+   because the user genuinely needs to choose.
 
 ### Ad-hoc Bearer (no profile required)
 

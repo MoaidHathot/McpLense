@@ -149,8 +149,10 @@ Authentication (auth profiles)
     1. Probe the URL for RFC 9728 'WWW-Authenticate' metadata. If absent, connect plain.
     2. Otherwise filter loaded profiles by advertised scopes.
     3. Pick the unique profile that already has a cached account.
-    4. If multiple cached candidates remain, error and ask for --profile.
-    5. If exactly one candidate remains (cached or not), use it.
+    4. Tiebreaker: when multiple candidates remain, prefer the higher-priority kind.
+       Default ranks (high -> low): azure-cli > interactive-browser > oauth > bearer.
+       Override per-profile with the JSON 'priority' field (higher = preferred).
+    5. If still tied at the same effective priority, error and ask for --profile.
 
   Ad-hoc CLI auth (limited to Bearer):
     --auth bearer              Send a static Authorization: Bearer <token> header.

@@ -76,7 +76,30 @@ internal sealed class AuthConfigParser
             _ => throw new UserInputException($"{basePath}.type '{typeRaw}' is not supported.")
         };
 
-        return new AuthProfile(nameRaw, auth);
+        var priority = ParsePriority(profileObject, $"authProfiles[{nameRaw}].priority");
+
+        return new AuthProfile(nameRaw, auth, priority);
+    }
+
+    /// <summary>
+    /// Optional integer used by <see cref="AuthProfileResolver"/>'s auto-pick tiebreaker. Higher
+    /// wins. Rejects non-integer values with a clear error so a typo doesn't silently demote a
+    /// profile.
+    /// </summary>
+    private static int? ParsePriority(JsonObject profileObject, string contextPath)
+    {
+        if (profileObject["priority"] is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<int>(out var intValue))
+        {
+            return intValue;
+        }
+
+        throw new UserInputException(
+            $"{contextPath} must be an integer (higher = preferred). Got: {value.ToJsonString()}.");
     }
 
     private static AuthKind ParseKind(string raw, string basePath)
