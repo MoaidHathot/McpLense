@@ -185,7 +185,8 @@ tenant, every GitHub MCP for one account, etc.) without per-server duplication.
 | --------------------- | ------------------------------------------------------------------------------------------------------- |
 | `bearer`              | Static token from the profile, or `--auth-token` (env-expandable).                                      |
 | `oauth`               | MCP-spec OAuth 2.1 with discovery (RFC 9728/8414), PKCE (RFC 7636), and Dynamic Client Registration.    |
-| `interactive-browser` | Microsoft Entra ID via MSAL/`Azure.Identity` with OS-protected token cache. For Microsoft 365/Agent365. |
+| `interactive-browser` | Microsoft Entra ID via MSAL/`Azure.Identity` with OS-protected token cache. First-time login pops a browser. |
+| `azure-cli`           | Microsoft Entra ID via the Azure CLI. Delegates to `az account get-access-token --resource <scope>` using the user's existing `az login` session. No browser pop. Ideal for headless / CI. |
 
 Stdio (process) targets never carry authentication.
 
@@ -353,6 +354,64 @@ mcplense login --profiles samples/agent365.json --profile agent365
 mcplense tools https://agent365.svc.cloud.microsoft/.../mcp_MailTools `
   --profiles samples/agent365.json
 ```
+
+### Microsoft 365 / Entra ID (Azure CLI)
+
+If you'd rather **not** see a browser pop, use `auth.type: azure-cli`. McpLense
+delegates every token acquisition to the Azure CLI by shelling out to
+`az account get-access-token --resource <scope>`. This requires:
+
+- **Azure CLI installed and on PATH.**
+- **A prior `az login`** (or device-code / service-principal session). McpLense
+  doesn't perform the login itself — it inherits whatever identity `az` already
+  has cached.
+- The signed-in account having access to the target Entra app.
+
+There is **no `clientId`** field — the Azure CLI uses its own pre-registered
+first-party app. There is **no `cacheName`** either — `az` manages its own
+credentials cache (see `az account list`). `tenantId` is optional and defaults
+to whatever `az account show` reports.
+
+```json
+{
+  "authProfiles": [
+    {
+      "name": "agent365-cli",
+      "auth": {
+        "type": "azure-cli",
+        "tenantId": "env:CORP_TENANT_ID",
+        "scopes": ["${VSCODE_AUDIENCE}/.default"]
+      }
+    }
+  ]
+}
+```
+
+Trade-offs vs `interactive-browser`:
+
+| Aspect                       | `interactive-browser`                  | `azure-cli`                              |
+| ---------------------------- | -------------------------------------- | ---------------------------------------- |
+| First-time setup             | One browser pop per profile            | One-time `az login` (covers all profiles) |
+| Per-request overhead         | MSAL cache hit (~ms)                   | Shell out to `az` (~100–500ms)            |
+| Browser required             | Yes (at least first time)              | Never                                     |
+| Tenant switching             | Per-profile `tenantId`                 | `az account set` or `tenantId`            |
+| Works in SSH / CI / headless | Only with `MCPLENSE_NO_BROWSER=1` + remote port forwarding | Yes, trivially                          |
+| Identity source              | Whatever you sign into the browser as  | Current `az account show` identity        |
+
+You can have **both profiles loaded simultaneously** (see `samples/agent365.json`)
+and pick at command time with `--profile agent365` vs `--profile agent365-cli`.
+
+```bash
+# Verify your az session can mint the right token:
+mcplense login --profile agent365-cli --profiles samples/agent365.json
+
+# Then use it:
+mcplense inspect https://agent365.svc.cloud.microsoft/.../mcp_MailTools `
+  --profile agent365-cli --profiles samples/agent365.json
+```
+
+`mcplense logout --profile agent365-cli` is a no-op other than printing a
+reminder to run `az logout` if you actually want to clear the CLI session.
 
 ### Azure AD via out-of-band tokens (legacy)
 

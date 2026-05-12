@@ -44,6 +44,7 @@ internal static class AuthHandlerFactory
             AuthKind.Bearer => CreateBearer(auth),
             AuthKind.OAuth => CreateOAuth(auth, serverUrl),
             AuthKind.InteractiveBrowser => CreateInteractiveBrowser(auth),
+            AuthKind.AzureCli => CreateAzureCli(auth),
             _ => throw new McpLenseAuthException($"Unsupported authentication kind '{auth.Kind}'.")
         };
     }
@@ -81,6 +82,35 @@ internal static class AuthHandlerFactory
     {
         var credential = BuildInteractiveBrowserCredential(auth);
         return new InteractiveBrowserHandler(credential, auth.Scopes!);
+    }
+
+    private static DelegatingHandler CreateAzureCli(ResolvedAuth auth)
+    {
+        var credential = BuildAzureCliCredential(auth);
+        return new InteractiveBrowserHandler(credential, auth.Scopes!);
+    }
+
+    /// <summary>
+    /// Builds an <see cref="AzureCliCredential"/> from a resolved azure-cli auth block.
+    /// Centralised here so the login/logout session paths can reuse the exact same options.
+    /// </summary>
+    internal static AzureCliCredential BuildAzureCliCredential(ResolvedAuth auth)
+    {
+        if (auth.Scopes is null || auth.Scopes.Count == 0)
+        {
+            throw new McpLenseAuthException(
+                "Azure CLI authentication requires at least one scope. " +
+                "Add 'auth.scopes' to the profile.");
+        }
+
+        var options = new AzureCliCredentialOptions();
+
+        if (!string.IsNullOrEmpty(auth.TenantId))
+        {
+            options.TenantId = auth.TenantId;
+        }
+
+        return new AzureCliCredential(options);
     }
 
     /// <summary>

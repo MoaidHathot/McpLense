@@ -42,6 +42,11 @@ internal sealed class MsalCacheInspector : IMsalCacheInspector
         {
             AuthKind.InteractiveBrowser => await HasInteractiveBrowserAccountAsync(profile.Auth, cancellationToken).ConfigureAwait(false),
             AuthKind.OAuth => await HasOAuthCachedTokenAsync(profile.Auth, cancellationToken).ConfigureAwait(false),
+            // AzureCli delegates token caching to the `az` CLI itself; we have no on-disk cache
+            // to peek at. Treat as "cached" so multi-profile auto-pick treats it as a viable
+            // candidate when no other profile has cached credentials. (If `az login` hasn't
+            // been run, the runtime path surfaces an authoritative error on the first request.)
+            AuthKind.AzureCli => true,
             // Bearer / None: no cache layer, always treat as "ready" to avoid spurious errors.
             _ => true
         };

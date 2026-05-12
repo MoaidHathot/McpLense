@@ -72,6 +72,7 @@ internal sealed class AuthConfigParser
             AuthKind.Bearer => ParseBearer(authObject, basePath),
             AuthKind.OAuth => ParseOAuth(authObject, basePath),
             AuthKind.InteractiveBrowser => ParseInteractiveBrowser(authObject, basePath, defaultCacheName: nameRaw),
+            AuthKind.AzureCli => ParseAzureCli(authObject, basePath),
             _ => throw new UserInputException($"{basePath}.type '{typeRaw}' is not supported.")
         };
 
@@ -85,8 +86,9 @@ internal sealed class AuthConfigParser
             "bearer" => AuthKind.Bearer,
             "oauth" or "oauthdiscovery" => AuthKind.OAuth,
             "interactive-browser" or "interactivebrowser" => AuthKind.InteractiveBrowser,
+            "azure-cli" or "azurecli" or "az-cli" or "azcli" => AuthKind.AzureCli,
             _ => throw new UserInputException(
-                $"{basePath}.type '{raw}' is not recognised. Supported values: 'bearer', 'oauth', 'interactive-browser'.")
+                $"{basePath}.type '{raw}' is not recognised. Supported values: 'bearer', 'oauth', 'interactive-browser', 'azure-cli'.")
         };
     }
 
@@ -138,6 +140,44 @@ internal sealed class AuthConfigParser
             RedirectUri: redirectUri,
             CacheName: string.IsNullOrEmpty(cacheName) ? defaultCacheName : cacheName,
             ClientId: clientId,
+            TenantId: tenantId);
+    }
+
+    private ResolvedAuth ParseAzureCli(JsonObject authObject, string basePath)
+    {
+        // AzureCliCredential delegates to `az account get-access-token --resource <scope>`.
+        // It needs scopes (mandatory) and optionally a tenantId; the client id is fixed by the
+        // Azure CLI's own pre-registered first-party app, so we do NOT accept clientId here.
+        // There is no on-disk cache to manage either - the CLI maintains its own session.
+        var scopes = ParseScopes(authObject, $"{basePath}.scopes");
+        if (scopes is null || scopes.Count == 0)
+        {
+            throw new UserInputException(
+                $"{basePath}.scopes is required when type is 'azure-cli'. " +
+                "Use '<application-id-uri>/.default' to ask Azure CLI for a token carrying every " +
+                "statically-consented permission on that resource.");
+        }
+
+        if (authObject.ContainsKey("clientId"))
+        {
+            throw new UserInputException(
+                $"{basePath}.clientId is not accepted with type 'azure-cli'. The Azure CLI uses its " +
+                "own pre-registered first-party client id; switch to 'interactive-browser' if you " +
+                "need to control the client id.");
+        }
+
+        if (authObject.ContainsKey("cacheName"))
+        {
+            throw new UserInputException(
+                $"{basePath}.cacheName is not accepted with type 'azure-cli'. The Azure CLI manages " +
+                "its own credentials cache (see 'az account list').");
+        }
+
+        var tenantId = GetExpandedString(authObject, "tenantId", $"{basePath}.tenantId");
+
+        return new ResolvedAuth(
+            AuthKind.AzureCli,
+            Scopes: scopes,
             TenantId: tenantId);
     }
 

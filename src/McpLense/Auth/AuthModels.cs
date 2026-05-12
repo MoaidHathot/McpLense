@@ -23,7 +23,17 @@ internal enum AuthKind
     /// clients (typically the VS Code first-party client) and persists tokens in the OS
     /// credential store. Bypasses RFC 8414 / DCR / loopback-callback handling.
     /// </summary>
-    InteractiveBrowser
+    InteractiveBrowser,
+
+    /// <summary>
+    /// Microsoft Entra ID via the Azure CLI. Delegates token acquisition to
+    /// <see cref="Azure.Identity.AzureCliCredential"/>, which shells out to
+    /// <c>az account get-access-token --resource &lt;scope&gt;</c> using the user's existing
+    /// <c>az login</c> session. No interactive browser pop; ideal for headless and CI
+    /// scenarios where the user (or the agent) is already authenticated to the Azure CLI.
+    /// Requires the Azure CLI to be installed and on PATH, and a prior <c>az login</c>.
+    /// </summary>
+    AzureCli
 }
 
 /// <summary>

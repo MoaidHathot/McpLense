@@ -180,6 +180,14 @@ Authentication (auth profiles)
           }
         },
         {
+          "name": "agent365-cli",
+          "auth": {
+            "type": "azure-cli",
+            "tenantId": "env:CORP_TENANT_ID",
+            "scopes": ["${VSCODE_AUDIENCE}/.default"]
+          }
+        },
+        {
           "name": "github",
           "auth": { "type": "bearer", "token": "env:GITHUB_TOKEN" }
         },
@@ -210,6 +218,16 @@ Authentication (auth profiles)
       the OS credential store (DPAPI on Windows, libsecret on Linux, Keychain on macOS).
     - Each profile gets its own MSAL cache (named after the profile) by default. Set
       'cacheName: \"mcp-proxy\"' on the profile to share with the mcp-proxy tool.
+
+  Microsoft 365 / Entra ID (azure-cli):
+    - Use 'auth.type: azure-cli' to delegate token acquisition to the Azure CLI. McpLense
+      shells out to 'az account get-access-token --resource <scope>' using the user's
+      existing 'az login' session. No browser pop, no MSAL cache, no clientId needed.
+    - Requires the Azure CLI installed and on PATH, and a prior 'az login'. Ideal for
+      headless / SSH / CI environments where 'az login --use-device-code' or a service
+      principal session is already configured.
+    - Switch tenant with 'az account set --subscription <id>' or via the profile's
+      tenantId field (optional; defaults to the CLI's current tenant).
 
 Common Options
   --format <text|json|dumpify> Output format. Default: text.

@@ -378,4 +378,127 @@ public class AuthConfigParserTests
         var ex = Should.Throw<UserInputException>(() => parser.ParseAuthProfiles(root));
         ex.Message.ShouldContain("authProfiles[0]");
     }
+
+    // -------- Azure CLI (no interactive browser) ----------------------------------
+
+    [Theory]
+    [InlineData("azure-cli")]
+    [InlineData("azurecli")]
+    [InlineData("az-cli")]
+    [InlineData("azcli")]
+    [InlineData("Azure-CLI")]
+    public void ParseAuthProfiles_AzureCli_AliasIsCaseAndDashInsensitive(string type)
+    {
+        var parser = With(new());
+        var root = Parse($$"""
+        {
+          "authProfiles": [
+            { "name": "x", "auth": { "type": "{{type}}", "scopes": ["api://x/.default"] } }
+          ]
+        }
+        """);
+
+        parser.ParseAuthProfiles(root)[0].Auth.Kind.ShouldBe(AuthKind.AzureCli);
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_AzureCli_AcceptsScopesAndTenantId()
+    {
+        var parser = With(new() { ["AUD"] = "api://example" });
+        var root = Parse("""
+        {
+          "authProfiles": [
+            {
+              "name": "agent365-cli",
+              "auth": {
+                "type": "azure-cli",
+                "scopes": ["${AUD}/.default"],
+                "tenantId": "common"
+              }
+            }
+          ]
+        }
+        """);
+
+        var auth = parser.ParseAuthProfiles(root)[0].Auth;
+
+        auth.Kind.ShouldBe(AuthKind.AzureCli);
+        auth.Scopes!.ShouldBe(new[] { "api://example/.default" });
+        auth.TenantId.ShouldBe("common");
+        // Critical: azure-cli profiles never expose clientId / cacheName.
+        auth.ClientId.ShouldBeNull();
+        auth.CacheName.ShouldBeNull();
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_AzureCli_TenantIdOptional()
+    {
+        var parser = With(new());
+        var root = Parse("""
+        {
+          "authProfiles": [
+            { "name": "x", "auth": { "type": "azure-cli", "scopes": ["s/.default"] } }
+          ]
+        }
+        """);
+
+        parser.ParseAuthProfiles(root)[0].Auth.TenantId.ShouldBeNull();
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_AzureCli_MissingScopes_Throws()
+    {
+        var parser = With(new());
+        var root = Parse("""
+        { "authProfiles": [ { "name": "x", "auth": { "type": "azure-cli" } } ] }
+        """);
+
+        var ex = Should.Throw<UserInputException>(() => parser.ParseAuthProfiles(root));
+        ex.Message.ShouldContain("scopes");
+        ex.Message.ShouldContain("azure-cli");
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_AzureCli_RejectsClientId()
+    {
+        var parser = With(new());
+        var root = Parse("""
+        {
+          "authProfiles": [
+            { "name": "x", "auth": { "type": "azure-cli", "scopes": ["s/.default"], "clientId": "abc" } }
+          ]
+        }
+        """);
+
+        var ex = Should.Throw<UserInputException>(() => parser.ParseAuthProfiles(root));
+        ex.Message.ShouldContain("clientId");
+        ex.Message.ShouldContain("azure-cli");
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_AzureCli_RejectsCacheName()
+    {
+        var parser = With(new());
+        var root = Parse("""
+        {
+          "authProfiles": [
+            { "name": "x", "auth": { "type": "azure-cli", "scopes": ["s/.default"], "cacheName": "y" } }
+          ]
+        }
+        """);
+
+        var ex = Should.Throw<UserInputException>(() => parser.ParseAuthProfiles(root));
+        ex.Message.ShouldContain("cacheName");
+        ex.Message.ShouldContain("azure-cli");
+    }
+
+    [Fact]
+    public void ParseAuthProfiles_UnknownTypeMessageMentionsAzureCli()
+    {
+        var parser = With(new());
+        var root = Parse("""{ "authProfiles": [ { "name": "x", "auth": { "type": "magic" } } ] }""");
+
+        var ex = Should.Throw<UserInputException>(() => parser.ParseAuthProfiles(root));
+        ex.Message.ShouldContain("azure-cli");
+    }
 }

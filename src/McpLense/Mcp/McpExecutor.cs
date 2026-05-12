@@ -131,15 +131,15 @@ internal static class McpExecutor
     /// Wraps a single profile in a synthetic <see cref="ResolvedServer"/> so it can flow through
     /// the existing <see cref="InteractiveBrowserSessionRunner"/> / <see cref="AuthSessionRunner"/>
     /// implementations. The synthetic URL falls back to the profile's <c>resourceUri</c> (OAuth
-    /// only) when no positional URL was supplied; interactive-browser profiles get a placeholder
-    /// since MSAL only needs clientId/tenantId/scopes.
+    /// only) when no positional URL was supplied; interactive-browser and azure-cli profiles
+    /// get a placeholder since the credential only needs clientId/tenantId/scopes.
     /// </summary>
     private static ResolvedServer? SynthesizeServer(AuthProfile profile, Uri? url)
     {
         var effectiveUrl = url
             ?? (Uri.TryCreate(profile.Auth.ResourceUri, UriKind.Absolute, out var resourceUri) ? resourceUri : null);
 
-        if (effectiveUrl is null && profile.Auth.Kind == AuthKind.InteractiveBrowser)
+        if (effectiveUrl is null && (profile.Auth.Kind == AuthKind.InteractiveBrowser || profile.Auth.Kind == AuthKind.AzureCli))
         {
             effectiveUrl = new Uri($"https://profile.{profile.Name}.local/");
         }
@@ -180,6 +180,7 @@ internal static class McpExecutor
         {
             AuthKind.InteractiveBrowser => (await InteractiveBrowserSessionRunner.LoginAsync([server], cancellationToken).ConfigureAwait(false)).Servers[0],
             AuthKind.OAuth => (await AuthSessionRunner.LoginAsync([server], cancellationToken).ConfigureAwait(false)).Servers[0],
+            AuthKind.AzureCli => await LoginAzureCliAsync(profile, server, cancellationToken).ConfigureAwait(false),
             AuthKind.Bearer => new AuthSessionEntry(profile.Name, server.Target, Success: true, Detail: "bearer profiles need no login"),
             _ => new AuthSessionEntry(profile.Name, server.Target, Success: false, Error: $"unsupported auth kind {profile.Auth.Kind}")
         };
@@ -201,9 +202,44 @@ internal static class McpExecutor
         {
             AuthKind.InteractiveBrowser => (await InteractiveBrowserSessionRunner.LogoutAsync([server], cancellationToken).ConfigureAwait(false)).Servers[0],
             AuthKind.OAuth => (await AuthSessionRunner.LogoutAsync([server], cancellationToken).ConfigureAwait(false)).Servers[0],
+            AuthKind.AzureCli => new AuthSessionEntry(
+                profile.Name,
+                server.Target,
+                Success: true,
+                Detail: "azure-cli profiles delegate to the Azure CLI; run 'az logout' to clear that session"),
             AuthKind.Bearer => new AuthSessionEntry(profile.Name, server.Target, Success: true, Detail: "bearer profiles have no cache to clear"),
             _ => new AuthSessionEntry(profile.Name, server.Target, Success: false, Error: $"unsupported auth kind {profile.Auth.Kind}")
         };
+    }
+
+    /// <summary>
+    /// Verifies an azure-cli profile by asking <see cref="Azure.Identity.AzureCliCredential"/>
+    /// for a token against the profile's scopes. Success means <c>az</c> is installed, the user
+    /// is logged in, and Entra issued a token for the requested resource. There is no MSAL cache
+    /// to prime - the CLI keeps its own session - but proving "token acquisition works right now"
+    /// is the most useful thing <c>mcplense login</c> can do for this auth kind.
+    /// </summary>
+    private static async Task<AuthSessionEntry> LoginAzureCliAsync(AuthProfile profile, ResolvedServer server, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var credential = AuthHandlerFactory.BuildAzureCliCredential(profile.Auth);
+            var context = new Azure.Core.TokenRequestContext(profile.Auth.Scopes!.ToArray());
+            var token = await credential.GetTokenAsync(context, cancellationToken).ConfigureAwait(false);
+
+            var detail = token.ExpiresOn > DateTimeOffset.MinValue
+                ? $"acquired token via 'az' (expires {token.ExpiresOn:O})"
+                : "acquired token via 'az'";
+            return new AuthSessionEntry(profile.Name, server.Target, Success: true, Detail: detail);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new AuthSessionEntry(
+                profile.Name,
+                server.Target,
+                Success: false,
+                Error: $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>

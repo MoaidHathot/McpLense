@@ -127,4 +127,58 @@ public class AuthHandlerFactoryTests
         var ex = Should.Throw<McpLenseAuthException>(() => AuthHandlerFactory.Create(auth));
         ex.Message.ShouldContain("redirectUri");
     }
+
+    // -------- AzureCli (no interactive browser) -----------------------------------
+
+    [Fact]
+    public void Create_AzureCli_ReturnsHandlerWrappingAzureCliCredential()
+    {
+        // No clientId, no cacheName, no redirectUri - just scopes (+ optional tenantId).
+        var auth = new ResolvedAuth(
+            AuthKind.AzureCli,
+            Scopes: new[] { "api://res/.default" });
+
+        var handler = AuthHandlerFactory.Create(auth);
+
+        // The handler is the generic TokenCredential bearer wrapper (InteractiveBrowserHandler
+        // by class name, but the implementation is auth-kind-agnostic). We don't trigger an
+        // actual token acquisition here - that would shell out to `az`.
+        handler.ShouldBeOfType<InteractiveBrowserHandler>();
+        handler.Dispose();
+    }
+
+    [Fact]
+    public void Create_AzureCli_WithTenantId_BuildsSuccessfully()
+    {
+        var auth = new ResolvedAuth(
+            AuthKind.AzureCli,
+            Scopes: new[] { "api://res/.default" },
+            TenantId: "common");
+
+        var handler = AuthHandlerFactory.Create(auth);
+
+        handler.ShouldNotBeNull();
+        handler.Dispose();
+    }
+
+    [Fact]
+    public void Create_AzureCli_MissingScopes_Throws()
+    {
+        var auth = new ResolvedAuth(AuthKind.AzureCli);
+
+        var ex = Should.Throw<McpLenseAuthException>(() => AuthHandlerFactory.Create(auth));
+        ex.Message.ShouldContain("scope");
+    }
+
+    [Fact]
+    public void BuildAzureCliCredential_WithScopes_ReturnsCredential()
+    {
+        var auth = new ResolvedAuth(
+            AuthKind.AzureCli,
+            Scopes: new[] { "api://res/.default" });
+
+        var credential = AuthHandlerFactory.BuildAzureCliCredential(auth);
+
+        credential.ShouldNotBeNull();
+    }
 }
