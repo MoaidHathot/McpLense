@@ -65,6 +65,11 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
     private readonly bool _ownsHttpClient;
     private readonly Action<string> _writeStderr;
 
+    // Per-instance memoizer: the executor and the resolver both call ProbeAsync for the same
+    // server URL (once for profile narrowing, once for scope substitution). Caching keeps that
+    // to a single round-trip without forcing a redesign of the call sites.
+    private readonly Dictionary<Uri, AuthProbeResult> _cache = new();
+
     public AuthProbe()
         : this(httpClient: null, writeStderr: null)
     {
@@ -85,18 +90,27 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
     {
         ArgumentNullException.ThrowIfNull(serverUrl);
 
-        // Step 1: probe the server itself for a 401 + WWW-Authenticate header. We send a HEAD
-        // first (cheap, doesn't consume server-state) and fall back to GET for servers that
-        // reject HEAD outright.
+        if (_cache.TryGetValue(serverUrl, out var cached))
+        {
+            return cached;
+        }
+
+        var fresh = await ProbeUncachedAsync(serverUrl, cancellationToken).ConfigureAwait(false);
+        _cache[serverUrl] = fresh;
+        return fresh;
+    }
+
+    private async Task<AuthProbeResult> ProbeUncachedAsync(Uri serverUrl, CancellationToken cancellationToken)
+    {
+        // Step 1: probe the server for a 401 + WWW-Authenticate header. We use GET (not HEAD)
+        // because some MCP servers (Agent365 most notably) HANG on HEAD requests for >30s
+        // before timing out, while responding to GET in well under a second with the same auth
+        // metadata. HttpCompletionOption.ResponseHeadersRead means we read the response headers
+        // and dispose without downloading the body, so the cost is comparable to HEAD anyway.
         HttpResponseMessage? response = null;
         try
         {
-            response = await SendUnauthenticatedAsync(serverUrl, HttpMethod.Head, cancellationToken).ConfigureAwait(false);
-            if ((int)response.StatusCode is 405 or 501)
-            {
-                response.Dispose();
-                response = await SendUnauthenticatedAsync(serverUrl, HttpMethod.Get, cancellationToken).ConfigureAwait(false);
-            }
+            response = await SendUnauthenticatedAsync(serverUrl, HttpMethod.Get, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

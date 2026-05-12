@@ -314,10 +314,69 @@ internal static class McpExecutor
             // server resolution and surfaced as 30+ second hangs against slow / flaky servers
             // (e.g. Agent365 returning 502/timeouts on unauthenticated HEAD).
             var profile = await resolver.ResolveAsync(server.Url!, profiles, explicitProfile, cancellationToken).ConfigureAwait(false);
-            result[index] = profile is null ? server : server with { Auth = profile.Auth };
+            if (profile is null)
+            {
+                result[index] = server;
+                continue;
+            }
+
+            var auth = await MaybeSubstituteScopesFromProbeAsync(profile.Auth, server.Url!, probe, cancellationToken).ConfigureAwait(false);
+            result[index] = server with { Auth = auth };
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// When a profile's scopes are all <c>&lt;resource&gt;/.default</c> style, replace them with
+    /// the more specific <c>.default</c>-form scopes advertised by the server's RFC 9728
+    /// Protected Resource Metadata document. This is what makes one Entra profile work against a
+    /// server (like Agent365) that namespaces scopes per-MCP-server-URL rather than per-app-id.
+    ///
+    /// Heuristic: if EVERY scope on the profile ends with <c>/.default</c>, we assume the user's
+    /// intent is "give me whatever this resource expects" and substitute. Profiles with explicit
+    /// permission names (<c>mcp.read</c>, <c>repo</c>, etc.) are left untouched - those users
+    /// know exactly what they're asking for.
+    ///
+    /// The probe is shared (memoised) with the resolver via <see cref="AuthProbe"/>'s per-URL
+    /// cache, so this method costs zero round-trips when the resolver already probed.
+    /// </summary>
+    internal static async Task<ResolvedAuth> MaybeSubstituteScopesFromProbeAsync(
+        ResolvedAuth auth,
+        Uri serverUrl,
+        IAuthProbe probe,
+        CancellationToken cancellationToken)
+    {
+        if (!AllScopesAreDefault(auth.Scopes))
+        {
+            return auth;
+        }
+
+        var probeResult = await probe.ProbeAsync(serverUrl, cancellationToken).ConfigureAwait(false);
+        if (probeResult.Scopes is null || probeResult.Scopes.Count == 0)
+        {
+            return auth;
+        }
+
+        var advertisedDefault = probeResult.Scopes
+            .Where(s => s.EndsWith("/.default", StringComparison.Ordinal))
+            .ToArray();
+        if (advertisedDefault.Length == 0)
+        {
+            return auth;
+        }
+
+        return auth with { Scopes = advertisedDefault };
+    }
+
+    private static bool AllScopesAreDefault(IReadOnlyList<string>? scopes)
+    {
+        if (scopes is null || scopes.Count == 0)
+        {
+            return false;
+        }
+
+        return scopes.All(s => s.EndsWith("/.default", StringComparison.Ordinal));
     }
 
     /// <summary>

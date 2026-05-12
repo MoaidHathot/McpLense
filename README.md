@@ -282,6 +282,38 @@ When you run `mcplense inspect <url>` (no `--profile`), McpLense:
    profiles for different tenants, both cached) always falls into this path
    because the user genuinely needs to choose.
 
+### Scope substitution from PRM (Agent365 et al.)
+
+Some servers (notably Microsoft Agent365) advertise per-resource scopes in
+their RFC 9728 Protected Resource Metadata document. If your profile asks for
+a generic `<audience>/.default`-style scope, McpLense automatically replaces
+it with the server-advertised `.default` scope at request time:
+
+```text
+# Your profile says:
+"scopes": ["${VSCODE_AUDIENCE}/.default"]
+#   -> "ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default" after env expansion
+
+# Server's PRM advertises:
+"scopes_supported": [
+  "https://agent365.svc.cloud.microsoft/agents/tenants/<tenant>/servers/mcp_MailTools/.default",
+  ...
+]
+
+# McpLense automatically requests the second form, which is what the server
+# actually accepts. One profile works across every Agent365 MCP without per-
+# server boilerplate.
+```
+
+**The rule**: substitution happens only when **every** scope in your profile
+ends with `/.default`. Profiles with explicit permission names
+(`mcp.read`, `repo`, `User.Read`, etc.) are left untouched — those users
+asked for something specific.
+
+When the server doesn't speak RFC 9728 (no PRM document) or the probe is
+inconclusive (network failure, etc.), McpLense uses the profile's original
+scopes as-is.
+
 ### Ad-hoc Bearer (no profile required)
 
 For one-off Bearer connections, the CLI shortcut still works:

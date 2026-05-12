@@ -114,29 +114,18 @@ public class AuthProbeTests
     }
 
     [Fact]
-    public async Task ProbeAsync_HeadReturns405_FallsBackToGet()
+    public async Task ProbeAsync_UsesGet_NotHead()
     {
+        // Some MCP servers (Agent365 in particular) hang on HEAD requests, taking 30+ seconds
+        // to time out. The probe must use GET to stay responsive. We only read response headers
+        // (HttpCompletionOption.ResponseHeadersRead) so the body-download cost is irrelevant.
         var (probe, handler, _) = Build();
-        handler.Enqueue(HttpStatusCode.MethodNotAllowed);
         handler.Enqueue(HttpStatusCode.OK);
 
         await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
 
-        handler.Requests.Count.ShouldBe(2);
-        handler.Requests[0].Method.ShouldBe(HttpMethod.Head);
-        handler.Requests[1].Method.ShouldBe(HttpMethod.Get);
-    }
-
-    [Fact]
-    public async Task ProbeAsync_HeadReturns501_FallsBackToGet()
-    {
-        var (probe, handler, _) = Build();
-        handler.Enqueue(HttpStatusCode.NotImplemented);
-        handler.Enqueue(HttpStatusCode.OK);
-
-        await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
-
-        handler.Requests.Count.ShouldBe(2);
+        handler.Requests.Count.ShouldBe(1);
+        handler.Requests[0].Method.ShouldBe(HttpMethod.Get);
     }
 
     [Fact]
@@ -295,5 +284,38 @@ public class AuthProbeTests
         var response = new HttpResponseMessage();
 
         AuthProbe.TryExtractResourceMetadataUrl(response).ShouldBeNull();
+    }
+
+    // -------- Per-URL caching (memoiser) ------------------------------------------
+
+    [Fact]
+    public async Task ProbeAsync_SameUrlTwice_OnlyHitsHttpOnce()
+    {
+        // Critical invariant: the resolver and the executor both probe the same URL during a
+        // single server resolution. The probe must cache per-URL to keep that to ONE HTTP
+        // round-trip; otherwise users see double "AuthProbe:" stderr lines and double wait time
+        // on slow servers (e.g. Agent365 502/timeout on unauthenticated HEAD).
+        var (probe, handler, _) = Build();
+        handler.Enqueue(HttpStatusCode.OK);
+
+        var url = new Uri("https://example.com/");
+        var first = await probe.ProbeAsync(url, CancellationToken.None);
+        var second = await probe.ProbeAsync(url, CancellationToken.None);
+
+        handler.Requests.Count.ShouldBe(1);
+        ReferenceEquals(first, second).ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task ProbeAsync_DifferentUrls_HitHttpIndependently()
+    {
+        var (probe, handler, _) = Build();
+        handler.Enqueue(HttpStatusCode.OK);
+        handler.Enqueue(HttpStatusCode.OK);
+
+        await probe.ProbeAsync(new Uri("https://a.example.com/"), CancellationToken.None);
+        await probe.ProbeAsync(new Uri("https://b.example.com/"), CancellationToken.None);
+
+        handler.Requests.Count.ShouldBe(2);
     }
 }
