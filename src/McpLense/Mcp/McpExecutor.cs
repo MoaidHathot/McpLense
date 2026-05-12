@@ -272,20 +272,11 @@ internal static class McpExecutor
                 continue;
             }
 
-            // When --profile was set explicitly, respect it unconditionally (no probe required).
-            // Otherwise probe first; only attach a profile when the server signals auth is
-            // required (status 401 or RFC 9728 metadata present).
-            if (string.IsNullOrEmpty(explicitProfile))
-            {
-                var probeResult = await probe.ProbeAsync(server.Url!, cancellationToken).ConfigureAwait(false);
-                if (probeResult.IsEmpty)
-                {
-                    // Server appears to need no auth (or it doesn't speak RFC 9728). Connect plain.
-                    result[index] = server;
-                    continue;
-                }
-            }
-
+            // Single source of truth: the resolver decides. It short-circuits the single-profile
+            // case (no probe), and only probes when disambiguating among multiple profiles. This
+            // replaces an earlier pre-probe in this method that caused two HTTP round-trips per
+            // server resolution and surfaced as 30+ second hangs against slow / flaky servers
+            // (e.g. Agent365 returning 502/timeouts on unauthenticated HEAD).
             var profile = await resolver.ResolveAsync(server.Url!, profiles, explicitProfile, cancellationToken).ConfigureAwait(false);
             result[index] = profile is null ? server : server with { Auth = profile.Auth };
         }

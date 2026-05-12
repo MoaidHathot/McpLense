@@ -4,14 +4,14 @@ namespace McpLense;
 /// Picks the right <see cref="AuthProfile"/> for an HTTP MCP target. Resolution rules:
 /// <list type="number">
 ///   <item>Explicit <c>--profile &lt;name&gt;</c> wins (case-insensitive lookup; missing name errors).</item>
-///   <item>Explicit <c>--try-all</c> returns the full set in load order; the caller drives the
-///   per-profile attempts.</item>
-///   <item>Otherwise: probe the URL via <see cref="IAuthProbe"/>; narrow the candidate set by
-///   matching scopes (when the probe returned any). Fall through to all loaded profiles when
-///   the probe was empty.</item>
-///   <item>From candidates, pick the unique profile that already has a cached account
-///   (<see cref="IMsalCacheInspector"/>). If there is exactly one cached candidate, use it;
-///   if multiple, error with a disambiguation hint; if zero, error suggesting login.</item>
+///   <item>Zero profiles loaded &rarr; error explaining how to set one up.</item>
+///   <item>Exactly one profile loaded &rarr; use it. No probe, no cache check needed: the answer
+///   is unambiguous and any extra HTTP round-trip would just add latency (and surface as a
+///   misleading symptom when the server is slow or flaky on unauthenticated requests, e.g.
+///   Agent365 returning 502/timeouts to HEAD probes).</item>
+///   <item>Multiple profiles loaded &rarr; probe the URL for RFC 9728 advertised scopes, narrow
+///   the candidate set, then pick the unique profile that already has a cached account. Errors
+///   on ambiguity / no match with an actionable hint.</item>
 /// </list>
 /// </summary>
 internal sealed class AuthProfileResolver
@@ -66,6 +66,16 @@ internal sealed class AuthProfileResolver
                 "pass one via --profiles <path>, or set --no-auth to bypass.");
         }
 
+        // Single-profile shortcut: there's nothing to disambiguate, so don't pay for an HTTP
+        // round-trip just to "confirm" what we already know. Some servers (Agent365, internal
+        // Microsoft endpoints) are slow or flaky on unauthenticated HEAD/GET probes, and the
+        // probe-on-every-call was producing 30+ second waits and double timeouts before. The
+        // runtime path will fail authoritatively if this profile turns out not to fit.
+        if (profiles.Count == 1)
+        {
+            return profiles[0];
+        }
+
         var probeResult = await _probe.ProbeAsync(serverUrl, cancellationToken).ConfigureAwait(false);
         var candidates = NarrowByProbe(profiles, probeResult);
 
@@ -101,7 +111,7 @@ internal sealed class AuthProfileResolver
 
         throw new UserInputException(
             $"No cached credentials match {serverUrl}. " +
-            $"Run 'mcplense inspect {serverUrl} --profile <name> --login' to authenticate, " +
+            $"Run 'mcplense login --profile <name>' first, " +
             $"or pass --profile to pick one of: {string.Join(", ", candidates.Select(p => p.Name))}.");
     }
 

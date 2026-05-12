@@ -103,14 +103,29 @@ public class AuthProfileResolverTests
     [Fact]
     public async Task ResolveAsync_SingleProfile_NoCache_NoExplicit_StillReturnsIt()
     {
-        // With exactly one candidate and no cached accounts, the resolver still picks it -
-        // the runtime will trigger interactive auth on first request.
+        // With exactly one candidate, the resolver picks it unconditionally - no need to probe
+        // or check the cache. The runtime triggers interactive auth on first request if needed.
         var resolver = Build();
         var profiles = new[] { InteractiveBrowser("agent365") };
 
         var picked = await resolver.ResolveAsync(new Uri("https://x"), profiles, requestedProfile: null, CancellationToken.None);
 
         picked!.Name.ShouldBe("agent365");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_SingleProfile_BypassesProbe()
+    {
+        // Critical perf / reliability check: with one profile loaded we MUST NOT call the
+        // probe. Some servers (Agent365 et al.) are slow or flaky on unauthenticated HEAD
+        // probes, and the extra round-trip used to surface as 30+ second hangs.
+        var probe = new FakeProbe(AuthProbeResult.Empty);
+        var resolver = new AuthProfileResolver(probe, new FakeCache(new HashSet<string>(StringComparer.OrdinalIgnoreCase)));
+        var profiles = new[] { InteractiveBrowser("agent365") };
+
+        await resolver.ResolveAsync(new Uri("https://x"), profiles, requestedProfile: null, CancellationToken.None);
+
+        probe.Calls.ShouldBe(0);
     }
 
     [Fact]
@@ -149,7 +164,7 @@ public class AuthProfileResolverTests
             () => resolver.ResolveAsync(new Uri("https://x"), profiles, requestedProfile: null, CancellationToken.None));
 
         ex.Message.ShouldContain("No cached credentials");
-        ex.Message.ShouldContain("--login");
+        ex.Message.ShouldContain("mcplense login");
         ex.Message.ShouldContain("agent365");
         ex.Message.ShouldContain("github");
     }
