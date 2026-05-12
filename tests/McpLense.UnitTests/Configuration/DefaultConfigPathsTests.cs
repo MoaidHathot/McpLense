@@ -112,6 +112,47 @@ public class DefaultConfigPathsTests
         DefaultConfigPaths.ResolveRoot(env, AsOs(OSPlatform.Linux)).ShouldBeNull();
     }
 
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    [InlineData("TRUE")]
+    [InlineData("True")]
+    [InlineData("yes")]
+    [InlineData("on")]
+    public void ResolveRoot_DisableAutoDiscoveryEnvSet_ReturnsNull(string value)
+    {
+        var env = Env(new Dictionary<string, string?>
+        {
+            ["XDG_CONFIG_HOME"] = "/custom/xdg",
+            ["APPDATA"] = "C:\\AppData",
+            ["HOME"] = "/home/me",
+            [DefaultConfigPaths.DisableAutoDiscoveryEnvVar] = value
+        });
+
+        // Even when XDG/APPDATA/HOME are set, the kill-switch wins.
+        DefaultConfigPaths.ResolveRoot(env, AsOs(OSPlatform.Windows)).ShouldBeNull();
+        DefaultConfigPaths.ResolveRoot(env, AsOs(OSPlatform.Linux)).ShouldBeNull();
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("false")]
+    [InlineData("no")]
+    [InlineData("off")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveRoot_DisableAutoDiscoveryEnvFalsy_DoesNotDisable(string value)
+    {
+        var env = Env(new Dictionary<string, string?>
+        {
+            ["XDG_CONFIG_HOME"] = "/custom/xdg",
+            [DefaultConfigPaths.DisableAutoDiscoveryEnvVar] = value
+        });
+
+        DefaultConfigPaths.ResolveRoot(env, AsOs(OSPlatform.Linux))
+            .ShouldBe(Path.Combine("/custom/xdg", "McpLense"));
+    }
+
     [Fact]
     public void EnumerateProfileFiles_NullRoot_ReturnsEmpty()
     {

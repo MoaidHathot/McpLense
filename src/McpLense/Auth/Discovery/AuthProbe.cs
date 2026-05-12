@@ -8,9 +8,13 @@ namespace McpLense;
 /// All fields may be null when the server doesn't speak RFC 9728 / OAuth discovery.
 /// </summary>
 /// <param name="RequiresAuth">
-/// True when the probe saw concrete evidence that authentication is required (HTTP 401, or a
-/// <c>WWW-Authenticate</c> header). Servers that respond 200 without auth headers leave this
-/// false so callers can connect plain.
+/// True when the probe saw concrete evidence that authentication is required (HTTP 401, a
+/// <c>WWW-Authenticate</c> header, or any non-2xx response from the unauthenticated probe).
+/// </param>
+/// <param name="Inconclusive">
+/// True when the probe could not reach a definitive answer (network error, timeout, malformed
+/// response). Callers with loaded profiles should err on the side of attaching one in this case
+/// rather than connecting plain.
 /// </param>
 /// <param name="ResourceMetadataUrl">
 /// The <c>resource_metadata</c> URL extracted from <c>WWW-Authenticate: Bearer</c>, when present.
@@ -21,15 +25,22 @@ namespace McpLense;
 /// </param>
 internal sealed record AuthProbeResult(
     bool RequiresAuth = false,
+    bool Inconclusive = false,
     string? ResourceMetadataUrl = null,
     IReadOnlyList<string>? Scopes = null,
     IReadOnlyList<string>? AuthorizationServers = null)
 {
     public static AuthProbeResult Empty { get; } = new();
 
-    /// <summary>True when the probe surfaced no useful metadata at all.</summary>
+    /// <summary>
+    /// True when the probe surfaced no useful auth signal AND ran to completion (i.e. the
+    /// server answered with a clean 2xx response and no auth headers). Network failures or
+    /// other inconclusive outcomes leave this false so callers don't mistake them for a
+    /// confirmed "no auth needed" signal.
+    /// </summary>
     public bool IsEmpty
         => !RequiresAuth
+           && !Inconclusive
            && string.IsNullOrEmpty(ResourceMetadataUrl)
            && (Scopes is null || Scopes.Count == 0)
            && (AuthorizationServers is null || AuthorizationServers.Count == 0);
@@ -48,7 +59,7 @@ internal interface IAuthProbe
 /// <summary>Default <see cref="IAuthProbe"/>. Owns its own <see cref="HttpClient"/> when none is supplied.</summary>
 internal sealed class AuthProbe : IAuthProbe, IDisposable
 {
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
 
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
@@ -96,50 +107,42 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         catch (Exception ex)
         {
             // Network failure, DNS error, HttpClient timeout (manifests as TaskCanceledException
-            // even when the caller's token wasn't cancelled). All recoverable - fall through.
-            _writeStderr($"AuthProbe: probing {serverUrl} failed ({ex.GetType().Name}: {ex.Message}); falling back to cache-only auto-pick.");
+            // even when the caller's token wasn't cancelled). Inconclusive: callers with loaded
+            // profiles should still attach one rather than connecting plain.
+            _writeStderr($"AuthProbe: probing {serverUrl} failed ({ex.GetType().Name}: {ex.Message}); attaching the configured profile so the runtime hits the server with credentials.");
             response?.Dispose();
-            return AuthProbeResult.Empty;
+            return new AuthProbeResult(Inconclusive: true);
         }
 
         try
         {
-            var isSuccessStatus = response.IsSuccessStatusCode;
             var hasAuthChallenge = response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                                    || response.Headers.WwwAuthenticate.Count > 0;
-
-            // Anything that isn't a clean 2xx is treated as "auth probably required". This is
-            // conservative on purpose: servers that flake on HEAD (e.g. Agent365 sometimes
-            // returns 503 to unauthenticated probes), block HEAD entirely, or return non-401
-            // 4xx for missing credentials would otherwise be misdiagnosed as "no auth needed"
-            // and connect plain. When profiles are loaded the cost of false-positive attach is
-            // zero (handler just adds a Bearer header), while the cost of false-negative skip is
-            // a confusing error from the runtime path.
-            var requiresAuth = hasAuthChallenge || !isSuccessStatus;
+            var isSuccessStatus = response.IsSuccessStatusCode;
             var resourceMetadataUrl = TryExtractResourceMetadataUrl(response);
 
             if (string.IsNullOrEmpty(resourceMetadataUrl))
             {
-                if (!requiresAuth)
+                if (hasAuthChallenge)
                 {
-                    // Server appears not to need auth at all.
+                    // Server explicitly told us auth is needed but didn't point us at metadata.
+                    _writeStderr($"AuthProbe: {serverUrl} returned no RFC 9728 'resource_metadata' header; falling back to cache-only auto-pick.");
+                    return new AuthProbeResult(RequiresAuth: true);
+                }
+
+                if (isSuccessStatus)
+                {
+                    // Clean 2xx with no auth headers - server genuinely doesn't need auth.
                     return AuthProbeResult.Empty;
                 }
 
-                if (!hasAuthChallenge)
-                {
-                    // Server returned non-2xx but no explicit auth challenge. Could be a flake,
-                    // could be "wrong endpoint", could be auth required behind a generic error.
-                    // Flag for the caller and treat as auth-required so a loaded profile is
-                    // attached and the runtime gets an authoritative answer.
-                    _writeStderr($"AuthProbe: {serverUrl} returned {(int)response.StatusCode} on the unauthenticated probe; attaching the configured profile so the runtime hits the server with credentials.");
-                }
-                else
-                {
-                    _writeStderr($"AuthProbe: {serverUrl} returned no RFC 9728 'resource_metadata' header; falling back to cache-only auto-pick.");
-                }
-
-                return new AuthProbeResult(RequiresAuth: true);
+                // Non-2xx without an auth challenge. Could be a flake (Agent365 sometimes returns
+                // 503 to unauthenticated HEAD), a wrong endpoint, or auth-required behind a
+                // generic error. Mark as Inconclusive so callers with loaded profiles attach one
+                // and the runtime gets an authoritative answer, but DON'T claim auth is required
+                // (we don't know that).
+                _writeStderr($"AuthProbe: {serverUrl} returned {(int)response.StatusCode} on the unauthenticated probe; result is inconclusive.");
+                return new AuthProbeResult(Inconclusive: true);
             }
 
             var metadata = await FetchProtectedResourceMetadataAsync(resourceMetadataUrl!, cancellationToken).ConfigureAwait(false);
@@ -271,7 +274,7 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         if (!Uri.TryCreate(url, UriKind.Absolute, out var metadataUri))
         {
             _writeStderr($"AuthProbe: 'resource_metadata' URL '{url}' is not absolute; falling back to cache-only auto-pick.");
-            return AuthProbeResult.Empty;
+            return new AuthProbeResult(Inconclusive: true);
         }
 
         try

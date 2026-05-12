@@ -232,6 +232,22 @@ Use `--profiles <path>` to load a specific file (overrides auto-discovery is
 NOT performed when `--profiles` is given). Use `--profile <name>` to force a
 specific loaded profile.
 
+#### Disabling auto-discovery (`MCPLENSE_NO_PROFILE_AUTO_DISCOVERY`)
+
+Set the env var `MCPLENSE_NO_PROFILE_AUTO_DISCOVERY=1` (or `true`/`yes`/`on`)
+to bypass auto-discovery entirely. `--profiles <path>` flags still work; only
+the XDG/APPDATA/HOME fallback search is suppressed.
+
+This matters in two scenarios:
+
+- **CI runners**: no user, no browser. Auto-discovery picking up a profile
+  whose auth kind is `interactive-browser` would hang the build waiting for
+  someone to sign in.
+- **Test suites**: the McpLense integration and E2E tests in this repo set
+  this var via a `ModuleInitializer` so the developer's user-side profile
+  (typically `$XDG_CONFIG_HOME/McpLense/McpLense.Profiles.json`) can never
+  leak into a test run and trigger an MSAL browser pop.
+
 ### Profile auto-pick
 
 When you run `mcplense inspect <url>` (no `--profile`), McpLense:

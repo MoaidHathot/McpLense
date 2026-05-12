@@ -224,6 +224,12 @@ Environment-variable expansion
     ${VAR:-default}      substring form with default
   Use '$$' for a literal '$'.
 
+  Auto-discovery kill-switch:
+    MCPLENSE_NO_PROFILE_AUTO_DISCOVERY=1
+      Disable XDG/APPDATA profile auto-discovery. --profiles <path> flags still
+      work normally. CI runners and integration test suites should set this so a
+      user-side profile can never trigger surprise interactive flows.
+
 Examples
   mcplense inspect https://localhost:3000/mcp --format json
   mcplense inspect https://api.example.com/mcp --auth bearer --auth-token env:API_TOKEN

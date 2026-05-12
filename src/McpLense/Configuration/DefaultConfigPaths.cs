@@ -14,6 +14,10 @@ namespace McpLense;
 ///
 /// Within the chosen directory, McpLense loads BOTH a single root file
 /// (<see cref="ProfilesFileName"/>) AND every <c>*.json</c> entry under <see cref="ProfilesSubdirectoryName"/>.
+///
+/// Set the env var <see cref="DisableAutoDiscoveryEnvVar"/> to <c>1</c>/<c>true</c> to bypass
+/// auto-discovery entirely. CI runners and integration tests should set this so they don't
+/// accidentally inherit a user-side profile and trigger interactive browser flows.
 /// </summary>
 internal static class DefaultConfigPaths
 {
@@ -24,12 +28,20 @@ internal static class DefaultConfigPaths
     public const string ProfilesSubdirectoryName = "profiles";
 
     /// <summary>
+    /// Environment variable that, when set to <c>1</c>/<c>true</c>/<c>yes</c>/<c>on</c>, disables
+    /// profile auto-discovery from the platform default directory. <c>--profiles &lt;path&gt;</c>
+    /// flags still work normally; only the XDG/APPDATA/HOME fallback search is suppressed.
+    /// </summary>
+    public const string DisableAutoDiscoveryEnvVar = "MCPLENSE_NO_PROFILE_AUTO_DISCOVERY";
+
+    /// <summary>
     /// Resolves the McpLense config root for the current process. Honors
     /// <c>$XDG_CONFIG_HOME</c> on every platform; otherwise picks the OS-native fallback.
     /// </summary>
     /// <returns>
     /// Absolute path to the config root, or <c>null</c> when no platform-appropriate location
-    /// can be determined (e.g. the home directory cannot be resolved).
+    /// can be determined (e.g. the home directory cannot be resolved) OR when auto-discovery is
+    /// disabled via <see cref="DisableAutoDiscoveryEnvVar"/>.
     /// </returns>
     public static string? ResolveRoot()
         => ResolveRoot(Environment.GetEnvironmentVariable, RuntimeInformation.IsOSPlatform);
@@ -39,6 +51,11 @@ internal static class DefaultConfigPaths
     {
         ArgumentNullException.ThrowIfNull(env);
         ArgumentNullException.ThrowIfNull(isOsPlatform);
+
+        if (IsAutoDiscoveryDisabled(env))
+        {
+            return null;
+        }
 
         var xdg = env("XDG_CONFIG_HOME");
         if (!string.IsNullOrWhiteSpace(xdg))
@@ -65,6 +82,20 @@ internal static class DefaultConfigPaths
         }
 
         return Path.Combine(home, ".config", "McpLense");
+    }
+
+    private static bool IsAutoDiscoveryDisabled(Func<string, string?> env)
+    {
+        var raw = env(DisableAutoDiscoveryEnvVar);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        return raw.Equals("1", StringComparison.Ordinal)
+               || raw.Equals("true", StringComparison.OrdinalIgnoreCase)
+               || raw.Equals("yes", StringComparison.OrdinalIgnoreCase)
+               || raw.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
