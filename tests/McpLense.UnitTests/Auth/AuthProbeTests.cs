@@ -111,6 +111,26 @@ public class AuthProbeTests
         result.ResourceMetadataUrl.ShouldBe("https://example.com/.well-known/oauth-protected-resource");
         result.Scopes!.ShouldBe(new[] { "mcp.read", "mcp.write" });
         result.AuthorizationServers!.ShouldBe(new[] { "https://login.example.com" });
+        result.Resource.ShouldBe("https://example.com/");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_PrmWithoutResourceField_LeavesResourceNull()
+    {
+        // RFC 9728 nominally requires "resource", but production servers in the wild sometimes
+        // omit it. The probe must tolerate the absence without crashing or treating an empty
+        // value as a real resource URI (which would mis-qualify bare scope names downstream).
+        var (probe, handler, _) = Build();
+        handler.Enqueue(
+            HttpStatusCode.Unauthorized,
+            wwwAuthenticate: "Bearer resource_metadata=\"https://example.com/.well-known/oauth-protected-resource\"");
+        handler.Enqueue(HttpStatusCode.OK, body: """{"scopes_supported": ["mcp.read"]}""");
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+        result.Scopes!.ShouldBe(new[] { "mcp.read" });
+        result.Resource.ShouldBeNull();
     }
 
     [Fact]

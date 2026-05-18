@@ -329,14 +329,34 @@ internal static class McpExecutor
 
     /// <summary>
     /// When a profile's scopes are all <c>&lt;resource&gt;/.default</c> style, replace them with
-    /// the more specific <c>.default</c>-form scopes advertised by the server's RFC 9728
-    /// Protected Resource Metadata document. This is what makes one Entra profile work against a
-    /// server (like Agent365) that namespaces scopes per-MCP-server-URL rather than per-app-id.
+    /// what the server's RFC 9728 Protected Resource Metadata document advertises. This is what
+    /// makes one Entra profile work against servers (like Agent365) that namespace scopes
+    /// per-MCP-server-URL rather than per-app-id.
     ///
     /// Heuristic: if EVERY scope on the profile ends with <c>/.default</c>, we assume the user's
     /// intent is "give me whatever this resource expects" and substitute. Profiles with explicit
     /// permission names (<c>mcp.read</c>, <c>repo</c>, etc.) are left untouched - those users
     /// know exactly what they're asking for.
+    ///
+    /// Substitution preference order (first non-empty wins):
+    /// <list type="number">
+    ///   <item><description>Specific advertised scopes (e.g. <c>"McpServers.Mail.All"</c>) other
+    ///   than standard OIDC names. Bare names get fully-qualified using the metadata's
+    ///   <c>resource</c> field (or the server URL when the metadata omits one). This is preferred
+    ///   over <c>.default</c> because Entra's <c>.default</c> only emits statically
+    ///   pre-consented permissions, so a token request with <c>.default</c> against a resource
+    ///   the calling client has never consented to comes back without the needed scope claims.
+    ///   Asking for the specific scope makes Entra include it (and triggers dynamic consent for
+    ///   interactive flows).</description></item>
+    ///   <item><description>Advertised <c>.default</c> forms. Useful when the server only
+    ///   advertises <c>&lt;resource&gt;/.default</c> (e.g. Agent365). The token still depends on
+    ///   prior consent, but at least the audience targets the correct resource URI.</description></item>
+    ///   <item><description>The profile's original scopes, unchanged.</description></item>
+    /// </list>
+    ///
+    /// Standard OIDC scopes (<c>openid</c>, <c>profile</c>, <c>offline_access</c>, etc.) are
+    /// excluded from the "specific" set because they're orthogonal to a resource's permission
+    /// model and would never satisfy "what does this server want".
     ///
     /// The probe is shared (memoised) with the resolver via <see cref="AuthProbe"/>'s per-URL
     /// cache, so this method costs zero round-trips when the resolver already probed.
@@ -358,15 +378,94 @@ internal static class McpExecutor
             return auth;
         }
 
+        var resourceBase = string.IsNullOrEmpty(probeResult.Resource) ? serverUrl.ToString() : probeResult.Resource;
+
+        // Pass 1: specific (non-.default, non-OIDC) advertised scopes win.
+        var specific = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var raw in probeResult.Scopes)
+        {
+            if (string.IsNullOrEmpty(raw))
+            {
+                continue;
+            }
+
+            if (raw.EndsWith("/.default", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (OidcStandardScopes.Contains(raw))
+            {
+                continue;
+            }
+
+            var qualified = QualifyScope(raw, resourceBase);
+            if (qualified is null)
+            {
+                continue;
+            }
+
+            if (seen.Add(qualified))
+            {
+                specific.Add(qualified);
+            }
+        }
+
+        if (specific.Count > 0)
+        {
+            return auth with { Scopes = specific };
+        }
+
+        // Pass 2: advertised .default forms (preserves prior Agent365 behaviour).
         var advertisedDefault = probeResult.Scopes
             .Where(s => s.EndsWith("/.default", StringComparison.Ordinal))
             .ToArray();
-        if (advertisedDefault.Length == 0)
+        if (advertisedDefault.Length > 0)
         {
-            return auth;
+            return auth with { Scopes = advertisedDefault };
         }
 
-        return auth with { Scopes = advertisedDefault };
+        return auth;
+    }
+
+    /// <summary>
+    /// Standard OIDC scopes (RFC 6749 + OIDC Core). Excluded from the "specific advertised
+    /// scopes" substitution because they describe identity-token claims, not resource-server
+    /// permissions, and would never authorise a tools call by themselves.
+    /// </summary>
+    private static readonly HashSet<string> OidcStandardScopes = new(StringComparer.Ordinal)
+    {
+        "openid",
+        "profile",
+        "offline_access",
+        "email",
+        "groups",
+        "roles",
+        "address",
+        "phone"
+    };
+
+    /// <summary>
+    /// Returns a fully-qualified scope string. Already-FQN scopes (containing <c>://</c>) pass
+    /// through untouched. Bare names (<c>"User.Read.All"</c>) are prefixed with
+    /// <paramref name="resourceBase"/> so the auth server can resolve them to the correct
+    /// resource (e.g. <c>"https://api.example/User.Read.All"</c>). Returns <c>null</c> when the
+    /// scope is bare and no resource base is available (the caller drops it).
+    /// </summary>
+    private static string? QualifyScope(string scope, string? resourceBase)
+    {
+        if (scope.Contains("://", StringComparison.Ordinal))
+        {
+            return scope;
+        }
+
+        if (string.IsNullOrEmpty(resourceBase))
+        {
+            return null;
+        }
+
+        return $"{resourceBase.TrimEnd('/')}/{scope}";
     }
 
     private static bool AllScopesAreDefault(IReadOnlyList<string>? scopes)

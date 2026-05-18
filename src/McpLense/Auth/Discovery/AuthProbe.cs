@@ -23,12 +23,20 @@ namespace McpLense;
 /// <param name="AuthorizationServers">
 /// AS issuer URLs advertised by the protected-resource metadata document, if any.
 /// </param>
+/// <param name="Resource">
+/// The <c>resource</c> identifier advertised by the protected-resource metadata document, if any.
+/// Per RFC 9728 §3 this is the canonical URI the resource server expects in tokens'
+/// <c>aud</c> claim and serves as the FQN prefix for bare scope names (e.g. promoting
+/// <c>"User.Read.All"</c> to <c>"https://resource/User.Read.All"</c> when the auth server
+/// requires fully-qualified scope identifiers).
+/// </param>
 internal sealed record AuthProbeResult(
     bool RequiresAuth = false,
     bool Inconclusive = false,
     string? ResourceMetadataUrl = null,
     IReadOnlyList<string>? Scopes = null,
-    IReadOnlyList<string>? AuthorizationServers = null)
+    IReadOnlyList<string>? AuthorizationServers = null,
+    string? Resource = null)
 {
     public static AuthProbeResult Empty { get; } = new();
 
@@ -43,7 +51,8 @@ internal sealed record AuthProbeResult(
            && !Inconclusive
            && string.IsNullOrEmpty(ResourceMetadataUrl)
            && (Scopes is null || Scopes.Count == 0)
-           && (AuthorizationServers is null || AuthorizationServers.Count == 0);
+           && (AuthorizationServers is null || AuthorizationServers.Count == 0)
+           && string.IsNullOrEmpty(Resource);
 }
 
 /// <summary>
@@ -326,17 +335,30 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
 
             var scopes = ReadStringArray(root, "scopes_supported");
             var authorizationServers = ReadStringArray(root, "authorization_servers");
+            var resource = ReadString(root, "resource");
 
             return new AuthProbeResult(
                 ResourceMetadataUrl: resourceMetadataUrl,
                 Scopes: scopes,
-                AuthorizationServers: authorizationServers);
+                AuthorizationServers: authorizationServers,
+                Resource: resource);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _writeStderr($"AuthProbe: protected-resource metadata at {resourceMetadataUrl} is not valid JSON ({ex.GetType().Name}: {ex.Message}); falling back to cache-only auto-pick.");
             return new AuthProbeResult(ResourceMetadataUrl: resourceMetadataUrl);
         }
+    }
+
+    private static string? ReadString(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var text = value.GetString();
+        return string.IsNullOrEmpty(text) ? null : text;
     }
 
     private static IReadOnlyList<string>? ReadStringArray(JsonElement root, string propertyName)
