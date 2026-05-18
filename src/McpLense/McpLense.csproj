@@ -10,7 +10,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>mcplense</ToolCommandName>
     <PackageId>McpLense</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Description>CLI tool for inspecting MCP servers, listing their capabilities, and calling tools or prompts for debugging.</Description>
     <PackageTags>mcp;model-context-protocol;debugging;cli;dotnet-tool</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
