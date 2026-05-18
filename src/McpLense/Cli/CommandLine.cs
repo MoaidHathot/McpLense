@@ -16,7 +16,8 @@ internal enum AppCommand
     Read,
     Prompt,
     Login,
-    Logout
+    Logout,
+    Scan
 }
 
 internal enum OutputFormat
@@ -65,7 +66,8 @@ internal static class CommandLineParser
     {
         "no-auth",
         "try-all",
-        "all"
+        "all",
+        "classify-only"
     };
 
     public static ParsedCommand Parse(string[] args)
@@ -266,6 +268,7 @@ internal static class CommandLineParser
         "prompt" => AppCommand.Prompt,
         "login" => AppCommand.Login,
         "logout" => AppCommand.Logout,
+        "scan" => AppCommand.Scan,
         _ => throw new UserInputException($"Unknown command '{value}'.")
     };
 
@@ -347,7 +350,8 @@ internal static class CommandLineParser
             "progress",
             "auth",
             "auth-token",
-            "no-auth"
+            "no-auth",
+            "classify-only"
         };
 
         foreach (var option in options.Keys)
@@ -366,6 +370,11 @@ internal static class CommandLineParser
         if (command is not AppCommand.Call && options.ContainsKey("progress"))
         {
             throw new UserInputException("--progress is only valid for call.");
+        }
+
+        if (command is not AppCommand.Scan && options.ContainsKey("classify-only"))
+        {
+            throw new UserInputException("--classify-only is only valid for 'scan'.");
         }
     }
 
@@ -539,6 +548,9 @@ internal static class CommandLineParser
         var tryAllRaw = GetSingle(options, "try-all");
         var tryAll = string.Equals(tryAllRaw, "true", StringComparison.OrdinalIgnoreCase);
 
+        var classifyOnlyRaw = GetSingle(options, "classify-only");
+        var classifyOnly = string.Equals(classifyOnlyRaw, "true", StringComparison.OrdinalIgnoreCase);
+
         var authRaw = GetSingle(options, "auth");
         var tokenRaw = GetSingle(options, "auth-token");
         var profileRaw = GetSingle(options, "profile");
@@ -548,11 +560,19 @@ internal static class CommandLineParser
             throw new UserInputException("--try-all and --profile cannot be combined.");
         }
 
+        if (classifyOnly && !string.IsNullOrEmpty(profileRaw))
+        {
+            // --classify-only is "skip profile attempts", so pairing it with an explicit
+            // single-profile pick is contradictory. Catch this here so a stray flag combo
+            // doesn't silently degrade to "ignore --profile".
+            throw new UserInputException("--classify-only and --profile cannot be combined.");
+        }
+
         if (noAuth)
         {
             // --no-auth dominates. We accept other auth-related flags to make a quick toggle
             // ergonomic, but they're cleared out so behaviour is unambiguous.
-            return new AuthOverrides(NoAuth: true);
+            return new AuthOverrides(NoAuth: true, ClassifyOnly: classifyOnly);
         }
 
         AuthKind? kind = null;
@@ -587,7 +607,8 @@ internal static class CommandLineParser
             Kind: kind,
             Token: token,
             Profile: profile,
-            TryAll: tryAll);
+            TryAll: tryAll,
+            ClassifyOnly: classifyOnly);
     }
 
     private static AuthKind ParseAuthKind(string raw)

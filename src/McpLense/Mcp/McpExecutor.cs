@@ -27,6 +27,17 @@ internal static class McpExecutor
 
         var servers = await TargetResolver.ResolveAsync(command.Target, cancellationToken);
 
+        // Scan is a discovery-only command: classify auth and (optionally) test profiles. It
+        // takes its own profile-load path because scan tests EVERY loaded profile by default,
+        // unlike AttachProfilesAsync which picks just one. We dispatch it before the standard
+        // AttachProfilesAsync call because scan owns its own auth flow.
+        if (command.Command is AppCommand.Scan)
+        {
+            var scanReport = await DispatchScanAsync(servers, command.Target, command.Timeout, cancellationToken).ConfigureAwait(false);
+            var hasErrors = scanReport.Servers.Any(entry => entry.Error is not null);
+            return new ExecutionOutcome(scanReport, hasErrors);
+        }
+
         // Resolve auth profiles for HTTP servers that don't already have inline auth (i.e.
         // anything other than --auth bearer). --no-auth short-circuits this entirely so quick
         // local debugging works without any profile setup.
@@ -46,6 +57,32 @@ internal static class McpExecutor
             AppCommand.Prompt => await GetPromptAsync(SingleServer(servers), command.Subject!, command.Arguments!, command.Timeout, cancellationToken),
             _ => throw new UserInputException($"Unsupported command '{command.Command}'.")
         };
+    }
+
+    /// <summary>
+    /// Loads the merged set of profile paths (explicit --profiles flags + auto-discovered
+    /// defaults) and hands them to <see cref="AuthScanner.ScanAsync"/>. Profile load failures
+    /// surface as a <see cref="UserInputException"/> from <see cref="ProfileLoader"/> rather
+    /// than being shoehorned into a per-server report: a malformed JSON file is a global
+    /// problem the user must fix before scan can run at all.
+    /// </summary>
+    private static async Task<AuthScanReport> DispatchScanAsync(
+        IReadOnlyList<ResolvedServer> servers,
+        TargetOptions target,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var profilePaths = ResolveProfilePaths(target.ProfilePaths);
+        var profiles = profilePaths.Count == 0
+            ? Array.Empty<AuthProfile>()
+            : await ProfileLoader.LoadAsync(profilePaths, new EnvironmentExpander(), cancellationToken).ConfigureAwait(false);
+
+        return await AuthScanner.ScanAsync(
+            servers,
+            profiles,
+            target.AuthOverrides,
+            handshakeTimeout: timeout,
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -943,4 +943,53 @@ public class CommandLineParserTests
 
         parsed.Target.ProfilePaths.ShouldBe(new[] { "p1.json", "p2.json" });
     }
+
+    [Fact]
+    public void Parse_ScanCommand_WithClassifyOnly_SetsFlag()
+    {
+        // --classify-only is a boolean flag that does NOT consume the next arg.
+        var parsed = CommandLineParser.Parse([
+            "scan", "https://api.example.com/mcp", "--classify-only"
+        ]);
+
+        parsed.Command.ShouldBe(AppCommand.Scan);
+        parsed.Target.AuthOverrides.ClassifyOnly.ShouldBeTrue();
+        parsed.Target.Url!.ToString().ShouldBe("https://api.example.com/mcp");
+    }
+
+    [Fact]
+    public void Parse_ScanCommand_WithoutClassifyOnly_FlagIsFalse()
+    {
+        var parsed = CommandLineParser.Parse([
+            "scan", "https://api.example.com/mcp"
+        ]);
+
+        parsed.Command.ShouldBe(AppCommand.Scan);
+        parsed.Target.AuthOverrides.ClassifyOnly.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Parse_ClassifyOnly_OnNonScanCommand_Throws()
+    {
+        // --classify-only is scan-specific - using it with inspect (or any other command)
+        // should fail loudly rather than silently degrade.
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "inspect", "https://api.example.com/mcp", "--classify-only"
+        ]));
+        ex.Message.ShouldContain("classify-only");
+        ex.Message.ShouldContain("scan");
+    }
+
+    [Fact]
+    public void Parse_ClassifyOnly_WithExplicitProfile_Throws()
+    {
+        // --classify-only means "skip profile attempts", which is incompatible with
+        // --profile (an explicit single-profile pick). Catch the contradiction at the parser
+        // boundary so it never reaches the scanner.
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse([
+            "scan", "https://api.example.com/mcp", "--classify-only", "--profile", "agent365"
+        ]));
+        ex.Message.ShouldContain("classify-only");
+        ex.Message.ShouldContain("profile");
+    }
 }

@@ -90,6 +90,7 @@ Inspect MCP servers from a positional URL, a config file, or a stdio command.
 Usage
   mcplense inspect <url> [common-options]
   mcplense inspect [target-options] [common-options]
+  mcplense scan    [<url>] [target-options] [common-options]
   mcplense tui [target-options] [common-options]
   mcplense tools [target-options] [common-options]
   mcplense resources [target-options] [common-options]
@@ -237,6 +238,29 @@ Common Options
   --progress [true|false]      Show live tool-call progress. Default: true for call.
   -h, --help                   Show help.
 
+Auth scanning (`mcplense scan`)
+  `scan` is a read-only discovery command: it classifies how each target authenticates
+  (anonymous, RFC 9728 OAuth, Bearer-without-metadata, non-Bearer challenge, unknown) and -
+  when one or more profiles are loaded - reports which profile(s) actually open an MCP
+  session against the server. It never writes anywhere; useful for cataloguing a fleet of
+  MCP servers before deciding which profile each needs.
+
+  Default behaviour: every loaded profile is tried in source order. Override with:
+    --profile <name>           Try only this single profile.
+    --classify-only            Skip profile attempts entirely; emit only the classification
+                               block (status, RFC 9728 metadata, scopes_supported, ...).
+                               Scan-specific synonym of --no-auth for users who want a
+                               discoverable name; both produce the same scan output.
+    --no-auth                  Same effect as --classify-only for scan, but also strips
+                               inline auth on every other command (inspect / tools / ...).
+
+  Works on:
+    mcplense scan https://server.example/mcp
+    mcplense scan https://server.example/mcp --classify-only
+    mcplense scan --config mcp.json                # scans every stdio entry (reports them
+                                                   # as 'stdio' with no profile attempts)
+    mcplense scan https://server.example/mcp --profiles ./agent365.json --profile agent365
+
 Environment-variable expansion
   Every string in profile files, --config files, and CLI auth flags is environment-expanded:
     env:VAR              whole-string form
@@ -255,6 +279,9 @@ Examples
   mcplense inspect https://api.example.com/mcp --auth bearer --auth-token env:API_TOKEN
   mcplense inspect https://agent365.svc.cloud.microsoft/.../mcp_MailTools \
                    --profiles samples/agent365.json --profile agent365
+  mcplense scan    https://api.example.com/mcp
+  mcplense scan    https://api.example.com/mcp --classify-only
+  mcplense scan    https://agent365.svc.cloud.microsoft/.../mcp_MailTools --no-auth
   mcplense login --all
   mcplense login --profile agent365
   mcplense login https://agent365.svc.cloud.microsoft/.../mcp_MailTools

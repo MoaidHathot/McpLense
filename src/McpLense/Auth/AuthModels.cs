@@ -118,13 +118,23 @@ internal sealed record ResolvedAuth(
 /// every loaded profile. Mutually exclusive with <see cref="Profile"/>.
 /// </param>
 /// <param name="NoAuth">Suppress all authentication (HTTP and stdio).</param>
+/// <param name="ClassifyOnly">
+/// Scan-only flag. When true, <c>mcplense scan</c> emits the auth-classification block (probe
+/// status, RFC 9728 metadata, etc.) and skips profile attempts entirely. Differs from
+/// <see cref="NoAuth"/> only in that <see cref="NoAuth"/> is the broader "strip authentication
+/// from every command" toggle (it also wipes inline auth on resolved servers in
+/// <c>inspect</c>, <c>tools</c>, etc.), whereas <see cref="ClassifyOnly"/> is scoped to
+/// <c>scan</c> and rejected on other commands. Both produce the same scan output; offer
+/// <c>--classify-only</c> to users who want a discoverable, scan-specific name.
+/// </param>
 internal sealed record AuthOverrides(
     AuthKind? Kind = null,
     string? Token = null,
     string? Profile = null,
     bool TryAll = false,
     bool All = false,
-    bool NoAuth = false)
+    bool NoAuth = false,
+    bool ClassifyOnly = false)
 {
     public static readonly AuthOverrides Empty = new();
 
@@ -133,6 +143,7 @@ internal sealed record AuthOverrides(
         => !NoAuth
            && !TryAll
            && !All
+           && !ClassifyOnly
            && Kind is null
            && Token is null
            && Profile is null;

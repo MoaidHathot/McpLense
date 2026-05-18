@@ -117,3 +117,97 @@ internal sealed record ResourceContentView(
     string? DataBase64 = null,
     int? ByteCount = null,
     JsonNode? Raw = null);
+
+// -------- Auth scan reports ----------------------------------------------------------
+
+/// <summary>
+/// Stable wire identifier for an auth-scan classification. String-typed rather than enum-typed
+/// so the JSON output stays stable across mcplense versions even when new classifications are
+/// added.
+/// </summary>
+internal static class AuthClassifications
+{
+    /// <summary>Stdio target - HTTP auth doesn't apply.</summary>
+    public const string Stdio = "stdio";
+
+    /// <summary>The HTTP probe reached the server cleanly without an auth challenge.</summary>
+    public const string Anonymous = "anonymous";
+
+    /// <summary>Server advertises RFC 9728 Protected Resource Metadata pointing at OAuth.</summary>
+    public const string OAuthRfc9728 = "oauth-rfc9728";
+
+    /// <summary>
+    /// Server demands auth (401 / WWW-Authenticate present) but doesn't advertise RFC 9728
+    /// metadata - the client has to know out-of-band how to authenticate.
+    /// </summary>
+    public const string OAuthBearerUnannounced = "oauth-bearer-unannounced";
+
+    /// <summary>
+    /// Server demands auth with a non-Bearer scheme (Basic, Digest, NTLM, ...) or some other
+    /// out-of-protocol mechanism not covered by MCP's OAuth profile.
+    /// </summary>
+    public const string AuthRequiredUnspecified = "auth-required-unspecified";
+
+    /// <summary>Probe was inconclusive (network failure, 5xx, etc.); we can't say.</summary>
+    public const string Unknown = "unknown";
+}
+
+/// <summary>Top-level report emitted by <c>mcplense scan</c>.</summary>
+internal sealed record AuthScanReport(
+    DateTimeOffset GeneratedAt,
+    IReadOnlyList<ServerAuthScan> Servers);
+
+/// <summary>
+/// Per-server outcome from <c>mcplense scan</c>. Carries the classification, the raw signals
+/// that produced it, and one <see cref="ProfileAttempt"/> entry per profile actually exercised.
+/// </summary>
+internal sealed record ServerAuthScan(
+    string Name,
+    string Transport,
+    string Target,
+    string Classification,
+    string Summary,
+    AuthScanDetails Details,
+    IReadOnlyList<ProfileAttempt> ProfileAttempts,
+    string? Error = null);
+
+/// <summary>
+/// Raw signals that produced an <see cref="ServerAuthScan.Classification"/>. Most fields are
+/// optional because the underlying probe may not surface them (anonymous servers, network
+/// failures, non-Bearer challenges, etc.).
+/// </summary>
+internal sealed record AuthScanDetails(
+    int? StatusCode = null,
+    string? WwwAuthenticate = null,
+    string? ResourceMetadataUrl = null,
+    string? Resource = null,
+    IReadOnlyList<string>? Scopes = null,
+    IReadOnlyList<string>? AuthorizationServers = null,
+    bool? AnonymousHandshakeSucceeded = null,
+    string? AnonymousHandshakeError = null,
+    string? ProbeError = null);
+
+/// <summary>
+/// Outcome of attempting to open an MCP session against the target using a specific profile.
+/// </summary>
+/// <param name="ProfileName">Profile name from the loaded set.</param>
+/// <param name="AuthKind">Profile's auth kind (bearer/oauth/interactive-browser/azure-cli).</param>
+/// <param name="Scopes">Scopes actually requested (after probe-based substitution), if any.</param>
+/// <param name="Success">True when the MCP <c>initialize</c> handshake completed.</param>
+/// <param name="Detail">
+/// Human-readable note when <paramref name="Success"/> is true (e.g. capability summary).
+/// </param>
+/// <param name="Error">Failure reason when <paramref name="Success"/> is false.</param>
+/// <param name="ToolCount">Number of tools the server listed, when the handshake succeeded.</param>
+/// <param name="ResourceCount">Number of resources the server listed, when the handshake succeeded.</param>
+/// <param name="PromptCount">Number of prompts the server listed, when the handshake succeeded.</param>
+internal sealed record ProfileAttempt(
+    string ProfileName,
+    string AuthKind,
+    IReadOnlyList<string>? Scopes,
+    bool Success,
+    string? Detail = null,
+    string? Error = null,
+    int? ToolCount = null,
+    int? ResourceCount = null,
+    int? PromptCount = null);

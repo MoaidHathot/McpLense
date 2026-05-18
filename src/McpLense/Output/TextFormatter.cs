@@ -16,8 +16,109 @@ internal static class TextFormatter
         ReadReport report => FormatRead(report, jsonOptions),
         PromptCallReport report => FormatPromptCall(report, jsonOptions),
         AuthSessionReport report => FormatAuthSession(report),
+        AuthScanReport report => FormatAuthScan(report),
         _ => JsonSerializer.Serialize(payload, jsonOptions)
     };
+
+    private static string FormatAuthScan(AuthScanReport report)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine($"scan: {report.Servers.Count} server(s)");
+
+        for (var index = 0; index < report.Servers.Count; index++)
+        {
+            var entry = report.Servers[index];
+            builder.AppendLine();
+            AppendServerHeader(builder, entry.Name, entry.Transport, entry.Target);
+            AppendLine(builder, 1, $"classification: {entry.Classification}");
+            AppendLine(builder, 1, $"summary: {entry.Summary}");
+
+            if (!string.IsNullOrEmpty(entry.Error))
+            {
+                AppendLine(builder, 1, $"error: {entry.Error}");
+            }
+
+            AppendAuthScanDetails(builder, entry.Details);
+
+            if (entry.ProfileAttempts.Count == 0)
+            {
+                AppendLine(builder, 1, "profile attempts: (none)");
+            }
+            else
+            {
+                AppendLine(builder, 1, $"profile attempts: {entry.ProfileAttempts.Count}");
+                foreach (var attempt in entry.ProfileAttempts)
+                {
+                    AppendLine(builder, 2, $"- profile: {attempt.ProfileName} [{attempt.AuthKind}]");
+                    AppendLine(builder, 3, $"status: {(attempt.Success ? "ok" : "failed")}");
+
+                    if (attempt.Scopes is { Count: > 0 })
+                    {
+                        AppendLine(builder, 3, $"scopes: {string.Join(", ", attempt.Scopes)}");
+                    }
+
+                    if (!string.IsNullOrEmpty(attempt.Detail))
+                    {
+                        AppendLine(builder, 3, $"detail: {attempt.Detail}");
+                    }
+
+                    if (!string.IsNullOrEmpty(attempt.Error))
+                    {
+                        AppendLine(builder, 3, $"error: {attempt.Error}");
+                    }
+                }
+            }
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private static void AppendAuthScanDetails(StringBuilder builder, AuthScanDetails details)
+    {
+        if (details.StatusCode is { } status)
+        {
+            AppendLine(builder, 1, $"probe status: {status}");
+        }
+
+        if (!string.IsNullOrEmpty(details.WwwAuthenticate))
+        {
+            AppendLine(builder, 1, $"www-authenticate: {details.WwwAuthenticate}");
+        }
+
+        if (!string.IsNullOrEmpty(details.ResourceMetadataUrl))
+        {
+            AppendLine(builder, 1, $"resource_metadata: {details.ResourceMetadataUrl}");
+        }
+
+        if (!string.IsNullOrEmpty(details.Resource))
+        {
+            AppendLine(builder, 1, $"resource: {details.Resource}");
+        }
+
+        if (details.Scopes is { Count: > 0 })
+        {
+            AppendLine(builder, 1, $"scopes_supported: {string.Join(", ", details.Scopes)}");
+        }
+
+        if (details.AuthorizationServers is { Count: > 0 })
+        {
+            AppendLine(builder, 1, $"authorization_servers: {string.Join(", ", details.AuthorizationServers)}");
+        }
+
+        if (details.AnonymousHandshakeSucceeded is { } anonHandshake)
+        {
+            AppendLine(builder, 1, $"anonymous handshake: {(anonHandshake ? "ok" : "failed")}");
+            if (!anonHandshake && !string.IsNullOrEmpty(details.AnonymousHandshakeError))
+            {
+                AppendLine(builder, 2, $"error: {details.AnonymousHandshakeError}");
+            }
+        }
+
+        if (!string.IsNullOrEmpty(details.ProbeError))
+        {
+            AppendLine(builder, 1, $"probe error: {details.ProbeError}");
+        }
+    }
 
     private static string FormatAuthSession(AuthSessionReport report)
     {

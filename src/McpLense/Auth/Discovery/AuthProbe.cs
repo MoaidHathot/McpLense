@@ -30,13 +30,24 @@ namespace McpLense;
 /// <c>"User.Read.All"</c> to <c>"https://resource/User.Read.All"</c> when the auth server
 /// requires fully-qualified scope identifiers).
 /// </param>
+/// <param name="StatusCode">
+/// HTTP status code returned by the unauthenticated probe, when the probe reached the server.
+/// <c>null</c> when the network call failed before a response was received.
+/// </param>
+/// <param name="WwwAuthenticate">
+/// Raw, comma-joined <c>WWW-Authenticate</c> header value(s) from the unauthenticated probe.
+/// Preserved verbatim so callers (like the auth-scan command) can classify servers that
+/// challenge with non-Bearer schemes or that lack RFC 9728 metadata.
+/// </param>
 internal sealed record AuthProbeResult(
     bool RequiresAuth = false,
     bool Inconclusive = false,
     string? ResourceMetadataUrl = null,
     IReadOnlyList<string>? Scopes = null,
     IReadOnlyList<string>? AuthorizationServers = null,
-    string? Resource = null)
+    string? Resource = null,
+    int? StatusCode = null,
+    string? WwwAuthenticate = null)
 {
     public static AuthProbeResult Empty { get; } = new();
 
@@ -52,7 +63,8 @@ internal sealed record AuthProbeResult(
            && string.IsNullOrEmpty(ResourceMetadataUrl)
            && (Scopes is null || Scopes.Count == 0)
            && (AuthorizationServers is null || AuthorizationServers.Count == 0)
-           && string.IsNullOrEmpty(Resource);
+           && string.IsNullOrEmpty(Resource)
+           && string.IsNullOrEmpty(WwwAuthenticate);
 }
 
 /// <summary>
@@ -139,6 +151,8 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
 
         try
         {
+            var statusCode = (int)response.StatusCode;
+            var wwwAuthenticate = JoinWwwAuthenticate(response);
             var hasAuthChallenge = response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                                    || response.Headers.WwwAuthenticate.Count > 0;
             var isSuccessStatus = response.IsSuccessStatusCode;
@@ -150,13 +164,16 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
                 {
                     // Server explicitly told us auth is needed but didn't point us at metadata.
                     _writeStderr($"AuthProbe: {serverUrl} returned no RFC 9728 'resource_metadata' header; falling back to cache-only auto-pick.");
-                    return new AuthProbeResult(RequiresAuth: true);
+                    return new AuthProbeResult(
+                        RequiresAuth: true,
+                        StatusCode: statusCode,
+                        WwwAuthenticate: wwwAuthenticate);
                 }
 
                 if (isSuccessStatus)
                 {
                     // Clean 2xx with no auth headers - server genuinely doesn't need auth.
-                    return AuthProbeResult.Empty;
+                    return new AuthProbeResult(StatusCode: statusCode);
                 }
 
                 // Non-2xx without an auth challenge. Could be a flake (Agent365 sometimes returns
@@ -165,16 +182,41 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
                 // and the runtime gets an authoritative answer, but DON'T claim auth is required
                 // (we don't know that).
                 _writeStderr($"AuthProbe: {serverUrl} returned {(int)response.StatusCode} on the unauthenticated probe; result is inconclusive.");
-                return new AuthProbeResult(Inconclusive: true);
+                return new AuthProbeResult(
+                    Inconclusive: true,
+                    StatusCode: statusCode,
+                    WwwAuthenticate: wwwAuthenticate);
             }
 
             var metadata = await FetchProtectedResourceMetadataAsync(resourceMetadataUrl!, cancellationToken).ConfigureAwait(false);
-            return metadata with { RequiresAuth = true };
+            return metadata with
+            {
+                RequiresAuth = true,
+                StatusCode = statusCode,
+                WwwAuthenticate = wwwAuthenticate
+            };
         }
         finally
         {
             response.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Joins every <c>WWW-Authenticate</c> challenge advertised by the response into a single
+    /// comma-separated string. Returns <c>null</c> when the response carried no challenge.
+    /// </summary>
+    private static string? JoinWwwAuthenticate(HttpResponseMessage response)
+    {
+        if (response.Headers.WwwAuthenticate.Count == 0)
+        {
+            return null;
+        }
+
+        return string.Join(", ", response.Headers.WwwAuthenticate.Select(static challenge =>
+            string.IsNullOrEmpty(challenge.Parameter)
+                ? challenge.Scheme
+                : $"{challenge.Scheme} {challenge.Parameter}"));
     }
 
     private async Task<HttpResponseMessage> SendUnauthenticatedAsync(Uri url, HttpMethod method, CancellationToken cancellationToken)
