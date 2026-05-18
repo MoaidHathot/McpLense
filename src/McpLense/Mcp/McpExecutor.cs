@@ -27,15 +27,22 @@ internal static class McpExecutor
 
         var servers = await TargetResolver.ResolveAsync(command.Target, cancellationToken);
 
-        // Scan is a discovery-only command: classify auth and (optionally) test profiles. It
-        // takes its own profile-load path because scan tests EVERY loaded profile by default,
-        // unlike AttachProfilesAsync which picks just one. We dispatch it before the standard
-        // AttachProfilesAsync call because scan owns its own auth flow.
+        // Scan / auth-scan are discovery-only commands: classify auth and (optionally) test
+        // profiles, plus - for `scan` - the wider audit (capabilities, tools, resources, TLS,
+        // headers, OAuth metadata, behaviour probes). Both dispatch BEFORE the standard
+        // AttachProfilesAsync call because they own their own auth flow.
+        if (command.Command is AppCommand.AuthScan)
+        {
+            var authScanReport = await DispatchAuthScanAsync(servers, command.Target, command.Timeout, cancellationToken).ConfigureAwait(false);
+            var hasErrors = authScanReport.Servers.Any(entry => entry.Error is not null);
+            return new ExecutionOutcome(authScanReport, hasErrors);
+        }
+
         if (command.Command is AppCommand.Scan)
         {
-            var scanReport = await DispatchScanAsync(servers, command.Target, command.Timeout, cancellationToken).ConfigureAwait(false);
-            var hasErrors = scanReport.Servers.Any(entry => entry.Error is not null);
-            return new ExecutionOutcome(scanReport, hasErrors);
+            var auditReport = await DispatchAuditAsync(servers, command.Target, command.Timeout, cancellationToken).ConfigureAwait(false);
+            var hasErrors = auditReport.Servers.Any(entry => entry.Error is not null);
+            return new ExecutionOutcome(auditReport, hasErrors);
         }
 
         // Resolve auth profiles for HTTP servers that don't already have inline auth (i.e.
@@ -66,7 +73,7 @@ internal static class McpExecutor
     /// than being shoehorned into a per-server report: a malformed JSON file is a global
     /// problem the user must fix before scan can run at all.
     /// </summary>
-    private static async Task<AuthScanReport> DispatchScanAsync(
+    private static async Task<AuthScanReport> DispatchAuthScanAsync(
         IReadOnlyList<ResolvedServer> servers,
         TargetOptions target,
         TimeSpan timeout,
@@ -81,6 +88,31 @@ internal static class McpExecutor
             servers,
             profiles,
             target.AuthOverrides,
+            handshakeTimeout: timeout,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Same profile-load logic as the auth-only scan, then drives the full
+    /// <see cref="Auditor"/> orchestration. <see cref="AuthOverrides.CheckAuthorizationServers"/>
+    /// is the only audit-specific knob that flows through this method.
+    /// </summary>
+    private static async Task<AuditReport> DispatchAuditAsync(
+        IReadOnlyList<ResolvedServer> servers,
+        TargetOptions target,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var profilePaths = ResolveProfilePaths(target.ProfilePaths);
+        var profiles = profilePaths.Count == 0
+            ? Array.Empty<AuthProfile>()
+            : await ProfileLoader.LoadAsync(profilePaths, new EnvironmentExpander(), cancellationToken).ConfigureAwait(false);
+
+        return await Auditor.AuditAsync(
+            servers,
+            profiles,
+            target.AuthOverrides,
+            checkAuthorizationServers: target.AuthOverrides.CheckAuthorizationServers,
             handshakeTimeout: timeout,
             cancellationToken).ConfigureAwait(false);
     }

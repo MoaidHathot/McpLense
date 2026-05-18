@@ -127,6 +127,12 @@ internal sealed record ResolvedAuth(
 /// <c>scan</c> and rejected on other commands. Both produce the same scan output; offer
 /// <c>--classify-only</c> to users who want a discoverable, scan-specific name.
 /// </param>
+/// <param name="CheckAuthorizationServers">
+/// Audit-only opt-in. When true, <c>mcplense scan</c> fetches every authorization-server
+/// metadata document (RFC 8414 / OIDC discovery) advertised by the protected-resource
+/// metadata and surfaces the fields verbatim. Off by default so air-gapped / CI users don't
+/// silently make outbound calls to <c>login.microsoftonline.com</c> &amp; friends.
+/// </param>
 internal sealed record AuthOverrides(
     AuthKind? Kind = null,
     string? Token = null,
@@ -134,7 +140,8 @@ internal sealed record AuthOverrides(
     bool TryAll = false,
     bool All = false,
     bool NoAuth = false,
-    bool ClassifyOnly = false)
+    bool ClassifyOnly = false,
+    bool CheckAuthorizationServers = false)
 {
     public static readonly AuthOverrides Empty = new();
 
@@ -144,6 +151,7 @@ internal sealed record AuthOverrides(
            && !TryAll
            && !All
            && !ClassifyOnly
+           && !CheckAuthorizationServers
            && Kind is null
            && Token is null
            && Profile is null;

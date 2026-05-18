@@ -17,7 +17,8 @@ internal enum AppCommand
     Prompt,
     Login,
     Logout,
-    Scan
+    Scan,
+    AuthScan
 }
 
 internal enum OutputFormat
@@ -67,7 +68,8 @@ internal static class CommandLineParser
         "no-auth",
         "try-all",
         "all",
-        "classify-only"
+        "classify-only",
+        "check-authorization-servers"
     };
 
     public static ParsedCommand Parse(string[] args)
@@ -269,6 +271,7 @@ internal static class CommandLineParser
         "login" => AppCommand.Login,
         "logout" => AppCommand.Logout,
         "scan" => AppCommand.Scan,
+        "auth-scan" => AppCommand.AuthScan,
         _ => throw new UserInputException($"Unknown command '{value}'.")
     };
 
@@ -351,7 +354,8 @@ internal static class CommandLineParser
             "auth",
             "auth-token",
             "no-auth",
-            "classify-only"
+            "classify-only",
+            "check-authorization-servers"
         };
 
         foreach (var option in options.Keys)
@@ -372,9 +376,14 @@ internal static class CommandLineParser
             throw new UserInputException("--progress is only valid for call.");
         }
 
-        if (command is not AppCommand.Scan && options.ContainsKey("classify-only"))
+        if (command is not (AppCommand.Scan or AppCommand.AuthScan) && options.ContainsKey("classify-only"))
         {
-            throw new UserInputException("--classify-only is only valid for 'scan'.");
+            throw new UserInputException("--classify-only is only valid for 'scan' and 'auth-scan'.");
+        }
+
+        if (command is not AppCommand.Scan && options.ContainsKey("check-authorization-servers"))
+        {
+            throw new UserInputException("--check-authorization-servers is only valid for 'scan'.");
         }
     }
 
@@ -551,6 +560,9 @@ internal static class CommandLineParser
         var classifyOnlyRaw = GetSingle(options, "classify-only");
         var classifyOnly = string.Equals(classifyOnlyRaw, "true", StringComparison.OrdinalIgnoreCase);
 
+        var checkAsRaw = GetSingle(options, "check-authorization-servers");
+        var checkAs = string.Equals(checkAsRaw, "true", StringComparison.OrdinalIgnoreCase);
+
         var authRaw = GetSingle(options, "auth");
         var tokenRaw = GetSingle(options, "auth-token");
         var profileRaw = GetSingle(options, "profile");
@@ -572,7 +584,7 @@ internal static class CommandLineParser
         {
             // --no-auth dominates. We accept other auth-related flags to make a quick toggle
             // ergonomic, but they're cleared out so behaviour is unambiguous.
-            return new AuthOverrides(NoAuth: true, ClassifyOnly: classifyOnly);
+            return new AuthOverrides(NoAuth: true, ClassifyOnly: classifyOnly, CheckAuthorizationServers: checkAs);
         }
 
         AuthKind? kind = null;
@@ -608,7 +620,8 @@ internal static class CommandLineParser
             Token: token,
             Profile: profile,
             TryAll: tryAll,
-            ClassifyOnly: classifyOnly);
+            ClassifyOnly: classifyOnly,
+            CheckAuthorizationServers: checkAs);
     }
 
     private static AuthKind ParseAuthKind(string raw)

@@ -90,7 +90,8 @@ Inspect MCP servers from a positional URL, a config file, or a stdio command.
 Usage
   mcplense inspect <url> [common-options]
   mcplense inspect [target-options] [common-options]
-  mcplense scan    [<url>] [target-options] [common-options]
+  mcplense scan      [<url>] [target-options] [common-options]
+  mcplense auth-scan [<url>] [target-options] [common-options]
   mcplense tui [target-options] [common-options]
   mcplense tools [target-options] [common-options]
   mcplense resources [target-options] [common-options]
@@ -238,28 +239,75 @@ Common Options
   --progress [true|false]      Show live tool-call progress. Default: true for call.
   -h, --help                   Show help.
 
-Auth scanning (`mcplense scan`)
-  `scan` is a read-only discovery command: it classifies how each target authenticates
-  (anonymous, RFC 9728 OAuth, Bearer-without-metadata, non-Bearer challenge, unknown) and -
-  when one or more profiles are loaded - reports which profile(s) actually open an MCP
-  session against the server. It never writes anywhere; useful for cataloguing a fleet of
-  MCP servers before deciding which profile each needs.
+Auth scanning (`mcplense auth-scan`)
+  `auth-scan` is the minimal, read-only discovery command: classify how each target
+  authenticates (anonymous, RFC 9728 OAuth, Bearer-without-metadata, non-Bearer challenge,
+  unknown) and - when one or more profiles are loaded - report which profile(s) actually
+  open an MCP session against the server. Never writes anywhere; useful as a fast
+  per-server check.
 
   Default behaviour: every loaded profile is tried in source order. Override with:
     --profile <name>           Try only this single profile.
     --classify-only            Skip profile attempts entirely; emit only the classification
                                block (status, RFC 9728 metadata, scopes_supported, ...).
-                               Scan-specific synonym of --no-auth for users who want a
-                               discoverable name; both produce the same scan output.
-    --no-auth                  Same effect as --classify-only for scan, but also strips
+                               Scan-specific synonym of --no-auth; both produce the same
+                               auth-scan output.
+    --no-auth                  Same effect as --classify-only for auth-scan, but also strips
                                inline auth on every other command (inspect / tools / ...).
 
   Works on:
+    mcplense auth-scan https://server.example/mcp
+    mcplense auth-scan https://server.example/mcp --classify-only
+    mcplense auth-scan https://server.example/mcp --profiles ./agent365.json --profile agent365
+
+Full audit (`mcplense scan`)
+  `scan` is the comprehensive, fact-only audit command: everything auth-scan reports plus the
+  server's full identity / protocol / capability surface, the entire tool / prompt / resource
+  enumeration (when one of the auth paths works), TLS certificate details, security-relevant
+  HTTP response headers, OAuth authorization-server metadata (opt-in), behaviour probes, and
+  stdio configuration. Designed for cataloguing a fleet of MCP servers and feeding the
+  output to downstream policy / risk tooling.
+
+  Scope:
+    --classify-only            Skip profile attempts AND skip enumeration that depends on
+                               them. The auth block is still emitted.
+    --check-authorization-servers
+                               Opt in to fetching every advertised authorization-server
+                               metadata document (RFC 8414 / OIDC discovery). Off by default
+                               so air-gapped / CI runs don't make surprise outbound calls to
+                               login.microsoftonline.com & friends.
+
+  What the audit reports per server:
+    auth                       Same shape as auth-scan: classification, RFC 9728 metadata,
+                               profile attempts.
+    serverInfo                 name / version / title / description / websiteUrl / _meta.
+    protocol                   negotiatedProtocolVersion, full capabilities block, verbatim
+                               instructions text + length, top-level _meta.
+    tools                      Every tool: name, title, description (verbatim), inputSchema,
+                               outputSchema, declared annotations (readOnlyHint / etc.) and
+                               which annotations the server did NOT declare. No labelling -
+                               consumers decide policy.
+    prompts / resources / resourceTemplates
+                               Same shape: declared fields verbatim plus URI scheme.
+    security                   mixedContent flag, TLS leaf cert (subject / issuer / SANs /
+                               validity / signatureAlgorithm / negotiated TLS version), and
+                               every security-relevant response header captured from the
+                               unauthenticated probe.
+    oauth                      (only when classification is oauth-rfc9728) every
+                               authorization-server's RFC 8414 metadata when
+                               --check-authorization-servers is set, plus DCR endpoint
+                               observation.
+    behavior                   callNonExistentTool: verbatim JSON-RPC response (code /
+                               message / data) when we call a tool name the server doesn't
+                               expose. Useful for spotting information leakage.
+    stdio                      (only for stdio targets) resolved command line, args, cwd,
+                               environment.
+
+  Works on:
     mcplense scan https://server.example/mcp
-    mcplense scan https://server.example/mcp --classify-only
-    mcplense scan --config mcp.json                # scans every stdio entry (reports them
-                                                   # as 'stdio' with no profile attempts)
-    mcplense scan https://server.example/mcp --profiles ./agent365.json --profile agent365
+    mcplense scan https://server.example/mcp --check-authorization-servers
+    mcplense scan https://server.example/mcp --profiles ./agent365.json --classify-only
+    mcplense scan --config mcp.json
 
 Environment-variable expansion
   Every string in profile files, --config files, and CLI auth flags is environment-expanded:
@@ -279,9 +327,11 @@ Examples
   mcplense inspect https://api.example.com/mcp --auth bearer --auth-token env:API_TOKEN
   mcplense inspect https://agent365.svc.cloud.microsoft/.../mcp_MailTools \
                    --profiles samples/agent365.json --profile agent365
-  mcplense scan    https://api.example.com/mcp
-  mcplense scan    https://api.example.com/mcp --classify-only
-  mcplense scan    https://agent365.svc.cloud.microsoft/.../mcp_MailTools --no-auth
+  mcplense scan      https://api.example.com/mcp
+  mcplense scan      https://api.example.com/mcp --check-authorization-servers
+  mcplense auth-scan https://api.example.com/mcp
+  mcplense auth-scan https://api.example.com/mcp --classify-only
+  mcplense auth-scan https://agent365.svc.cloud.microsoft/.../mcp_MailTools --no-auth
   mcplense login --all
   mcplense login --profile agent365
   mcplense login https://agent365.svc.cloud.microsoft/.../mcp_MailTools
