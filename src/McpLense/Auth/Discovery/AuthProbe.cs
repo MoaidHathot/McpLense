@@ -336,9 +336,16 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
 
     private async Task<AuthProbeResult> FetchProtectedResourceMetadataAsync(string url, CancellationToken cancellationToken)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var metadataUri))
+        // RFC 9728 §3 says the resource_metadata URL is always an absolute HTTPS URL (HTTP is
+        // tolerated for non-prod environments). We deliberately reject anything else: relative
+        // URLs, file://, mailto:, custom schemes, etc. Without the explicit scheme check this
+        // guard is platform-dependent - on Linux, Uri.TryCreate("/relative", UriKind.Absolute,
+        // ...) succeeds with a file:///relative URI, while the same call returns false on
+        // Windows. Enforcing http(s) keeps the validation portable AND spec-aligned.
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var metadataUri)
+            || (metadataUri.Scheme != Uri.UriSchemeHttp && metadataUri.Scheme != Uri.UriSchemeHttps))
         {
-            _writeStderr($"AuthProbe: 'resource_metadata' URL '{url}' is not absolute; falling back to cache-only auto-pick.");
+            _writeStderr($"AuthProbe: 'resource_metadata' URL '{url}' is not an absolute http(s) URL; falling back to cache-only auto-pick.");
             return new AuthProbeResult(Inconclusive: true);
         }
 

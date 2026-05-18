@@ -214,6 +214,11 @@ public class AuthProbeTests
     [Fact]
     public async Task ProbeAsync_PrmUrlNotAbsolute_Logs_RequiresAuthOnly()
     {
+        // Note: this scenario exercises a value that on Windows fails Uri.TryCreate's
+        // UriKind.Absolute check outright AND on Linux is parsed as 'file:///relative/url'.
+        // Either way the http(s)-scheme guard in FetchProtectedResourceMetadataAsync must
+        // reject it - if you regress the guard to "is absolute" only, this test catches the
+        // Linux-side bug (see GitHub Actions ci.yml on linux-latest).
         var (probe, handler, stderr) = Build();
         handler.Enqueue(
             HttpStatusCode.Unauthorized,
@@ -225,7 +230,33 @@ public class AuthProbeTests
         result.RequiresAuth.ShouldBeTrue();
         result.Scopes.ShouldBeNull();
         result.AuthorizationServers.ShouldBeNull();
-        string.Join(" ", stderr).ShouldContain("not absolute");
+        string.Join(" ", stderr).ShouldContain("not an absolute http(s) URL");
+    }
+
+    [Theory]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("ftp://example.com/metadata.json")]
+    [InlineData("mailto:admin@example.com")]
+    [InlineData("javascript:alert(1)")]
+    public async Task ProbeAsync_PrmUrlWithNonHttpScheme_IsRejected(string maliciousUrl)
+    {
+        // RFC 9728 §3 mandates http(s) for the protected-resource metadata URL. We must
+        // reject every other scheme up front so a hostile server can't redirect the probe
+        // into the local filesystem (file://) or an arbitrary protocol handler. Without an
+        // explicit scheme allow-list, Uri.TryCreate happily accepts all of these as
+        // "absolute" URIs and the probe would later attempt to HTTP-GET them, leaking the
+        // attempt onto stderr and (worse, on file://) potentially reading local files via
+        // HttpClient's protocol handlers.
+        var (probe, handler, stderr) = Build();
+        handler.Enqueue(
+            HttpStatusCode.Unauthorized,
+            wwwAuthenticate: $"Bearer resource_metadata=\"{maliciousUrl}\"");
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeTrue();
+        result.Scopes.ShouldBeNull();
+        string.Join(" ", stderr).ShouldContain("not an absolute http(s) URL");
     }
 
     [Fact]
