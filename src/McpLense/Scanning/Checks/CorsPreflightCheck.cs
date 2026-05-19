@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json.Nodes;
+using McpLense.Scanning.TargetResolution;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace McpLense.Scanning.Checks;
@@ -46,6 +47,17 @@ internal sealed class CorsPreflightCheck : IScanCheck
             request.Headers.TryAddWithoutValidation("Origin", "https://mcplense.invalid");
             request.Headers.TryAddWithoutValidation("Access-Control-Request-Method", "POST");
             request.Headers.TryAddWithoutValidation("Access-Control-Request-Headers", "Content-Type, Authorization, MCP-Session-Id, MCP-Protocol-Version");
+
+            // Per-target headers (scope=all only) ride along on the preflight so CORS gating
+            // that depends on a custom header presence can be observed. Scope=session keeps
+            // the preflight bare.
+            if (context.Server.HeaderScope == TargetScope.All && context.Server.Headers.Count > 0)
+            {
+                foreach (var (name, value) in context.Server.Headers)
+                {
+                    request.Headers.TryAddWithoutValidation(name, value);
+                }
+            }
 
             using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
 

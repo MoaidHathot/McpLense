@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
+using McpLense.Scanning.TargetResolution;
 
 namespace McpLense;
 
@@ -20,6 +21,18 @@ internal sealed record TransportProbeResult(
 internal interface ITransportProbe
 {
     Task<TransportProbeResult> ProbeAsync(Uri serverUrl, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Same-origin probe with optional <paramref name="additionalHeaders"/> attached to the
+    /// outbound GET. Headers are honoured only when <paramref name="scope"/> is
+    /// <see cref="TargetScope.All"/>; <see cref="TargetScope.Session"/> reverts to the bare
+    /// behaviour of <see cref="ProbeAsync(Uri, CancellationToken)"/>.
+    /// </summary>
+    Task<TransportProbeResult> ProbeAsync(
+        Uri serverUrl,
+        IReadOnlyDictionary<string, string>? additionalHeaders,
+        TargetScope scope,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -80,7 +93,14 @@ internal sealed class TransportProbe : ITransportProbe, IDisposable
         _ownsResources = false;
     }
 
-    public async Task<TransportProbeResult> ProbeAsync(Uri serverUrl, CancellationToken cancellationToken)
+    public Task<TransportProbeResult> ProbeAsync(Uri serverUrl, CancellationToken cancellationToken)
+        => ProbeAsync(serverUrl, additionalHeaders: null, scope: TargetScope.All, cancellationToken);
+
+    public async Task<TransportProbeResult> ProbeAsync(
+        Uri serverUrl,
+        IReadOnlyDictionary<string, string>? additionalHeaders,
+        TargetScope scope,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(serverUrl);
 
@@ -94,6 +114,20 @@ internal sealed class TransportProbe : ITransportProbe, IDisposable
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, serverUrl);
             request.Headers.Authorization = null;
+
+            // Per-target headers (e.g. x-mcp-ec-organization) are honoured here when the
+            // overlay declares scope=all. Scope=session keeps the probe bare so the user
+            // can still observe how an UNauthenticated request to the server behaves.
+            // Use TryAddWithoutValidation so the probe never rejects a non-canonical
+            // header name the user supplied.
+            if (scope == TargetScope.All && additionalHeaders is { Count: > 0 })
+            {
+                foreach (var (name, value) in additionalHeaders)
+                {
+                    request.Headers.TryAddWithoutValidation(name, value);
+                }
+            }
+
             response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
             var headers = SnapshotHeaders(response);

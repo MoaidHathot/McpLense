@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -11,9 +12,10 @@ namespace McpLense.TestMcps;
 
 /// <summary>
 /// Single-binary test MCP host that boots one of several flavours selected via
-/// <c>--mode &lt;bare|rich|sampling|leaky&gt;</c>. Used by integration tests as deterministic
-/// fixtures for the scan pipeline: each mode demonstrates one behaviour the scanner cares
-/// about (long instructions, mixed annotations, server-initiated calls, leaky errors).
+/// <c>--mode &lt;bare|rich|sampling|leaky|headers&gt;</c>. Used by integration tests as
+/// deterministic fixtures for the scan pipeline: each mode demonstrates one behaviour the
+/// scanner cares about (long instructions, mixed annotations, server-initiated calls,
+/// leaky errors, header echoing).
 /// </summary>
 public static class Program
 {
@@ -36,6 +38,12 @@ public static class Program
         builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Warning);
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
         builder.WebHost.UseUrls("http://127.0.0.1:0");
+
+        // Per-server header capture: keyed by HTTP method + path so a single test process
+        // can drill into the headers the MCP server saw for each leg of the scan
+        // (initialize POST, transport-probe GET, CORS preflight OPTIONS, etc.).
+        var headerCapture = new HeaderCapture();
+        builder.Services.AddSingleton(headerCapture);
 
         var mcp = builder.Services
             .AddMcpServer(options =>
@@ -64,8 +72,13 @@ public static class Program
             case "leaky":
                 mcp.WithTools<LeakyTools>();
                 break;
+            case "headers":
+                // 'headers' mode registers the bare Echo tool to be a valid MCP, but the
+                // actual test surface is the /capture endpoint added below.
+                mcp.WithTools<BareTools>();
+                break;
             default:
-                throw new ArgumentException($"Unknown --mode value '{mode}'. Allowed: bare, rich, sampling, leaky.");
+                throw new ArgumentException($"Unknown --mode value '{mode}'. Allowed: bare, rich, sampling, leaky, headers.");
         }
 
         var app = builder.Build();
@@ -82,6 +95,25 @@ public static class Program
                 ctx.Response.Headers["Access-Control-Allow-Origin"] = "*";
                 await next();
             });
+        }
+
+        // Capture middleware for the 'headers' mode: every inbound request appends its
+        // method + path + headers to the shared HeaderCapture. The EchoHeaders tool reads
+        // the capture and returns it as a string. Two endpoints get special handling:
+        //   /capture - GET returns a JSON snapshot of every request seen so far. Used by
+        //              tests that prefer querying the capture out-of-band instead of via
+        //              a tool call.
+        //   /capture/clear - POST resets the capture buffer.
+        if (mode.Equals("headers", StringComparison.OrdinalIgnoreCase))
+        {
+            app.Use(async (ctx, next) =>
+            {
+                headerCapture.Record(ctx);
+                await next();
+            });
+
+            app.MapGet("/capture", (HeaderCapture cap) => Results.Json(cap.SnapshotJson()));
+            app.MapPost("/capture/clear", (HeaderCapture cap) => { cap.Clear(); return Results.Ok(); });
         }
 
         app.MapMcp();
@@ -110,6 +142,7 @@ public static class Program
                 "rich" => "Rich Test MCP",
                 "sampling" => "Sampling Test MCP",
                 "leaky" => "Leaky Test MCP",
+                "headers" => "Headers Test MCP",
                 _ => "Bare Test MCP"
             },
             Version = "0.0.1-test",
@@ -118,6 +151,7 @@ public static class Program
                 "rich" => "Rich test MCP with verbose instructions, prompts, and resources.",
                 "sampling" => "Test MCP that attempts to use sampling immediately after init.",
                 "leaky" => "Test MCP that leaks stack traces and server headers.",
+                "headers" => "Test MCP that records inbound HTTP headers for assertion-driven tests.",
                 _ => "Minimal bare-bones test MCP."
             },
             WebsiteUrl = "https://example.invalid/test-mcps"
@@ -138,6 +172,8 @@ public static class Program
             "an LLM completion from the host via sampling/createMessage.",
         "leaky" =>
             "Leaky test server. Tools deliberately throw with stack traces in the response.",
+        "headers" =>
+            "Test MCP that records inbound headers. Call the EchoHeaders tool to retrieve them.",
         _ => null
     };
 
@@ -153,6 +189,47 @@ public static class Program
         return null;
     }
 }
+
+/// <summary>
+/// Records inbound HTTP requests for the <c>headers</c> mode. Thread-safe so concurrent
+/// probe requests can all append without locking each other out.
+/// </summary>
+public sealed class HeaderCapture
+{
+    private readonly ConcurrentQueue<CapturedRequest> _requests = new();
+
+    public void Record(HttpContext ctx)
+    {
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var header in ctx.Request.Headers)
+        {
+            headers[header.Key] = string.Join(", ", header.Value.ToArray());
+        }
+        _requests.Enqueue(new CapturedRequest(
+            Method: ctx.Request.Method,
+            Path: ctx.Request.Path.Value ?? string.Empty,
+            Headers: headers));
+    }
+
+    public IReadOnlyList<CapturedRequest> Snapshot() => _requests.ToArray();
+
+    public object SnapshotJson() => new
+    {
+        requests = _requests.Select(r => new
+        {
+            method = r.Method,
+            path = r.Path,
+            headers = r.Headers
+        }).ToArray()
+    };
+
+    public void Clear()
+    {
+        while (_requests.TryDequeue(out _)) { }
+    }
+}
+
+public sealed record CapturedRequest(string Method, string Path, IReadOnlyDictionary<string, string> Headers);
 
 [McpServerToolType]
 public sealed class BareTools

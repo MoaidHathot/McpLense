@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using McpLense.Scanning.TargetResolution;
 
 namespace McpLense;
 
@@ -21,7 +22,10 @@ public sealed record ResolvedServer(
     Uri? Url,
     TransportPreference Transport,
     IReadOnlyDictionary<string, string> Headers,
-    ResolvedAuth? Auth = null);
+    ResolvedAuth? Auth = null,
+    TargetScope HeaderScope = TargetScope.All,
+    IReadOnlyList<string>? DisabledChecks = null,
+    TimeSpan? HandshakeTimeout = null);
 
 internal sealed record ExecutionOutcome(object Payload, bool HasErrors);
 

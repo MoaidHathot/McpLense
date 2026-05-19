@@ -1,6 +1,31 @@
 # Next steps
 
-Living roadmap after 0.5.0-preview.1.
+Living roadmap after 0.6.0-preview.1.
+
+## Delivered in 0.6.0-preview.1
+
+- Per-target headers (`targets[]`) and pattern overlays (`targetPatterns[]`) in
+  `McpLense.Config.json`. CLI gains `@<name>` positional syntax for named targets
+  ("the dispatcher resolves the URL"). Per-key last-write-wins merge with three layers:
+  pattern -> target -> CLI flag.
+- Probe coverage gap closed: with `scope: "All"` (the default), per-target headers
+  ride along with same-origin probes (TransportProbe, CorsPreflightCheck,
+  AuthenticatedHeadersCheck, DcrEndpointCheck, AuthProbe + RFC 9728 metadata fetch).
+  Cross-origin fetches NEVER get MCP-server headers. `scope: "Session"` reverts to
+  the previous session-only behaviour per target.
+- Per-target `disabledChecks`, `profile`, `transport`, `timeoutSeconds` wiring.
+- Stderr `matched: patterns=N target=NAME -> K headers, scope=...` line under
+  non-quiet so users can see what overlay applied per server.
+- New URL-glob matcher (`UrlGlob`): single `*` = one host label OR one path segment,
+  `**` = any sequence including `/`, host case-insensitive, path case-sensitive.
+- New test MCP mode `headers` that records inbound HTTP requests via a `/capture`
+  endpoint; new integration tests assert per-target headers reach the right
+  surface (session vs CORS preflight) under the two scope modes.
+- Docs + sample: `docs/scan-checks.md#per-target-configuration`, README "Per-target
+  headers (config file)" section, `samples/targets.json` worked example.
+
+Build + test state: Release `-warnaserror` clean. 535 unit + 55 integration + 35 E2E
++ 3 skipped (gated remote smokes).
 
 ## Delivered in 0.5.0-preview.1
 
@@ -28,9 +53,6 @@ Living roadmap after 0.5.0-preview.1.
   for every built-in check; `docs/security-classification-recipes.md` with jq recipes for
   downstream policy / risk classification.
 
-Build + test state: Release `-warnaserror` clean. 494 unit + 52 integration
-(+4 new TestMcps) + 35 E2E + 3 skipped (gated remote smokes).
-
 ## Carried forward
 
 - 3.6 Full McpExecutor migration: the dispatch switch still selects per-command static
@@ -38,8 +60,9 @@ Build + test state: Release `-warnaserror` clean. 494 unit + 52 integration
   (Inspect/Tools/Resources/Call/Read/Prompt) + dictionary-driven dispatch is the remaining
   work. Significant scope; pure refactor (no behavioural change).
 - 3.2-extra Other probes still own their own HttpClient. Roll TransportProbe /
-  AuthorizationServerProbe / DcrEndpointCheck / AuthenticatedHeadersCheck onto the
-  shared `mcplense-probe` factory.
+  AuthorizationServerProbe / AuthenticatedHeadersCheck onto the shared `mcplense-probe`
+  factory. `CorsPreflightCheck` already uses the factory; `DcrEndpointCheck` still owns
+  its own client.
 
 ## Section 2 (new checks)
 

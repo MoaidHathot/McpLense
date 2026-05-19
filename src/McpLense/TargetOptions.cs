@@ -84,7 +84,8 @@ public sealed record TargetOptions(
     IReadOnlyList<string> CommandArguments,
     string? WorkingDirectory,
     IReadOnlyDictionary<string, string> Environment,
-    AuthOverrides AuthOverrides);
+    AuthOverrides AuthOverrides,
+    string? NamedReference = null);
 
 /// <summary>
 /// Raised when the caller supplied invalid input - bad URL, missing required option, etc.

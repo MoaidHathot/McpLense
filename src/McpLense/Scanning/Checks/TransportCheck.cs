@@ -22,7 +22,15 @@ internal sealed class TransportCheck : IScanCheck
         }
 
         using var probe = new TransportProbe();
-        var result = await probe.ProbeAsync(context.Server.Url, cancellationToken).ConfigureAwait(false);
+        // Apply per-target headers (e.g. x-mcp-ec-organization) to the unauthenticated probe
+        // when the target overlay declares scope=all (the default). Scope=session keeps the
+        // probe bare so the user can observe how an UNauthenticated request to the server
+        // behaves regardless of per-target header config.
+        var result = await probe.ProbeAsync(
+            context.Server.Url,
+            context.Server.Headers.Count == 0 ? null : context.Server.Headers,
+            context.Server.HeaderScope,
+            cancellationToken).ConfigureAwait(false);
 
         var mixedContent = string.Equals(context.Server.Url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
 

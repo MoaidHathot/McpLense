@@ -231,6 +231,84 @@ mcplense inspect https://mcp.context7.com/mcp \
 For richer authentication, use auth profiles (recommended) or the `--auth bearer`
 ad-hoc shortcut. See [Authentication](#authentication) below.
 
+### Per-target headers (config file)
+
+Many enterprise MCPs gate access on custom headers (organization id, project id,
+repository id, ...). To avoid typing those headers on every CLI call you can declare
+them in `McpLense.Config.json` (the same file that holds `authProfiles`):
+
+```jsonc
+{
+  "targetPatterns": [
+    {
+      "match":   "https://*.ec.com/**",
+      "headers": { "x-mcp-ec-organization": "default-org" }
+    }
+  ],
+  "targets": [
+    {
+      "name": "ec-foo",
+      "url":  "https://example.ec.com/foo/mcp",
+      "headers": {
+        "x-mcp-ec-organization": "myorg",
+        "x-mcp-ec-project":      "myproj",
+        "x-mcp-ec-repository":   "${MCPLENSE_EC_REPO:-default}"
+      },
+      "scope": "All",
+      "profile": "agent365",
+      "disabledChecks": ["corsPreflight"]
+    }
+  ]
+}
+```
+
+A worked example sits at [`samples/targets.json`](samples/targets.json).
+
+Reference a named target on the CLI with `@<name>`:
+
+```bash
+mcplense scan @ec-foo                         # auto-resolves URL + headers from config
+mcplense inspect @ec-foo --format json
+mcplense tools @ec-foo                        # works for every command, not just scan
+```
+
+Headers also apply automatically when you scan by URL (auto-resolution by exact URL).
+The resolver merges three layers in order, last-write-wins per header key:
+
+1. Any matching `targetPatterns[]` entries (least specific).
+2. The matching `targets[]` entry — by `@<name>` OR by exact URL.
+3. CLI `--header` flags (most specific).
+
+The overlay applies uniformly across every command that opens an MCP connection
+(`scan`, `inspect`, `tools`, `resources`, `prompts`, `call`, `read`, `prompt`,
+`fetch-resource`, `auth-scan`, `observe`) — not just `scan`.
+
+Under non-quiet mode the run prints one stderr line summarising what matched:
+
+```
+matched: patterns=1 target=ec-foo -> 3 headers, scope=all
+```
+
+Add `--verbose` to also see which exact header NAMES are flowing (values are never
+echoed - they may carry secrets) and which patterns fired:
+
+```
+matched: patterns=1 target=- -> 3 headers, scope=all
+matched headers for https://mcp.bluebird-ai.net/: x-mcp-ec-organization, x-mcp-ec-project, x-mcp-ec-repository
+matched pattern(s): https://**bluebird**/**
+```
+
+By default (`scope: "All"`) the merged headers ride along with **both** the MCP session
+**and** every same-origin probe the scanner runs (transport probe, CORS preflight,
+authenticated-headers re-probe, DCR endpoint probe). This fixes the previous "gap"
+where servers that gated everything behind a custom header returned opaque errors to
+the scanner. Set `scope: "Session"` per target to keep the probes bare while the
+session still authenticates normally. Cross-origin probes (e.g. authorization-server
+metadata on a different host) never receive MCP-server headers, regardless of scope.
+
+See [`docs/scan-checks.md`](docs/scan-checks.md#per-target-configuration) for the full
+schema (glob syntax, every field, every precedence rule).
+
 ## Authentication
 
 `mcplense` uses **auth profiles**: named, reusable authentication recipes that

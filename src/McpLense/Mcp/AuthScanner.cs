@@ -143,7 +143,15 @@ internal sealed class AuthScanner
         AuthProbeResult probeResult;
         try
         {
-            probeResult = await _probe.ProbeAsync(server.Url!, cancellationToken).ConfigureAwait(false);
+            // Forward per-target headers (when scope=all) so a server that gates everything
+            // behind, e.g. x-mcp-ec-organization, can still surface its RFC 9728 challenge.
+            // Same-origin only - the metadata-document fetch inside the probe respects the
+            // same-origin guard.
+            probeResult = await _probe.ProbeAsync(
+                server.Url!,
+                server.Headers.Count == 0 ? null : server.Headers,
+                server.HeaderScope,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

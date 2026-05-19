@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using McpLense.Scanning.TargetResolution;
 
 namespace McpLense;
 
@@ -75,6 +76,25 @@ internal sealed record AuthProbeResult(
 internal interface IAuthProbe
 {
     Task<AuthProbeResult> ProbeAsync(Uri serverUrl, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Same as <see cref="ProbeAsync(Uri, CancellationToken)"/> but with optional per-target
+    /// headers attached to the outbound probe (honoured only when <paramref name="scope"/> is
+    /// <see cref="TargetScope.All"/>). Same-origin fetches (e.g. the protected-resource
+    /// metadata document, when its URL matches the MCP host) get the headers too;
+    /// cross-origin fetches do not.
+    /// </summary>
+    /// <remarks>
+    /// Default implementation delegates to the bare overload so existing implementations
+    /// (test stubs in particular) keep working unchanged. The concrete <see cref="AuthProbe"/>
+    /// overrides this with the real header-aware behaviour.
+    /// </remarks>
+    Task<AuthProbeResult> ProbeAsync(
+        Uri serverUrl,
+        IReadOnlyDictionary<string, string>? additionalHeaders,
+        TargetScope scope,
+        CancellationToken cancellationToken)
+        => ProbeAsync(serverUrl, cancellationToken);
 }
 
 /// <summary>Default <see cref="IAuthProbe"/>. Owns its own <see cref="HttpClient"/> when none is supplied.</summary>
@@ -88,8 +108,10 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
 
     // Per-instance memoizer: the executor and the resolver both call ProbeAsync for the same
     // server URL (once for profile narrowing, once for scope substitution). Caching keeps that
-    // to a single round-trip without forcing a redesign of the call sites.
-    private readonly Dictionary<Uri, AuthProbeResult> _cache = new();
+    // to a single round-trip without forcing a redesign of the call sites. The cache key
+    // includes the additional headers so two scans with different per-target overlays don't
+    // collide on the same URL.
+    private readonly Dictionary<(Uri, string), AuthProbeResult> _cache = new();
 
     public AuthProbe()
         : this(httpClient: null, writeStderr: null)
@@ -107,21 +129,47 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         _writeStderr = writeStderr ?? Console.Error.WriteLine;
     }
 
-    public async Task<AuthProbeResult> ProbeAsync(Uri serverUrl, CancellationToken cancellationToken)
+    public Task<AuthProbeResult> ProbeAsync(Uri serverUrl, CancellationToken cancellationToken)
+        => ProbeAsync(serverUrl, additionalHeaders: null, scope: TargetScope.All, cancellationToken);
+
+    public async Task<AuthProbeResult> ProbeAsync(
+        Uri serverUrl,
+        IReadOnlyDictionary<string, string>? additionalHeaders,
+        TargetScope scope,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(serverUrl);
 
-        if (_cache.TryGetValue(serverUrl, out var cached))
+        // Cache key includes the FULL header set so two scans with different per-target
+        // headers (e.g. two organizations under the same MCP host) don't reuse each other's
+        // probe result. Cheap: cache hits are still O(1) on the cache size and probes are
+        // rare to begin with.
+        var cacheKey = (serverUrl, ComputeHeaderKey(additionalHeaders, scope));
+        if (_cache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
         }
 
-        var fresh = await ProbeUncachedAsync(serverUrl, cancellationToken).ConfigureAwait(false);
-        _cache[serverUrl] = fresh;
+        var fresh = await ProbeUncachedAsync(serverUrl, additionalHeaders, scope, cancellationToken).ConfigureAwait(false);
+        _cache[cacheKey] = fresh;
         return fresh;
     }
 
-    private async Task<AuthProbeResult> ProbeUncachedAsync(Uri serverUrl, CancellationToken cancellationToken)
+    private static string ComputeHeaderKey(IReadOnlyDictionary<string, string>? headers, TargetScope scope)
+    {
+        if (scope != TargetScope.All || headers is null || headers.Count == 0)
+        {
+            return "<none>";
+        }
+
+        return string.Join('|', headers.OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase).Select(kvp => $"{kvp.Key}={kvp.Value}"));
+    }
+
+    private async Task<AuthProbeResult> ProbeUncachedAsync(
+        Uri serverUrl,
+        IReadOnlyDictionary<string, string>? additionalHeaders,
+        TargetScope scope,
+        CancellationToken cancellationToken)
     {
         // Step 1: probe the server for a 401 + WWW-Authenticate header. We use GET (not HEAD)
         // because some MCP servers (Agent365 most notably) HANG on HEAD requests for >30s
@@ -131,7 +179,7 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         HttpResponseMessage? response = null;
         try
         {
-            response = await SendUnauthenticatedAsync(serverUrl, HttpMethod.Get, cancellationToken).ConfigureAwait(false);
+            response = await SendUnauthenticatedAsync(serverUrl, HttpMethod.Get, additionalHeaders, scope, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -188,7 +236,14 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
                     WwwAuthenticate: wwwAuthenticate);
             }
 
-            var metadata = await FetchProtectedResourceMetadataAsync(resourceMetadataUrl!, cancellationToken).ConfigureAwait(false);
+            // RFC 9728 metadata URL: same-origin fetches honour the per-target overlay,
+            // cross-origin fetches strictly do not (per the security rule).
+            var metadata = await FetchProtectedResourceMetadataAsync(
+                resourceMetadataUrl!,
+                serverUrl,
+                additionalHeaders,
+                scope,
+                cancellationToken).ConfigureAwait(false);
             return metadata with
             {
                 RequiresAuth = true,
@@ -219,12 +274,29 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
                 : $"{challenge.Scheme} {challenge.Parameter}"));
     }
 
-    private async Task<HttpResponseMessage> SendUnauthenticatedAsync(Uri url, HttpMethod method, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> SendUnauthenticatedAsync(
+        Uri url,
+        HttpMethod method,
+        IReadOnlyDictionary<string, string>? additionalHeaders,
+        TargetScope scope,
+        CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(method, url);
         // Make sure no inherited Authorization header sneaks in (HttpClient default is to keep
         // none, but be explicit).
         request.Headers.Authorization = null;
+
+        // Per-target headers (scope=all) ride along with the unauthenticated probe so that
+        // a server which gates everything behind, say, x-mcp-ec-organization can still reply
+        // with the proper RFC 9728 challenge instead of an opaque 400.
+        if (scope == TargetScope.All && additionalHeaders is { Count: > 0 })
+        {
+            foreach (var (name, value) in additionalHeaders)
+            {
+                request.Headers.TryAddWithoutValidation(name, value);
+            }
+        }
+
         return await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
     }
 
@@ -334,7 +406,12 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         return null;
     }
 
-    private async Task<AuthProbeResult> FetchProtectedResourceMetadataAsync(string url, CancellationToken cancellationToken)
+    private async Task<AuthProbeResult> FetchProtectedResourceMetadataAsync(
+        string url,
+        Uri serverUrl,
+        IReadOnlyDictionary<string, string>? additionalHeaders,
+        TargetScope scope,
+        CancellationToken cancellationToken)
     {
         // RFC 9728 §3 says the resource_metadata URL is always an absolute HTTPS URL (HTTP is
         // tolerated for non-prod environments). We deliberately reject anything else: relative
@@ -353,6 +430,20 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, metadataUri);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            // Forward per-target headers only when same-origin (the metadata document
+            // usually lives at /.well-known on the SAME MCP host; cross-origin would be
+            // unusual and would imply sending MCP-server headers to a different host - which
+            // we forbid as a security rule).
+            if (scope == TargetScope.All
+                && additionalHeaders is { Count: > 0 }
+                && IsSameOrigin(serverUrl, metadataUri))
+            {
+                foreach (var (name, value) in additionalHeaders)
+                {
+                    request.Headers.TryAddWithoutValidation(name, value);
+                }
+            }
 
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
@@ -374,6 +465,11 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
             return new AuthProbeResult(ResourceMetadataUrl: url);
         }
     }
+
+    private static bool IsSameOrigin(Uri a, Uri b)
+        => string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)
+           && a.Port == b.Port;
 
     private AuthProbeResult ParseProtectedResourceMetadata(string json, string resourceMetadataUrl)
     {

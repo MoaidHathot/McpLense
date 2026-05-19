@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using McpLense.Scanning.TargetResolution;
 
 namespace McpLense.Scanning;
 
@@ -23,6 +24,24 @@ public sealed class ScanConfig
     /// <summary>Output-related knobs (baseline directory etc.).</summary>
     [JsonPropertyName("output")]
     public ScanOutputConfig Output { get; init; } = new();
+
+    /// <summary>
+    /// Declarative target entries. Each entry binds an exact URL (and optionally a short
+    /// name for <c>@name</c> CLI lookup) to headers, an auth profile, transport / timeout
+    /// overrides, and per-target disabled checks. Merged INTO the CLI overrides; CLI wins
+    /// per key. See <see cref="TargetOverlayResolver"/>.
+    /// </summary>
+    [JsonPropertyName("targets")]
+    public List<ScanTargetEntry> Targets { get; init; } = [];
+
+    /// <summary>
+    /// Declarative pattern overlays. Each entry matches every MCP whose URL matches the
+    /// pattern's glob (see <see cref="UrlGlob"/>) and contributes headers / profile /
+    /// transport / timeout / disabled-check defaults. Patterns are the LEAST specific layer
+    /// in the resolver; named target entries and CLI flags override pattern values.
+    /// </summary>
+    [JsonPropertyName("targetPatterns")]
+    public List<TargetPatternEntry> TargetPatterns { get; init; } = [];
 
     /// <summary>Schema version reserved for future migrations.</summary>
     [JsonPropertyName("schemaVersion")]

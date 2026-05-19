@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using McpLense.Scanning.TargetResolution;
 
 namespace McpLense.Scanning.Checks;
 
@@ -33,17 +34,45 @@ internal sealed class DcrEndpointCheck : IScanCheck
             Timeout = TimeSpan.FromSeconds(10)
         };
 
-        var optionsResult = await TryAsync(http, HttpMethod.Options, endpoint, body: null, cancellationToken).ConfigureAwait(false);
-        var postResult = await TryAsync(http, HttpMethod.Post, endpoint, body: "{}", cancellationToken).ConfigureAwait(false);
+        // Per-target headers travel ONLY when the DCR endpoint is on the same origin as the
+        // MCP server. The DCR endpoint usually lives on the AS host (e.g. login.micro-
+        // soft.com) and per the cross-origin rule we must NOT leak MCP-server headers there.
+        // For the rare case where DCR lives on the MCP host (some self-hosted setups), we
+        // still honour scope=session as an explicit opt-out.
+        IReadOnlyDictionary<string, string>? probeHeaders = null;
+        if (context.Server.Url is not null
+            && context.Server.HeaderScope == TargetScope.All
+            && context.Server.Headers.Count > 0
+            && IsSameOrigin(context.Server.Url, endpoint))
+        {
+            probeHeaders = context.Server.Headers;
+        }
+
+        var optionsResult = await TryAsync(http, HttpMethod.Options, endpoint, body: null, probeHeaders, cancellationToken).ConfigureAwait(false);
+        var postResult = await TryAsync(http, HttpMethod.Post, endpoint, body: "{}", probeHeaders, cancellationToken).ConfigureAwait(false);
 
         return new CheckOutcome(Ran: true, Data: CheckSessionHelpers.ToNode(new DcrEndpointData(endpoint.ToString(), optionsResult, postResult)), Error: null);
     }
 
-    private static async Task<EndpointProbe> TryAsync(HttpClient http, HttpMethod method, Uri endpoint, string? body, CancellationToken ct)
+    private static async Task<EndpointProbe> TryAsync(
+        HttpClient http,
+        HttpMethod method,
+        Uri endpoint,
+        string? body,
+        IReadOnlyDictionary<string, string>? additionalHeaders,
+        CancellationToken ct)
     {
         try
         {
             using var request = new HttpRequestMessage(method, endpoint);
+            if (additionalHeaders is { Count: > 0 })
+            {
+                foreach (var (name, value) in additionalHeaders)
+                {
+                    request.Headers.TryAddWithoutValidation(name, value);
+                }
+            }
+
             if (body is not null)
             {
                 request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
@@ -64,6 +93,11 @@ internal sealed class DcrEndpointCheck : IScanCheck
             return new EndpointProbe(method.Method, null, null, $"{ex.GetType().Name}: {ex.Message}");
         }
     }
+
+    private static bool IsSameOrigin(Uri a, Uri b)
+        => string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)
+           && a.Port == b.Port;
 
     internal sealed record DcrEndpointData(string Endpoint, EndpointProbe Options, EndpointProbe Post);
 

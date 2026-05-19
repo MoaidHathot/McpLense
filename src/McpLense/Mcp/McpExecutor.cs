@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using McpLense.Scanning;
+using McpLense.Scanning.TargetResolution;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 
@@ -68,7 +69,9 @@ internal static class McpExecutor
                 cliDisables,
                 cancellationToken,
                 maxDegreeOfParallelism: parallel,
-                progress: progressCallback).ConfigureAwait(false);
+                progress: progressCallback,
+                quiet: command.Quiet,
+                verbose: command.Verbose).ConfigureAwait(false);
 
             if (!string.IsNullOrEmpty(command.BaselinePath))
             {
@@ -90,7 +93,26 @@ internal static class McpExecutor
             return new ExecutionOutcome(scanReport, false);
         }
 
+        // Load the unified ScanConfig (auto-discovered XDG paths + the legacy
+        // McpLense.Profiles.json file). We need this BEFORE TargetResolver runs so a
+        // @name positional reference can be resolved to a concrete URL, and AFTER
+        // TargetResolver runs so the per-target overlay (headers, scope, transport,
+        // timeout, disabledChecks) can be applied uniformly across inspect / tools /
+        // resources / prompts / call / read / prompt / fetch-resource / auth-scan /
+        // observe. Without this every non-scan command was sending requests bare even
+        // when the config declared per-target headers.
+        var scanConfigPaths = TargetConfigLoading.ResolveScanConfigPaths(command.Target.ProfilePaths);
+        var scanConfig = await ScanConfigLoader.LoadAsync(scanConfigPaths, cancellationToken).ConfigureAwait(false);
+        command = command with { Target = TargetOverlayApplicator.ResolveNamedReference(command.Target, scanConfig) };
+
         var servers = await TargetResolver.ResolveAsync(command.Target, cancellationToken);
+        servers = TargetOverlayApplicator.Apply(
+            servers,
+            scanConfig,
+            command.Target,
+            cliDisables: null,
+            quiet: command.Quiet,
+            verbose: command.Verbose);
 
         // auth-scan still uses the original AuthScanner directly (faster path, no full audit).
         if (command.Command is AppCommand.AuthScan)
@@ -115,7 +137,7 @@ internal static class McpExecutor
             }
 
             // Resolve via standard inspect path, then read the named resource.
-            servers = await AttachProfilesAsync(servers, command.Target, cancellationToken).ConfigureAwait(false);
+            servers = await AttachProfilesAsync(servers, command.Target, cancellationToken, command.Quiet, command.Verbose).ConfigureAwait(false);
             return await ReadResourceAsync(SingleServer(servers), command.Subject, command.Arguments, command.Timeout, cancellationToken).ConfigureAwait(false);
         }
 
@@ -124,7 +146,11 @@ internal static class McpExecutor
         // local debugging works without any profile setup.
         if (!command.Target.AuthOverrides.NoAuth)
         {
-            servers = await AttachProfilesAsync(servers, command.Target, cancellationToken).ConfigureAwait(false);
+            servers = await AttachProfilesAsync(servers, command.Target, cancellationToken, command.Quiet, command.Verbose).ConfigureAwait(false);
+        }
+        else if (!command.Quiet)
+        {
+            Console.Error.WriteLine("auth: --no-auth supplied; sending unauthenticated.");
         }
 
         return command.Command switch
@@ -171,7 +197,9 @@ internal static class McpExecutor
             command.Timeout,
             enables,
             disables,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            quiet: command.Quiet,
+            verbose: command.Verbose).ConfigureAwait(false);
 
         return new ExecutionOutcome(report, false);
     }
@@ -417,7 +445,9 @@ internal static class McpExecutor
     private static async Task<IReadOnlyList<ResolvedServer>> AttachProfilesAsync(
         IReadOnlyList<ResolvedServer> servers,
         TargetOptions target,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool quiet = false,
+        bool verbose = false)
     {
         var httpWithoutAuth = servers
             .Where(server => server.Kind == ConnectionKind.Http && server.Auth is null)
@@ -436,10 +466,21 @@ internal static class McpExecutor
         // don't need auth at all (the most common dev/test case).
         if (string.IsNullOrEmpty(explicitProfile) && !target.AuthOverrides.TryAll && profilePaths.Count == 0)
         {
+            if (!quiet)
+            {
+                Console.Error.WriteLine("auth: no profile (no --profiles supplied and no XDG/APPDATA defaults found); sending unauthenticated.");
+            }
             return servers;
         }
 
         var profiles = await ProfileLoader.LoadAsync(profilePaths, new EnvironmentExpander(), cancellationToken).ConfigureAwait(false);
+
+        if (verbose)
+        {
+            var sources = string.Join(", ", profilePaths);
+            var names = profiles.Count == 0 ? "(none)" : string.Join(", ", profiles.Select(p => $"{p.Name}({p.Auth.Kind})"));
+            Console.Error.WriteLine($"auth: {profiles.Count} profile(s) loaded from {sources}: {names}");
+        }
 
         // --try-all is a runtime-only opt-in for now; runtime command paths still need a single
         // profile choice. Surface a clean error rather than silently picking one.
@@ -447,6 +488,18 @@ internal static class McpExecutor
         {
             throw new UserInputException(
                 "--try-all is currently only supported with --login. Pick a profile with --profile <name> for runtime commands.");
+        }
+
+        // Zero loaded profiles AND no explicit --profile: nothing to attach. Don't surface
+        // the resolver's "no profiles loaded" error - the user clearly didn't intend to
+        // authenticate (no profile file, no --profile flag).
+        if (profiles.Count == 0 && string.IsNullOrEmpty(explicitProfile))
+        {
+            if (!quiet)
+            {
+                Console.Error.WriteLine("auth: no profiles found in the loaded files; sending unauthenticated.");
+            }
+            return servers;
         }
 
         using var probe = new AuthProbe();
@@ -467,14 +520,50 @@ internal static class McpExecutor
             // replaces an earlier pre-probe in this method that caused two HTTP round-trips per
             // server resolution and surfaced as 30+ second hangs against slow / flaky servers
             // (e.g. Agent365 returning 502/timeouts on unauthenticated HEAD).
-            var profile = await resolver.ResolveAsync(server.Url!, profiles, explicitProfile, cancellationToken).ConfigureAwait(false);
+            //
+            // The probe receives the per-target overlay headers (with scope honoured) so a
+            // server that gates everything (incl. the bare GET) still surfaces its RFC 9728
+            // challenge to the resolver instead of an opaque 4xx.
+            var probeHeaders = server.Headers.Count == 0 ? null : server.Headers;
+            Action<string>? trace = verbose
+                ? message => Console.Error.WriteLine($"auth: {server.Url} - {message}")
+                : null;
+            var profile = await resolver.ResolveAsync(
+                server.Url!,
+                profiles,
+                explicitProfile,
+                cancellationToken,
+                probeHeaders,
+                server.HeaderScope,
+                trace).ConfigureAwait(false);
             if (profile is null)
             {
+                if (!quiet)
+                {
+                    Console.Error.WriteLine($"auth: {server.Url} -> no profile resolved; sending unauthenticated.");
+                }
                 result[index] = server;
                 continue;
             }
 
-            var auth = await MaybeSubstituteScopesFromProbeAsync(profile.Auth, server.Url!, probe, cancellationToken).ConfigureAwait(false);
+            var auth = await MaybeSubstituteScopesFromProbeAsync(
+                profile.Auth,
+                server.Url!,
+                probe,
+                cancellationToken,
+                probeHeaders,
+                server.HeaderScope).ConfigureAwait(false);
+
+            if (!quiet)
+            {
+                var via = string.IsNullOrEmpty(explicitProfile) ? "auto-picked" : "via --profile";
+                var scopeBit = (auth.Scopes is { Count: > 0 })
+                    ? $", scopes=[{string.Join(", ", auth.Scopes)}]"
+                    : string.Empty;
+                Console.Error.WriteLine(
+                    $"auth: {server.Url} -> profile='{profile.Name}' kind={auth.Kind} ({via}){scopeBit}");
+            }
+
             result[index] = server with { Auth = auth };
         }
 
@@ -519,14 +608,16 @@ internal static class McpExecutor
         ResolvedAuth auth,
         Uri serverUrl,
         IAuthProbe probe,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string>? probeHeaders = null,
+        Scanning.TargetResolution.TargetScope probeScope = Scanning.TargetResolution.TargetScope.All)
     {
         if (!AllScopesAreDefault(auth.Scopes))
         {
             return auth;
         }
 
-        var probeResult = await probe.ProbeAsync(serverUrl, cancellationToken).ConfigureAwait(false);
+        var probeResult = await probe.ProbeAsync(serverUrl, probeHeaders, probeScope, cancellationToken).ConfigureAwait(false);
         if (probeResult.Scopes is null || probeResult.Scopes.Count == 0)
         {
             return auth;

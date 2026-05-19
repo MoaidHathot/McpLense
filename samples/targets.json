@@ -1,0 +1,86 @@
+{
+  "//": "Worked example: per-target headers and pattern overlays for a fleet of MCP servers.",
+  "//1": "Drop this file into one of:",
+  "//2": "  $XDG_CONFIG_HOME/McpLense/McpLense.Config.json   (auto-discovered)",
+  "//3": "  %APPDATA%\\McpLense\\McpLense.Config.json          (auto-discovered on Windows)",
+  "//4": "or pass it explicitly via:  mcplense scan @ec-foo --profiles ./targets.json",
+  "//5": "",
+  "//6": "PER-TARGET HEADERS",
+  "//7": "  Many enterprise MCPs gate access on custom headers (organization id, project id,",
+  "//8": "  repository id, ...). The `targets` block binds an exact URL to a fixed set of",
+  "//9": "  headers; the CLI can reference these targets positionally via @<name> instead of",
+  "//10": "  re-typing the URL each scan.",
+  "//11": "",
+  "//12": "PATTERN OVERLAYS",
+  "//13": "  The `targetPatterns` block applies headers to every URL matching a glob. Useful",
+  "//14": "  when an entire host or path tree shares a default header set. Patterns are the",
+  "//15": "  LEAST-specific layer of the resolver: named target entries override pattern",
+  "//16": "  entries, and CLI --header flags override both. Per-header-key last-write-wins.",
+  "//17": "",
+  "//18": "SCOPE",
+  "//19": "  `scope: \"All\"` (default) extends the headers to BOTH the MCP session AND the",
+  "//20": "  same-origin probes the scanner runs (transport probe, CORS preflight, ...).",
+  "//21": "  `scope: \"Session\"` keeps the probes bare so you can observe how an UN-",
+  "//22": "  authenticated request looks. Cross-origin probes (e.g. the authorization-",
+  "//23": "  server metadata fetch on login.microsoftonline.com) NEVER get these headers,",
+  "//24": "  regardless of scope, because mixing them across origins would be a leak.",
+  "//25": "",
+  "//26": "ENVIRONMENT EXPANSION",
+  "//27": "  Header values run through the standard env-expander: 'env:VAR' (whole), '${VAR}'",
+  "//28": "  (substring), '${VAR:-default}' (with default).",
+  "targetPatterns": [
+    {
+      "match":   "https://*.ec.com/**",
+      "headers": {
+        "x-mcp-ec-organization": "default-org"
+      },
+      "scope":   "All"
+    }
+  ],
+  "targets": [
+    {
+      "name": "ec-foo",
+      "url":  "https://example.ec.com/foo/mcp",
+      "headers": {
+        "x-mcp-ec-organization": "myorg",
+        "x-mcp-ec-project":      "myproj",
+        "x-mcp-ec-repository":   "${MCPLENSE_EC_REPO:-default-repo}"
+      },
+      "scope": "All",
+      "profile": "agent365"
+    },
+    {
+      "name": "ec-bar",
+      "url":  "https://example.ec.com/bar/mcp",
+      "headers": {
+        "x-mcp-ec-organization": "otherorg",
+        "x-mcp-ec-project":      "otherproj"
+      },
+      "//": "Some servers gate everything behind these headers. With scope=All (the default),",
+      "//1": "the transport probe / CORS preflight / authenticated-headers probe all carry the",
+      "//2": "headers too, so the scan reaches the same surface the live MCP client would.",
+      "scope": "All"
+    },
+    {
+      "name": "ec-probe-bare",
+      "url":  "https://example.ec.com/baz/mcp",
+      "headers": {
+        "x-mcp-ec-organization": "scoped"
+      },
+      "//": "scope=Session keeps the unauthenticated probes header-free so you can observe",
+      "//1": "the bare server-response surface independently of the per-target headers.",
+      "scope": "Session"
+    }
+  ],
+  "scan": {
+    "checks": {
+      "behavior.serverInitiated": {
+        "enabled": false,
+        "observationDurationSeconds": 2
+      }
+    },
+    "output": {
+      "baselineDir": "./baselines"
+    }
+  }
+}

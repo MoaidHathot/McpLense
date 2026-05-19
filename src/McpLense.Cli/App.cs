@@ -88,39 +88,42 @@ mcplense
 Inspect MCP servers from a positional URL, a config file, or a stdio command.
 
 Usage
-  mcplense inspect <url> [common-options]
+  mcplense inspect <url|@target> [common-options]
   mcplense inspect [target-options] [common-options]
-  mcplense scan      [<url>] [target-options] [common-options]
-  mcplense auth-scan [<url>] [target-options] [common-options]
-  mcplense observe   [<url>] [target-options] [common-options]
-  mcplense fetch-resource <uri-or-template> [<url>] [target-options] [common-options]
+  mcplense scan      [<url|@target>] [target-options] [common-options]
+  mcplense auth-scan [<url|@target>] [target-options] [common-options]
+  mcplense observe   [<url|@target>] [target-options] [common-options]
+  mcplense fetch-resource <uri-or-template> [<url|@target>] [target-options] [common-options]
   mcplense diff <baseline-before> <baseline-after>
   mcplense tui [target-options] [common-options]
   mcplense tools [target-options] [common-options]
   mcplense resources [target-options] [common-options]
   mcplense prompts [target-options] [common-options]
-  mcplense call <tool-name> [<url>] [target-options] [common-options] [--args <json>]
-  mcplense read <uri-or-template> [<url>] [target-options] [common-options] [--args <json>]
-  mcplense prompt <prompt-name> [<url>] [target-options] [common-options] [--args <json>]
+  mcplense call <tool-name> [<url|@target>] [target-options] [common-options] [--args <json>]
+  mcplense read <uri-or-template> [<url|@target>] [target-options] [common-options] [--args <json>]
+  mcplense prompt <prompt-name> [<url|@target>] [target-options] [common-options] [--args <json>]
   mcplense login   {--all | --profile <name> | <url>} [--profiles <path>] [common-options]
   mcplense logout  {--all | --profile <name> | <url>} [--profiles <path>] [common-options]
   mcplense help
   mcplense version
 
 Target Options
-  Positional URL is the canonical way to point at an HTTP MCP server. Use --url for the
-  long form, or --command (or '-- <command ...>') for stdio MCPs. --config loads stdio
-  servers from a JSON file (HTTP servers are no longer supported in --config files).
+  Positional argument is one of:
+    <url>          Absolute http(s) URL.
+    @<target>      Named target reference. Looked up against `targets[].name` in your
+                   McpLense.Config.json file. URL, headers, profile and transport come
+                   from the config entry.
+
+  --url <url>                  Connect to an HTTP MCP endpoint (alternative to positional URL).
+  --transport <auto|streamable-http|sse>
+                               HTTP transport mode. Default: auto.
+  --header <name=value>        HTTP header. Repeat as needed. Most-specific layer of the
+                               overlay (overrides config-level headers per key).
 
   --config <path>              Load one or more stdio MCP servers from a JSON config file.
                                Repeat to merge multiple config files; duplicate server names
                                across files raise an error.
   --server <name>              Filter --config servers by name. Repeat as needed.
-
-  --url <url>                  Connect to an HTTP MCP endpoint (alternative to positional URL).
-  --transport <auto|streamable-http|sse>
-                               HTTP transport mode. Default: auto.
-  --header <name=value>        HTTP header. Repeat as needed.
 
   --command <command>          Launch a stdio MCP server directly.
   --command-arg <value>        Argument for --command. Repeat as needed.
@@ -337,24 +340,76 @@ Configuration file (`McpLense.Config.json`)
   `%APPDATA%/McpLense/McpLense.Config.json`. May also live in the legacy filename
   `McpLense.Profiles.json` - both are read. Top-level keys:
     authProfiles    (array) - auth profile definitions (unchanged from earlier releases).
+    targets         (array) - per-URL header / profile / transport / timeout binding.
+    targetPatterns  (array) - URL-glob overlays that apply across many MCPs.
     scan            (object) - scan-pipeline configuration.
+
+  Per-target `targets[]` shape:
+    {
+      "targets": [
+        {
+          "name":   "ec-foo",
+          "url":    "https://example.ec.com/foo/mcp",
+          "headers": {
+            "x-mcp-ec-organization": "myorg",
+            "x-mcp-ec-project":      "myproj",
+            "x-mcp-ec-repository":   "${MCPLENSE_EC_REPO:-default}"
+          },
+          "scope":          "All",
+          "profile":        "agent365",
+          "transport":      "streamable-http",
+          "timeoutSeconds": 90,
+          "disabledChecks": ["corsPreflight"]
+        }
+      ]
+    }
+  Reference the target on the CLI with `@ec-foo`. Headers also apply automatically
+  when you scan the matching URL.
+
+  Pattern overlay `targetPatterns[]` shape (URL-glob, least-specific layer):
+    {
+      "targetPatterns": [
+        {
+          "match":   "https://*.ec.com/**",
+          "headers": { "x-mcp-ec-organization": "default-org" },
+          "scope":   "All"
+        }
+      ]
+    }
+
+  Glob syntax: `*` = one host label OR one path segment, `**` = any sequence
+  including `/`, `?` = one char. Host part is case-insensitive; path part is
+  case-sensitive. The scheme separator `://` is required.
+
+  Scope (`All` is the default):
+    All      Headers ride along with the MCP session AND the same-origin probes
+             (transport probe, CORS preflight, authenticated-headers, DCR endpoint).
+    Session  Headers only ride with the MCP session; probes go out bare.
+    Cross-origin fetches (e.g. authorization-server metadata on a different host)
+    NEVER receive MCP-server headers, regardless of scope.
+
+  Precedence (low -> high): pattern -> target -> CLI flag. Last-write-wins per
+  header key; per-other-field "later non-null wins". CLI `--disable` is UNIONED
+  with any per-target / per-pattern `disabledChecks`.
 
   `scan` block shape:
     {
-      "checks": {
-        "auth":                   { "enabled": true },
-        "behavior.serverInitiated": {
-          "enabled": false,
-          "observationDurationSeconds": 2,
-          "advertiseCapabilities": ["sampling", "elicitation", "roots", "listChanged"]
+      "scan": {
+        "checks": {
+          "auth":                   { "enabled": true },
+          "behavior.serverInitiated": {
+            "enabled": false,
+            "observationDurationSeconds": 2,
+            "advertiseCapabilities": ["sampling", "elicitation", "roots", "listChanged"]
+          },
+          "metrics": {
+            "enabled": true,
+            "urlExtractionFields": ["serverInstructions", "toolDescription", "promptDescription"]
+          }
         },
-        "metrics": {
-          "enabled": true,
-          "urlExtractionFields": ["serverInstructions", "toolDescription", "promptDescription"]
+        "output": {
+          "baselineDir": "./baselines"
         }
-      },
-      "output": {
-        "baselineDir": "./baselines"
       }
     }
   Config-file enable/disable wins over the check's IsEnabledByDefault. CLI --enable /
@@ -367,6 +422,7 @@ Configuration file (`McpLense.Config.json`)
 
   Works on:
     mcplense scan https://server.example/mcp
+    mcplense scan @ec-foo
     mcplense scan https://server.example/mcp --check-authorization-servers
     mcplense scan https://server.example/mcp --profiles ./agent365.json --classify-only
     mcplense scan --config mcp.json

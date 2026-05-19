@@ -1,5 +1,7 @@
 namespace McpLense;
 
+using McpLense.Scanning.TargetResolution;
+
 /// <summary>
 /// Picks the right <see cref="AuthProfile"/> for an HTTP MCP target. Resolution rules:
 /// <list type="number">
@@ -36,12 +38,31 @@ internal sealed class AuthProfileResolver
     /// <param name="profiles">All loaded profiles.</param>
     /// <param name="requestedProfile">Explicit <c>--profile</c> value, or null.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="probeHeaders">
+    /// Optional per-target headers to apply to the unauthenticated probe (and the same-origin
+    /// protected-resource-metadata fetch) - mirrors the per-target overlay used by the scan
+    /// pipeline so servers that gate even the bare probe see the same headers as the live
+    /// MCP session.
+    /// </param>
+    /// <param name="probeScope">
+    /// Scope governing the per-target headers. <see cref="TargetScope.Session"/> suppresses
+    /// the header forward to keep the probe bare; <see cref="TargetScope.All"/> (default)
+    /// forwards them.
+    /// </param>
+    /// <param name="trace">
+    /// Optional sink for resolution diagnostics. The resolver writes one line per decision
+    /// point (probe outcome, narrowing, cache hits, final pick rationale). The caller
+    /// typically routes this to stderr under <c>--verbose</c>.
+    /// </param>
     /// <exception cref="UserInputException">Raised on ambiguous matches, no candidate, etc.</exception>
     public async Task<AuthProfile?> ResolveAsync(
         Uri serverUrl,
         IReadOnlyList<AuthProfile> profiles,
         string? requestedProfile,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string>? probeHeaders = null,
+        TargetScope probeScope = TargetScope.All,
+        Action<string>? trace = null)
     {
         ArgumentNullException.ThrowIfNull(serverUrl);
         ArgumentNullException.ThrowIfNull(profiles);
@@ -58,6 +79,7 @@ internal sealed class AuthProfileResolver
                     $"--profile '{requestedProfile}' was not found. Loaded profiles: {available}.");
             }
 
+            trace?.Invoke($"profile picked by explicit --profile flag: '{match.Name}'.");
             return match;
         }
 
@@ -72,11 +94,27 @@ internal sealed class AuthProfileResolver
         // Single-profile shortcut: nothing to disambiguate, skip the probe.
         if (profiles.Count == 1)
         {
+            trace?.Invoke($"profile picked by single-profile shortcut: '{profiles[0].Name}'.");
             return profiles[0];
         }
 
-        var probeResult = await _probe.ProbeAsync(serverUrl, cancellationToken).ConfigureAwait(false);
+        var probeResult = await _probe.ProbeAsync(serverUrl, probeHeaders, probeScope, cancellationToken).ConfigureAwait(false);
+        if (trace is not null)
+        {
+            var classification = probeResult.RequiresAuth
+                ? (probeResult.ResourceMetadataUrl is { Length: > 0 } ? "RFC 9728 metadata advertised" : "auth-required, no metadata")
+                : probeResult.Inconclusive ? "inconclusive" : "anonymous-success";
+            var advertised = (probeResult.Scopes is { Count: > 0 })
+                ? $", advertised scopes=[{string.Join(", ", probeResult.Scopes)}]"
+                : string.Empty;
+            trace($"probe classification={classification}{advertised}.");
+        }
+
         var candidates = NarrowByProbe(profiles, probeResult);
+        if (trace is not null && candidates.Count != profiles.Count)
+        {
+            trace($"narrowed by advertised scopes to: {string.Join(", ", candidates.Select(p => p.Name))}.");
+        }
 
         // From the candidate set, find which profiles already have cached credentials.
         var cachedCandidates = new List<AuthProfile>();
@@ -88,11 +126,23 @@ internal sealed class AuthProfileResolver
             }
         }
 
+        trace?.Invoke(cachedCandidates.Count == 0
+            ? "no profiles have cached credentials; falling back to precedence."
+            : $"cached profiles: {string.Join(", ", cachedCandidates.Select(p => p.Name))}.");
+
         // Pick from the cached set first; fall through to all candidates if none cached.
-        var picked = PickByPrecedence(cachedCandidates) ?? PickByPrecedence(candidates);
-        if (picked is not null)
+        var pickedFromCache = PickByPrecedence(cachedCandidates);
+        if (pickedFromCache is not null)
         {
-            return picked;
+            trace?.Invoke($"profile picked by cache-hit + precedence: '{pickedFromCache.Name}' (priority={EffectivePriority(pickedFromCache)}).");
+            return pickedFromCache;
+        }
+
+        var pickedByPrecedence = PickByPrecedence(candidates);
+        if (pickedByPrecedence is not null)
+        {
+            trace?.Invoke($"profile picked by precedence (no cached candidates): '{pickedByPrecedence.Name}' (priority={EffectivePriority(pickedByPrecedence)}).");
+            return pickedByPrecedence;
         }
 
         // The tiebreaker couldn't disambiguate - multiple candidates tied at the same effective

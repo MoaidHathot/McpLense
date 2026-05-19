@@ -1,3 +1,4 @@
+using McpLense.Scanning.TargetResolution;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace McpLense.Scanning;
@@ -17,16 +18,34 @@ internal static class ScanCommandDispatcher
         IReadOnlySet<string>? cliDisables,
         CancellationToken cancellationToken,
         int maxDegreeOfParallelism = 1,
-        Action<int, int, string, TimeSpan>? progress = null)
+        Action<int, int, string, TimeSpan>? progress = null,
+        bool quiet = false,
+        bool verbose = false)
     {
-        var servers = await TargetResolver.ResolveAsync(target, cancellationToken).ConfigureAwait(false);
-
         // Load merged config + profiles from the same paths the user gave (or XDG defaults).
-        var resolvedPaths = ResolveProfilePaths(target.ProfilePaths);
+        // We do this BEFORE TargetResolver so a positional @name reference can be resolved
+        // against the config's `targets[]` block.
+        var resolvedPaths = TargetConfigLoading.ResolveScanConfigPaths(target.ProfilePaths);
         var profiles = resolvedPaths.Count == 0
             ? Array.Empty<AuthProfile>()
             : await ProfileLoader.LoadAsync(resolvedPaths, new EnvironmentExpander(), cancellationToken).ConfigureAwait(false);
         var scanConfig = await ScanConfigLoader.LoadAsync(resolvedPaths, cancellationToken).ConfigureAwait(false);
+
+        // @name resolution: turn the named reference into a URL by looking it up against
+        // the config file's `targets[]` entries. Fail fast when the name doesn't match.
+        target = TargetOverlayApplicator.ResolveNamedReference(target, scanConfig);
+
+        var servers = await TargetResolver.ResolveAsync(target, cancellationToken).ConfigureAwait(false);
+
+        // Apply per-server overlay (headers, scope, transport, timeout, disabledChecks).
+        // Same helper used by McpExecutor so non-scan commands behave identically.
+        var overlaidServers = TargetOverlayApplicator.Apply(
+            servers,
+            scanConfig,
+            target,
+            cliDisables,
+            quiet,
+            verbose);
 
         var services = new ServiceCollection();
         services.AddSingleton<IReadOnlyList<AuthProfile>>(profiles);
@@ -56,36 +75,6 @@ internal static class ScanCommandDispatcher
             pipeline.Disable(id);
         }
 
-        return await pipeline.Build().RunAsync(servers, handshakeTimeout, cancellationToken, maxDegreeOfParallelism, progress).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Same profile-discovery semantics the existing executor uses: explicit
-    /// <c>--profiles</c> / <c>--config</c> paths win; otherwise discover from the platform
-    /// default config directory.
-    /// </summary>
-    private static IReadOnlyList<string> ResolveProfilePaths(IReadOnlyList<string> explicitPaths)
-    {
-        if (explicitPaths.Count > 0)
-        {
-            return explicitPaths;
-        }
-
-        var root = DefaultConfigPaths.ResolveRoot();
-        var discovered = DefaultConfigPaths.EnumerateProfileFiles(root);
-
-        // ALSO discover the unified config file - the user may have renamed
-        // McpLense.Profiles.json -> McpLense.Config.json. We accept either name.
-        if (root is not null)
-        {
-            var configFile = Path.Combine(root, ScanConfigLoader.ConfigFileName);
-            if (File.Exists(configFile) && !discovered.Contains(configFile))
-            {
-                var merged = new List<string>(discovered) { configFile };
-                return merged;
-            }
-        }
-
-        return discovered;
+        return await pipeline.Build().RunAsync(overlaidServers, handshakeTimeout, cancellationToken, maxDegreeOfParallelism, progress).ConfigureAwait(false);
     }
 }

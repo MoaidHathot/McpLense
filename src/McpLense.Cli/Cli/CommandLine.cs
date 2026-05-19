@@ -422,7 +422,10 @@ internal static class CommandLineParser
     /// Splits positional arguments into the (optional) subject for call/read/prompt/diff and
     /// the (optional) URL positional accepted by every other command. The third tuple field
     /// holds extra positionals after subject (used by <c>diff</c> for the second baseline
-    /// path and by <c>fetch-resource</c> for the optional URL).
+    /// path and by <c>fetch-resource</c> for the optional URL). A positional starting with
+    /// <c>@</c> is a named-target reference (looked up against <c>targets[].name</c> in the
+    /// config file) and is treated exactly like a URL positional - the dispatcher resolves
+    /// the actual URL before running the scan.
     /// </summary>
     private static (string? Subject, string? UrlPositional, IReadOnlyList<string> Extras) ParseSubjectAndUrl(AppCommand command, List<string> positionals)
     {
@@ -433,7 +436,7 @@ internal static class CommandLineParser
                 {
                     0 => throw new UserInputException($"{command.ToString().ToLowerInvariant()} requires a name or URI."),
                     1 => (positionals[0], null, Array.Empty<string>()),
-                    2 when LooksLikeUrl(positionals[1]) => (positionals[0], positionals[1], Array.Empty<string>()),
+                    2 when LooksLikeUrlOrTargetRef(positionals[1]) => (positionals[0], positionals[1], Array.Empty<string>()),
                     _ => throw new UserInputException(
                         $"{command.ToString().ToLowerInvariant()} accepts a single name or URI, optionally followed by a target URL.")
                 };
@@ -450,7 +453,7 @@ internal static class CommandLineParser
                 return positionals.Count switch
                 {
                     0 => (null, null, Array.Empty<string>()),
-                    1 when LooksLikeUrl(positionals[0]) => (null, positionals[0], Array.Empty<string>()),
+                    1 when LooksLikeUrlOrTargetRef(positionals[0]) => (null, positionals[0], Array.Empty<string>()),
                     _ => throw new UserInputException(
                         $"{command.ToString().ToLowerInvariant()} accepts at most a single positional URL.")
                 };
@@ -460,6 +463,12 @@ internal static class CommandLineParser
     private static bool LooksLikeUrl(string value)
         => value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
            || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+    private static bool LooksLikeNamedReference(string value)
+        => value.Length > 1 && value[0] == '@';
+
+    private static bool LooksLikeUrlOrTargetRef(string value)
+        => LooksLikeUrl(value) || LooksLikeNamedReference(value);
 
     private static JsonObject? ParseArguments(AppCommand command, string? value)
     {
@@ -489,6 +498,16 @@ internal static class CommandLineParser
     private static TargetOptions ParseTarget(Dictionary<string, List<string>> options, string[] stdioTokens, string? urlPositional)
     {
         var configPaths = GetMany(options, "config");
+        // A positional that starts with '@' is a named-target reference (looked up against
+        // the config file's `targets[]` block by the dispatcher). It is treated as a URL
+        // alternative - exactly one target source is allowed.
+        string? namedReference = null;
+        if (urlPositional is { Length: > 0 } && urlPositional[0] == '@')
+        {
+            namedReference = urlPositional[1..];
+            urlPositional = null;
+        }
+
         var urlText = GetSingle(options, "url") ?? urlPositional;
         var command = GetSingle(options, "command");
         var commandArgs = GetMany(options, "command-arg").ToList();
@@ -497,6 +516,11 @@ internal static class CommandLineParser
         if (urlPositional is not null && options.ContainsKey("url"))
         {
             throw new UserInputException("Specify the URL positionally OR via --url, not both.");
+        }
+
+        if (namedReference is not null && options.ContainsKey("url"))
+        {
+            throw new UserInputException("Specify a named target reference (@name) OR --url, not both.");
         }
 
         if (stdioTokens.Length > 0)
@@ -513,16 +537,17 @@ internal static class CommandLineParser
         var hasConfig = configPaths.Count > 0;
         var hasUrl = !string.IsNullOrWhiteSpace(urlText);
         var hasCommand = !string.IsNullOrWhiteSpace(command);
-        var directCount = (hasConfig ? 1 : 0) + (hasUrl ? 1 : 0) + (hasCommand ? 1 : 0);
+        var hasNamedRef = !string.IsNullOrEmpty(namedReference);
+        var directCount = (hasConfig ? 1 : 0) + (hasUrl ? 1 : 0) + (hasCommand ? 1 : 0) + (hasNamedRef ? 1 : 0);
 
         if (directCount == 0)
         {
-            throw new UserInputException("Specify a target with a positional URL, --config, --url, --command, or '-- <command ...>'.");
+            throw new UserInputException("Specify a target with a positional URL, @<target-name>, --config, --url, --command, or '-- <command ...>'.");
         }
 
         if (directCount > 1)
         {
-            throw new UserInputException("Specify exactly one target source: positional URL, --config, --url, --command, or '-- <command ...>'.");
+            throw new UserInputException("Specify exactly one target source: positional URL, @<target-name>, --config, --url, --command, or '-- <command ...>'.");
         }
 
         var serverNames = GetMany(options, "server");
@@ -537,7 +562,7 @@ internal static class CommandLineParser
         {
             // Config files are stdio-only; only --server, --format, --timeout, the auth-related
             // overrides, and --profiles may be added on top.
-            if (headers.Count > 0 || environment.Count > 0 || workingDirectory is not null || displayName is not null || commandArgs.Count > 0 || command is not null || hasUrl)
+            if (headers.Count > 0 || environment.Count > 0 || workingDirectory is not null || displayName is not null || commandArgs.Count > 0 || command is not null || hasUrl || hasNamedRef)
             {
                 throw new UserInputException(
                     "When using --config, only --server, --format, --timeout, --profiles, --profile, " +
@@ -545,6 +570,37 @@ internal static class CommandLineParser
             }
 
             return new TargetOptions(configPaths, serverNames, profilePaths, null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), authOverrides);
+        }
+
+        if (hasNamedRef)
+        {
+            if (serverNames.Count > 0)
+            {
+                throw new UserInputException("--server only applies to --config.");
+            }
+
+            if (workingDirectory is not null || environment.Count > 0)
+            {
+                throw new UserInputException("--cwd and --env only apply to stdio targets.");
+            }
+
+            // The named reference will be resolved by the dispatcher after loading the config
+            // file. Headers + transport + display-name remain valid CLI knobs and overlay
+            // on top of any per-target defaults the named entry supplies.
+            return new TargetOptions(
+                ConfigPaths: [],
+                ServerNames: [],
+                ProfilePaths: profilePaths,
+                DisplayName: displayName,
+                Url: null,
+                Transport: transport,
+                Headers: headers,
+                Command: null,
+                CommandArguments: [],
+                WorkingDirectory: null,
+                Environment: new Dictionary<string, string>(),
+                AuthOverrides: authOverrides,
+                NamedReference: namedReference);
         }
 
         if (hasUrl)

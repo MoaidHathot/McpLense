@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using McpLense.Scanning.TargetResolution;
 
 namespace McpLense.Scanning.Checks;
 
@@ -42,6 +43,18 @@ internal sealed class AuthenticatedHeadersCheck : IScanCheck
             };
 
             using var request = new HttpRequestMessage(HttpMethod.Get, context.Server.Url);
+
+            // Per-target headers (scope=all) ride along with the authenticated probe so
+            // server-side header-gated behaviour can be observed end-to-end. Scope=session
+            // suppresses this on the probe.
+            if (context.Server.HeaderScope == TargetScope.All && context.Server.Headers.Count > 0)
+            {
+                foreach (var (name, value) in context.Server.Headers)
+                {
+                    request.Headers.TryAddWithoutValidation(name, value);
+                }
+            }
+
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
             string? Header(string name)

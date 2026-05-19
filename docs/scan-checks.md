@@ -255,16 +255,164 @@ Per-check config lives under `scan.checks.<id>` in `McpLense.Config.json`:
 Precedence (low -> high): check default -> `scan.checks.<id>.enabled` -> CLI
 `--enable` / `--disable` flags.
 
+## Per-target configuration
+
+Two top-level config blocks let you bind headers and other knobs to specific MCP servers
+without re-typing them on every CLI invocation. Both live in `McpLense.Config.json`
+alongside `authProfiles` and the `scan` block:
+
+```jsonc
+{
+  "targetPatterns": [
+    {
+      "match":   "https://*.ec.com/**",
+      "headers": { "x-mcp-ec-organization": "default-org" },
+      "scope":   "All"
+    }
+  ],
+  "targets": [
+    {
+      "name":   "ec-foo",
+      "url":    "https://example.ec.com/foo/mcp",
+      "headers": {
+        "x-mcp-ec-organization": "myorg",
+        "x-mcp-ec-project":      "myproj",
+        "x-mcp-ec-repository":   "${MCPLENSE_EC_REPO:-default}"
+      },
+      "scope":   "All",
+      "profile": "agent365",
+      "transport": "streamable-http",
+      "timeoutSeconds": 90,
+      "disabledChecks": ["corsPreflight"]
+    }
+  ]
+}
+```
+
+A worked example sits at [`samples/targets.json`](../samples/targets.json).
+
+### `targets[]`
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Short identifier the CLI can reference positionally as `@<name>`. Optional. Case-insensitive. Duplicates across config files raise an error at load time. |
+| `url` | string | Exact MCP URL this entry binds to. Required. Matched case-insensitively on scheme + host, case-sensitively on path, trailing slash ignored. |
+| `headers{}` | string -> string | HTTP headers to merge into outbound requests. Values run through the standard env-expander. |
+| `scope` | enum | `"All"` (default) or `"Session"`. See **Scope** below. |
+| `profile` | string | Auth profile name to bind. Override per scan with CLI `--profile`. |
+| `transport` | string | `auto` / `streamable-http` / `sse`. Overrides the default auto-detect. |
+| `timeoutSeconds` | number | Per-server handshake timeout. Overrides CLI `--timeout` for this server. |
+| `disabledChecks[]` | string[] | Check ids to skip for this target. Unioned with CLI `--disable`. |
+
+### `targetPatterns[]`
+
+| Field | Type | Description |
+|---|---|---|
+| `match` | string | URL-level glob. See **Glob syntax** below. |
+| `headers{}` / `scope` / `profile` / `transport` / `timeoutSeconds` / `disabledChecks[]` | various | Same shape as `targets[]`. |
+
+Pattern entries are the **least-specific** layer of the resolver: a named `targets[]`
+entry overrides every matching pattern, and CLI flags override both.
+
+### Resolution & precedence
+
+For each scanned URL the resolver merges (in order, last-write-wins per header key):
+
+1. **`targetPatterns[]`** in declaration order. Multiple patterns may match the same URL.
+2. **`targets[]`** — the entry whose `url` matches the scanned URL, OR the entry whose
+   `name` matches a `@name` positional. Auto-resolution by URL fires even when no
+   `@name` was supplied.
+3. **CLI flags** — `--header`, `--profile`, `--transport`, `--timeout`, `--disable`.
+
+The overlay applies uniformly across every command that opens an MCP connection:
+`scan`, `inspect`, `tools`, `resources`, `prompts`, `call`, `read`, `prompt`,
+`fetch-resource`, `auth-scan`, `observe`. The same code path that drives `scan` also
+drives the other commands, so per-target headers and disabled-checks behave identically
+regardless of which command the user invoked.
+
+Under `--quiet` the scan stays silent; otherwise one stderr line per server reports the
+matching layer:
+
+```
+matched: patterns=2 target=ec-foo -> 3 headers, scope=all
+```
+
+Add `--verbose` to also see which header NAMES the overlay produced (values are never
+echoed - they may carry secrets) and which patterns fired:
+
+```
+matched: patterns=1 target=- -> 3 headers, scope=all
+matched headers for https://mcp.bluebird-ai.net/: x-mcp-ec-organization, x-mcp-ec-project, x-mcp-ec-repository
+matched pattern(s): https://**bluebird**/**
+```
+
+### Scope: `All` vs `Session`
+
+| Scope | MCP session (initialize + JSON-RPC) | Probes (transport, CORS, authenticated-headers, DCR) |
+|---|---|---|
+| `All` (default) | Headers sent | Headers sent (same-origin only) |
+| `Session` | Headers sent | Headers stripped |
+
+Use `Session` when the unauthenticated probe must stay unauthenticated — for example to
+inspect a server's bare `GET /mcp` challenge response while the MCP session still
+authenticates normally. Cross-origin probes (e.g. the authorization-server metadata
+fetch, which usually lives on `login.microsoftonline.com` or similar) **never** receive
+MCP-server headers, regardless of scope. This is enforced by the same-origin guard in
+each probe and is non-configurable.
+
+### Glob syntax (`targetPatterns[].match`)
+
+URL-level globs anchored at both ends; the candidate URL's query string and fragment
+are stripped before matching.
+
+| Token | Host part | Path part |
+|---|---|---|
+| `*` | Single host label (no `/`, no `.`). E.g. `https://*.example.com/x` matches `https://api.example.com/x` but NOT `https://api.staging.example.com/x`. | Single path segment (no `/`). E.g. `/*` matches `/mcp` but not `/a/b`. |
+| `**` | Any sequence including `/` and `.`. | Any sequence including `/`. E.g. `/**` matches `/a/b/c`. |
+| `?` | Single character (no `/`, no `.`). | Single character (no `/`). |
+| literal | Case-insensitive. Default ports (`:443` for `https`, `:80` for `http`) are normalised away. | Case-sensitive (browser convention). |
+
+The scheme separator `://` is required. Patterns without a scheme are rejected at load
+time with a stderr warning; the pattern is then skipped (the scan otherwise continues).
+
+### Headers on probes — the "gated server" workflow
+
+Some MCP servers reject **every** request that arrives without a custom header set
+(e.g. `x-mcp-ec-organization`). Before per-target headers, the scanner's probes (the
+unauthenticated GET, CORS preflight, authenticated-headers re-probe, RFC 9728 metadata
+fetch) all went out bare and the scan returned mostly opaque errors against those
+servers.
+
+With `scope: "All"` (the default for any `targets[]` / `targetPatterns[]` entry):
+
+- The **transport probe** (`transport` check) sends GET to the MCP URL with the headers.
+- The **CORS preflight** (`corsPreflight` check) sends OPTIONS with the headers.
+- The **authenticated headers** (`authenticatedHeaders` check) re-probes with the headers.
+- The **DCR endpoint** (`dcrEndpoint` check) sends OPTIONS+POST **only when** the DCR
+  endpoint is same-origin with the MCP URL.
+- The **RFC 9728 metadata** fetch (inside the `auth` check) sends GET **only when** the
+  metadata URL is same-origin.
+
+Cross-origin fetches (authorization-server metadata on a different host, DCR endpoint
+on the AS host, etc.) always go out bare so per-MCP headers never leak to a different
+origin.
+
+If you specifically want to test the server's behaviour **without** custom headers on
+the probes (e.g. to validate the bare RFC 9728 challenge), set `scope: "Session"` on
+the target.
+
 ## CLI cheatsheet
 
 ```
 mcplense scan <url>                                  # full audit
+mcplense scan @ec-foo                                # scan a named target from config
 mcplense scan <url> --classify-only                  # skip profile attempts + enumeration
 mcplense scan <url> --check-authorization-servers    # opt in to RFC 8414 fetch
 mcplense scan <url> --enable behavior.serverInitiated
 mcplense scan <url> --baseline ./baselines/          # write report under <host>/<ts>.json
 mcplense scan <url> --diff ./baselines/x/old.json    # diff against baseline
 mcplense scan <url> --parallel-servers 8 --quiet     # fleet scan, no progress chatter
+mcplense scan <url> --header x-mcp-ec-organization=myorg  # ad-hoc per-server header
 mcplense observe <url> --timeout 30                  # auth + behavior.serverInitiated only
 mcplense fetch-resource <uri> <url>                  # read one resource verbatim
 mcplense diff <baseline-before> <baseline-after>     # pure file-to-file diff

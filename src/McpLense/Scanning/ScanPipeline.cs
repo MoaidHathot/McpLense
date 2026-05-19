@@ -151,16 +151,34 @@ public sealed class ScanPipeline
         var profiles = _services.GetService(typeof(IReadOnlyList<AuthProfile>)) as IReadOnlyList<AuthProfile>;
         var overrides = _services.GetService(typeof(AuthOverrides)) as AuthOverrides;
 
+        // Per-server timeout override (from `targets[].timeoutSeconds`) wins over the global
+        // CLI timeout when set.
+        var effectiveTimeout = server.HandshakeTimeout ?? handshakeTimeout;
+
         await using var context = new ScanContext(
             server,
             _config,
             _services,
-            handshakeTimeout,
+            effectiveTimeout,
             sessionFactory,
             profiles,
             overrides);
 
-        var enabled = _checks.Where(c => _config.IsCheckEnabled(c, _cliEnables, _cliDisables)).ToList();
+        // Union the global CLI disables with the per-server overlay disables. This is the
+        // ONLY place per-server `disabledChecks` propagation lives - keep it local so the
+        // pipeline's public surface stays simple.
+        IReadOnlySet<string>? effectiveDisables = _cliDisables;
+        if (server.DisabledChecks is { Count: > 0 })
+        {
+            var merged = new HashSet<string>(_cliDisables ?? (IReadOnlySet<string>)new HashSet<string>(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+            foreach (var id in server.DisabledChecks)
+            {
+                merged.Add(id);
+            }
+            effectiveDisables = merged;
+        }
+
+        var enabled = _checks.Where(c => _config.IsCheckEnabled(c, _cliEnables, effectiveDisables)).ToList();
         var idLookup = enabled.ToDictionary(c => c.Id, c => c, StringComparer.OrdinalIgnoreCase);
         var ordered = TopoSort(enabled);
 
