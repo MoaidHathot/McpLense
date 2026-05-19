@@ -33,7 +33,10 @@ internal sealed class ServerInfoCheck : IScanCheck
             Version: serverInfo.Version,
             Description: serverInfo.Description,
             WebsiteUrl: serverInfo.WebsiteUrl,
-            Icons: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(serverInfo, "Icons")),
+            Icons: CheckSessionHelpers.SafeNode(serverInfo.Icons),
+            // Implementation doesn't expose Meta in the current SDK; keep reflection here
+            // until the SDK formalises it (older _meta blocks still surface via the protocol
+            // payload's tail dictionary).
             Meta: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(serverInfo, "Meta")));
 
         return new CheckOutcome(Ran: true, Data: CheckSessionHelpers.ToNode(data), Error: null);

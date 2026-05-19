@@ -20,18 +20,75 @@ It can:
 
 ## Install
 
-From NuGet:
+`McpLense` is split into two NuGet packages:
 
-```bash
-dotnet tool install --global McpLense
-```
+| Package | Audience | How to install |
+|---|---|---|
+| `McpLense.Cli` | End users running the CLI tool | `dotnet tool install --global McpLense.Cli` |
+| `McpLense` | Library consumers / extension authors | Reference via `<PackageReference Include="McpLense" />` |
 
 From a local package while developing:
 
 ```bash
-dotnet pack src/McpLense -c Release
-dotnet tool install --global --add-source ./src/McpLense/bin/Release McpLense
+# Build + pack both packages (library + CLI) to ./artifacts.
+./pack.ps1
+
+# Install the CLI from the local feed:
+dotnet tool install --global --add-source ./artifacts McpLense.Cli
 ```
+
+## Scan + extensibility
+
+`mcplense scan <url>` runs the full `IScanCheck` pipeline: auth classification, TLS,
+headers, OAuth metadata, MCP capability surface, tool/prompt/resource enumeration, content
+hashing, behaviour probes. Every check publishes its data under `checks.<id>` in the JSON
+report; the wire shape is stable.
+
+See `docs/scan-checks.md` for the complete per-check reference and
+`docs/security-classification-recipes.md` for jq-based recipes that classify scan output
+for downstream policy / risk tooling.
+
+### Custom checks via the library
+
+Reference the `McpLense` package and register your own `IScanCheck` either through the
+fluent builder or the DI extension:
+
+```csharp
+using McpLense.Scanning;
+
+// Fluent
+var report = await new ScanPipelineBuilder()
+    .AddDefaultChecks()
+    .AddCheck<MyCustomCheck>()
+    .Build()
+    .RunAsync(targets, TimeSpan.FromSeconds(30), CancellationToken.None);
+
+// DI
+services.AddMcpLense();
+services.AddScanCheck<MyCustomCheck>();
+```
+
+A custom check is one type:
+
+```csharp
+public sealed class MyCustomCheck : IScanCheck
+{
+    public string Id => "my.custom-check";
+    public IReadOnlyList<string> DependsOn => new[] { "auth" };
+    public bool IsEnabledByDefault => false;
+
+    public async Task<CheckOutcome> RunAsync(ScanContext context, CancellationToken ct)
+    {
+        // Inspect context.Server / context.Profiles / context.AuthOverrides.
+        // Optionally open the shared MCP session via context.GetSessionAsync(ct).
+        return new CheckOutcome(Ran: true, Data: System.Text.Json.Nodes.JsonNode.Parse("{\"hello\":\"world\"}"), Error: null);
+    }
+}
+```
+
+The pipeline catches every exception thrown by a check, captures it onto the per-check
+report entry, and continues with sibling checks. Linked-token timeouts surface as
+`"Timed out."` per check.
 
 ## Quick start
 

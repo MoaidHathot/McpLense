@@ -48,8 +48,8 @@ internal sealed class PromptsCheck : IScanCheck
             Title: protocolPrompt?.Title,
             Description: prompt.Description,
             Arguments: arguments,
-            Icons: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolPrompt, "Icons")),
-            Meta: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolPrompt, "Meta")));
+            Icons: CheckSessionHelpers.SafeNode(protocolPrompt?.Icons),
+            Meta: CheckSessionHelpers.SafeNode(protocolPrompt?.Meta));
     }
 
     internal sealed record PromptsData(

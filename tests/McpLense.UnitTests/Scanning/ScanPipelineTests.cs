@@ -170,6 +170,37 @@ public class ScanPipelineTests
     }
 
     [Fact]
+    public async Task Pipeline_LinkedTokenTimeout_BecomesPerCheckTimeoutError_NotPipelineFailure()
+    {
+        // The 3.3 hygiene rule: an OperationCanceledException whose token is NOT the
+        // pipeline's cancellation token (e.g. a per-request HttpClient timeout, a
+        // TransportProbe 15s cap, etc.) must surface as the check's own "Timed out."
+        // error rather than escape the pipeline and torch sibling checks.
+        var checks = new IScanCheck[]
+        {
+            new TestCheck("good", body: (_, _) => Task.FromResult(new CheckOutcome(true, JsonNode.Parse("{\"ok\":true}"), null))),
+            new TestCheck("slowtimeout", body: async (_, _) =>
+            {
+                // Fire a fresh, unrelated CTS to simulate "per-request 15s linked token".
+                using var localCts = new CancellationTokenSource();
+                localCts.Cancel();
+                await Task.Yield();
+                throw new OperationCanceledException("synthetic linked-token expired", localCts.Token);
+            }),
+            new TestCheck("alsoGood", body: (_, _) => Task.FromResult(new CheckOutcome(true, JsonNode.Parse("{\"ok\":true}"), null)))
+        };
+
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var pipeline = new ScanPipeline(checks, new ScanConfig(), sp);
+        var report = await pipeline.RunAsync(new[] { HttpServer() }, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        var entry = report.Servers.ShouldHaveSingleItem();
+        entry.Checks["slowtimeout"]!.AsObject()["error"]!.GetValue<string>().ShouldBe("Timed out.");
+        entry.Checks["good"]!.AsObject()["ok"]!.GetValue<bool>().ShouldBeTrue();
+        entry.Checks["alsoGood"]!.AsObject()["ok"]!.GetValue<bool>().ShouldBeTrue();
+    }
+
+    [Fact]
     public async Task Pipeline_RecordsPerCheckTimings()
     {
         var checks = new IScanCheck[]

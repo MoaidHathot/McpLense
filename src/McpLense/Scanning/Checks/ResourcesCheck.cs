@@ -66,9 +66,11 @@ internal sealed class ResourcesCheck : IScanCheck
             MimeType: protocolResource?.MimeType ?? r.MimeType,
             Size: protocolResource?.Size,
             Description: r.Description,
-            Annotations: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolResource, "Annotations")),
-            Icons: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolResource, "Icons")),
-            Meta: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolResource, "Meta")));
+            // SDK 1.2 ships these properties directly; no reflection needed. Null-tolerant
+            // because protocolResource may be null on some SDK paths.
+            Annotations: CheckSessionHelpers.SafeNode(protocolResource?.Annotations),
+            Icons: CheckSessionHelpers.SafeNode(protocolResource?.Icons),
+            Meta: CheckSessionHelpers.SafeNode(protocolResource?.Meta));
     }
 
     private static ResourceTemplateEntryExtended MapTemplate(McpClientResourceTemplate t)
@@ -80,7 +82,7 @@ internal sealed class ResourcesCheck : IScanCheck
             UriTemplate: protocolTemplate?.UriTemplate ?? t.UriTemplate,
             MimeType: protocolTemplate?.MimeType ?? t.MimeType,
             Description: t.Description,
-            Meta: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolTemplate, "Meta")));
+            Meta: CheckSessionHelpers.SafeNode(protocolTemplate?.Meta));
     }
 
     private static string? TryGetScheme(string? uri)

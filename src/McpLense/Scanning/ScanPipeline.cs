@@ -222,7 +222,21 @@ public sealed class ScanPipeline
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // Real, user-driven cancellation: propagate so the whole pipeline can unwind.
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            // A different (linked / internal) cancellation source fired - e.g. a per-request
+            // HttpClient timeout, TransportProbe's 15s cap, or the SDK's initialise timeout
+            // wired through ConnectionTimeout. These come through as
+            // OperationCanceledException whose token is NOT our pipeline token; if we
+            // rethrew here the whole report would die because of one slow probe. Capture
+            // as a per-check timeout so the rest of the scan still produces output.
+            sw.Stop();
+            _logger.LogWarning("Check {Id} timed out: {Message}", check.Id, ex.Message);
+            return (new CheckOutcome(Ran: true, Data: null, Error: "Timed out."),
+                    sw.Elapsed.TotalMilliseconds);
         }
         catch (Exception ex)
         {

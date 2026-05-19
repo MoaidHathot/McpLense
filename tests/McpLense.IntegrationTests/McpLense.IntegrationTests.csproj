@@ -32,6 +32,7 @@
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
     <ProjectReference Include="..\McpLense.TestHttpServer\McpLense.TestHttpServer.csproj" />
+    <ProjectReference Include="..\McpLense.TestMcps\McpLense.TestMcps.csproj" />
   </ItemGroup>
 
 </Project>

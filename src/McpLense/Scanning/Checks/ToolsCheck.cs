@@ -65,9 +65,11 @@ internal sealed class ToolsCheck : IScanCheck
                 IdempotentHint: annotations.IdempotentHint,
                 OpenWorldHint: annotations.OpenWorldHint),
             MissingAnnotations: missing,
-            Execution: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolTool, "Execution")),
-            Icons: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolTool, "Icons")),
-            Meta: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(protocolTool, "Meta")),
+#pragma warning disable MCPEXP001 // Tool.Execution is marked experimental; we surface it verbatim regardless.
+            Execution: CheckSessionHelpers.SafeNode(protocolTool?.Execution),
+#pragma warning restore MCPEXP001
+            Icons: CheckSessionHelpers.SafeNode(protocolTool?.Icons),
+            Meta: CheckSessionHelpers.SafeNode(protocolTool?.Meta),
             SchemaFingerprint: fingerprint);
     }
 

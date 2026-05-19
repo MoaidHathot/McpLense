@@ -17,16 +17,39 @@ public sealed class SkipUnlessEnvAttribute : FactAttribute
             throw new ArgumentException("Environment variable name is required.", nameof(variableName));
         }
 
-        var value = Environment.GetEnvironmentVariable(variableName);
-        if (!IsTruthy(value))
+        if (!SkipUnlessEnvSupport.IsTruthy(Environment.GetEnvironmentVariable(variableName)))
         {
-            Skip = $"Skipped: set environment variable '{variableName}=1' to enable this test.";
+            Skip = SkipUnlessEnvSupport.Reason(variableName);
         }
     }
+}
 
-    private static bool IsTruthy(string? value) =>
+/// <summary>Theory variant of <see cref="SkipUnlessEnvAttribute"/>.</summary>
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public sealed class SkipUnlessEnvTheoryAttribute : TheoryAttribute
+{
+    public SkipUnlessEnvTheoryAttribute(string variableName)
+    {
+        if (string.IsNullOrWhiteSpace(variableName))
+        {
+            throw new ArgumentException("Environment variable name is required.", nameof(variableName));
+        }
+
+        if (!SkipUnlessEnvSupport.IsTruthy(Environment.GetEnvironmentVariable(variableName)))
+        {
+            Skip = SkipUnlessEnvSupport.Reason(variableName);
+        }
+    }
+}
+
+internal static class SkipUnlessEnvSupport
+{
+    public static bool IsTruthy(string? value) =>
         value is not null &&
         (value.Equals("1", StringComparison.Ordinal) ||
          value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
          value.Equals("yes", StringComparison.OrdinalIgnoreCase));
+
+    public static string Reason(string name) =>
+        $"Skipped: set environment variable '{name}=1' to enable this test.";
 }

@@ -25,7 +25,9 @@ internal static class TextFormatter
 
     /// <summary>
     /// Renders the new <see cref="ScanReport"/> from the IScanCheck pipeline. Each server
-    /// gets a header followed by one named section per check.
+    /// gets a header followed by one named section per check. Known check ids get a
+    /// structured renderer; unknown / extension check ids fall back to pretty-JSON so the
+    /// payload is still readable.
     /// </summary>
     private static string FormatScanReport(ScanReport report, JsonSerializerOptions jsonOptions)
     {
@@ -52,9 +54,12 @@ internal static class TextFormatter
                     continue;
                 }
 
-                // Default: pretty-print each check's JSON payload with 2-space indent. The
-                // per-check structured rendering is reserved for a future polish pass;
-                // pretty JSON is already readable and machine-parseable.
+                if (data is JsonObject obj && TryRenderKnownCheck(builder, checkId, obj, jsonOptions))
+                {
+                    continue;
+                }
+
+                // Fallback for extension checks: pretty-print the JSON.
                 foreach (var line in Indent(FormatJson(data, jsonOptions), 4))
                 {
                     builder.AppendLine(line);
@@ -64,7 +69,7 @@ internal static class TextFormatter
             if (entry.Timings.Count > 0)
             {
                 AppendLine(builder, 1, "timings:");
-                foreach (var (id, ms) in entry.Timings)
+                foreach (var (id, ms) in entry.Timings.OrderByDescending(kv => kv.Value))
                 {
                     AppendLine(builder, 2, $"{id}: {ms:F1} ms");
                 }
@@ -73,6 +78,447 @@ internal static class TextFormatter
 
         return builder.ToString().TrimEnd();
     }
+
+    /// <summary>
+    /// Per-built-in-check structured rendering. Returns false when no renderer matches the
+    /// check id; the caller then falls back to pretty-JSON. New built-in checks should add
+    /// a renderer here; extension authors keep the JSON fallback automatically.
+    /// </summary>
+    private static bool TryRenderKnownCheck(StringBuilder builder, string checkId, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        switch (checkId)
+        {
+            case "auth": RenderAuthSection(builder, obj); return true;
+            case "transport": RenderTransportSection(builder, obj, jsonOptions); return true;
+            case "serverInfo": RenderServerInfoSection(builder, obj, jsonOptions); return true;
+            case "protocol": RenderProtocolSection(builder, obj, jsonOptions); return true;
+            case "tools": RenderToolsSection(builder, obj, jsonOptions); return true;
+            case "prompts": RenderPromptsSection(builder, obj, jsonOptions); return true;
+            case "resources": RenderResourcesSection(builder, obj, jsonOptions); return true;
+            case "tlsChain": RenderTlsChainSection(builder, obj); return true;
+            case "corsPreflight": RenderCorsSection(builder, obj); return true;
+            case "authenticatedHeaders": RenderAuthHeadersSection(builder, obj, jsonOptions); return true;
+            case "authorizationServers": RenderAuthorizationServersSection(builder, obj, jsonOptions); return true;
+            case "dcrEndpoint": RenderDcrSection(builder, obj); return true;
+            case "stdio": RenderStdioSection(builder, obj); return true;
+            case "behavior.callNonExistentTool": RenderCallNonExistentToolSection(builder, obj, jsonOptions); return true;
+            case "behavior.serverInitiated": RenderObservationSection(builder, obj, jsonOptions); return true;
+            case "metrics": RenderMetricsSection(builder, obj); return true;
+            case "hashing": RenderHashingSection(builder, obj); return true;
+            default: return false;
+        }
+    }
+
+    private static void RenderAuthSection(StringBuilder builder, JsonObject obj)
+    {
+        var classification = obj["classification"]?.GetValue<string>();
+        if (classification is not null)
+        {
+            AppendLine(builder, 2, $"classification: {classification}");
+        }
+        if (obj["summary"]?.GetValue<string>() is { } summary)
+        {
+            AppendLine(builder, 2, $"summary: {summary}");
+        }
+        if (obj["details"] is JsonObject details)
+        {
+            if (details["statusCode"]?.GetValue<int>() is { } status)
+            {
+                AppendLine(builder, 2, $"probeStatus: {status}");
+            }
+            if (details["resourceMetadataUrl"]?.GetValue<string>() is { } prm)
+            {
+                AppendLine(builder, 2, $"resourceMetadataUrl: {prm}");
+            }
+            if (details["scopes"] is JsonArray scopes && scopes.Count > 0)
+            {
+                AppendLine(builder, 2, $"scopesSupported: {JoinStrings(scopes)}");
+            }
+            if (details["authorizationServers"] is JsonArray ass && ass.Count > 0)
+            {
+                AppendLine(builder, 2, $"authorizationServers: {JoinStrings(ass)}");
+            }
+        }
+        if (obj["profileAttempts"] is JsonArray attempts && attempts.Count > 0)
+        {
+            AppendLine(builder, 2, $"profileAttempts: {attempts.Count}");
+            foreach (var attempt in attempts.OfType<JsonObject>())
+            {
+                var name = attempt["profileName"]?.GetValue<string>() ?? "(unnamed)";
+                var ok = attempt["success"]?.GetValue<bool>() == true;
+                var kind = attempt["authKind"]?.GetValue<string>() ?? "?";
+                AppendLine(builder, 3, $"- {name} [{kind}]: {(ok ? "ok" : "failed")}");
+                if (!ok && attempt["error"]?.GetValue<string>() is { } err)
+                {
+                    AppendLine(builder, 4, $"error: {err}");
+                }
+            }
+        }
+    }
+
+    private static void RenderTransportSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        if (obj["mixedContent"]?.GetValue<bool>() is bool mixed)
+        {
+            AppendLine(builder, 2, $"mixedContent: {(mixed ? "true" : "false")}");
+        }
+        if (obj["statusCode"]?.GetValue<int>() is { } status)
+        {
+            AppendLine(builder, 2, $"statusCode: {status}");
+        }
+        if (obj["tls"] is JsonObject tls)
+        {
+            AppendLine(builder, 2, "tls:");
+            CopyStringField(builder, 3, tls, "subject");
+            CopyStringField(builder, 3, tls, "issuer");
+            CopyStringField(builder, 3, tls, "notAfter");
+            CopyIntField(builder, 3, tls, "daysUntilExpiry");
+            CopyStringField(builder, 3, tls, "protocolVersion");
+            CopyStringField(builder, 3, tls, "signatureAlgorithm");
+            if (tls["subjectAlternativeNames"] is JsonArray sans && sans.Count > 0)
+            {
+                AppendLine(builder, 3, $"subjectAlternativeNames: {JoinStrings(sans)}");
+            }
+        }
+        if (obj["responseHeaders"] is JsonObject headers)
+        {
+            AppendLine(builder, 2, "responseHeaders:");
+            RenderHeaderMap(builder, 3, headers);
+        }
+    }
+
+    private static void RenderServerInfoSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        CopyStringField(builder, 2, obj, "name");
+        CopyStringField(builder, 2, obj, "title");
+        CopyStringField(builder, 2, obj, "version");
+        CopyStringField(builder, 2, obj, "description");
+        CopyStringField(builder, 2, obj, "websiteUrl");
+        if (obj["icons"] is JsonArray icons && icons.Count > 0)
+        {
+            AppendLine(builder, 2, $"icons: {icons.Count}");
+        }
+    }
+
+    private static void RenderProtocolSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        CopyStringField(builder, 2, obj, "negotiatedProtocolVersion");
+        CopyStringField(builder, 2, obj, "sessionId");
+        CopyIntField(builder, 2, obj, "instructionsLength");
+        if (obj["instructions"]?.GetValue<string>() is { } instructions && !string.IsNullOrEmpty(instructions))
+        {
+            AppendLine(builder, 2, "instructions:");
+            foreach (var line in instructions.Split('\n'))
+            {
+                AppendLine(builder, 3, line.TrimEnd('\r'));
+            }
+        }
+        if (obj["capabilities"] is JsonObject caps)
+        {
+            AppendLine(builder, 2, "capabilities:");
+            foreach (var (capId, capValue) in caps)
+            {
+                AppendLine(builder, 3, capValue is null ? $"{capId}: not declared" : $"{capId}: declared");
+            }
+        }
+    }
+
+    private static void RenderToolsSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        var fetched = obj["fetched"]?.GetValue<bool>() == true;
+        AppendLine(builder, 2, $"fetched: {(fetched ? "true" : "false")}");
+        CopyStringField(builder, 2, obj, "fetchedVia");
+        if (!fetched)
+        {
+            CopyStringField(builder, 2, obj, "fetchError");
+            return;
+        }
+
+        if (obj["items"] is JsonArray items)
+        {
+            AppendLine(builder, 2, $"count: {items.Count}");
+            foreach (var item in items.OfType<JsonObject>())
+            {
+                var name = item["name"]?.GetValue<string>() ?? "(unnamed)";
+                AppendLine(builder, 3, $"- name: {name}");
+                CopyStringField(builder, 4, item, "title");
+                if (item["description"]?.GetValue<string>() is { } desc && !string.IsNullOrEmpty(desc))
+                {
+                    AppendLine(builder, 4, $"description: {Truncate(desc, 120)}");
+                }
+                if (item["schemaFingerprint"] is JsonObject fp)
+                {
+                    var pc = fp["parameterCount"]?.GetValue<int>();
+                    var rq = fp["requiredCount"]?.GetValue<int>();
+                    var depth = fp["maxNestingDepth"]?.GetValue<int>();
+                    AppendLine(builder, 4, $"schemaFingerprint: params={pc} required={rq} depth={depth}");
+                }
+                if (item["missingAnnotations"] is JsonArray missing && missing.Count > 0)
+                {
+                    AppendLine(builder, 4, $"missingAnnotations: {JoinStrings(missing)}");
+                }
+            }
+        }
+    }
+
+    private static void RenderPromptsSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        var fetched = obj["fetched"]?.GetValue<bool>() == true;
+        AppendLine(builder, 2, $"fetched: {(fetched ? "true" : "false")}");
+        if (!fetched)
+        {
+            CopyStringField(builder, 2, obj, "fetchError");
+            return;
+        }
+        if (obj["items"] is JsonArray items)
+        {
+            AppendLine(builder, 2, $"count: {items.Count}");
+            foreach (var item in items.OfType<JsonObject>())
+            {
+                var name = item["name"]?.GetValue<string>() ?? "(unnamed)";
+                AppendLine(builder, 3, $"- name: {name}");
+                if (item["description"]?.GetValue<string>() is { } desc && !string.IsNullOrEmpty(desc))
+                {
+                    AppendLine(builder, 4, $"description: {Truncate(desc, 120)}");
+                }
+            }
+        }
+    }
+
+    private static void RenderResourcesSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        var fetched = obj["fetched"]?.GetValue<bool>() == true;
+        AppendLine(builder, 2, $"fetched: {(fetched ? "true" : "false")}");
+        if (!fetched)
+        {
+            CopyStringField(builder, 2, obj, "fetchError");
+            return;
+        }
+        if (obj["items"] is JsonArray items)
+        {
+            AppendLine(builder, 2, $"count: {items.Count}");
+        }
+        if (obj["uriSchemeHistogram"] is JsonObject hist && hist.Count > 0)
+        {
+            AppendLine(builder, 2, $"uriSchemeHistogram: {JoinKeyValues(hist)}");
+        }
+    }
+
+    private static void RenderTlsChainSection(StringBuilder builder, JsonObject obj)
+    {
+        if (obj["captured"]?.GetValue<bool>() is bool captured)
+        {
+            AppendLine(builder, 2, $"captured: {(captured ? "true" : "false")}");
+        }
+        if (obj["chainValid"]?.GetValue<bool>() is bool valid)
+        {
+            AppendLine(builder, 2, $"chainValid: {(valid ? "true" : "false")}");
+        }
+        if (obj["intermediates"] is JsonArray ints)
+        {
+            AppendLine(builder, 2, $"intermediates: {ints.Count}");
+            foreach (var inter in ints.OfType<JsonObject>())
+            {
+                AppendLine(builder, 3, $"- {inter["subject"]?.GetValue<string>() ?? "(no subject)"}");
+            }
+        }
+        if (obj["chainPolicyErrors"] is JsonArray errs && errs.Count > 0)
+        {
+            AppendLine(builder, 2, $"chainPolicyErrors: {JoinStrings(errs)}");
+        }
+        CopyStringField(builder, 2, obj, "failureReason");
+    }
+
+    private static void RenderCorsSection(StringBuilder builder, JsonObject obj)
+    {
+        CopyIntField(builder, 2, obj, "statusCode");
+        CopyStringField(builder, 2, obj, "accessControlAllowOrigin");
+        CopyStringField(builder, 2, obj, "accessControlAllowMethods");
+        CopyStringField(builder, 2, obj, "accessControlAllowHeaders");
+        CopyStringField(builder, 2, obj, "accessControlAllowCredentials");
+        CopyStringField(builder, 2, obj, "accessControlMaxAge");
+        CopyStringField(builder, 2, obj, "allow");
+        CopyStringField(builder, 2, obj, "vary");
+    }
+
+    private static void RenderAuthHeadersSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        var fetched = obj["fetched"]?.GetValue<bool>() == true;
+        AppendLine(builder, 2, $"fetched: {(fetched ? "true" : "false")}");
+        CopyStringField(builder, 2, obj, "detail");
+        if (obj["headers"] is JsonObject headers)
+        {
+            RenderHeaderMap(builder, 2, headers);
+        }
+    }
+
+    private static void RenderAuthorizationServersSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        if (obj["servers"] is JsonArray servers && servers.Count > 0)
+        {
+            AppendLine(builder, 2, $"servers: {servers.Count}");
+            foreach (var entry in servers.OfType<JsonObject>())
+            {
+                AppendLine(builder, 3, $"- issuer: {entry["issuer"]?.GetValue<string>()}");
+                AppendLine(builder, 4, $"fetched: {(entry["fetched"]?.GetValue<bool>() == true ? "true" : "false")}");
+                CopyStringField(builder, 4, entry, "tokenEndpoint");
+                CopyStringField(builder, 4, entry, "registrationEndpoint");
+                if (entry["scopesSupported"] is JsonArray scopes && scopes.Count > 0)
+                {
+                    AppendLine(builder, 4, $"scopesSupported: {JoinStrings(scopes)}");
+                }
+                if (entry["grantTypesSupported"] is JsonArray grants && grants.Count > 0)
+                {
+                    AppendLine(builder, 4, $"grantTypesSupported: {JoinStrings(grants)}");
+                }
+            }
+        }
+        else
+        {
+            AppendLine(builder, 2, "servers: (not fetched - pass --check-authorization-servers)");
+        }
+        if (obj["dcrFromResourceMetadata"] is JsonObject dcr && dcr["endpoint"]?.GetValue<string>() is { } endpoint)
+        {
+            AppendLine(builder, 2, $"dcrFromResourceMetadata: {endpoint}");
+        }
+    }
+
+    private static void RenderDcrSection(StringBuilder builder, JsonObject obj)
+    {
+        CopyStringField(builder, 2, obj, "endpoint");
+        if (obj["options"] is JsonObject options && options["statusCode"]?.GetValue<int>() is { } optStatus)
+        {
+            AppendLine(builder, 2, $"OPTIONS: {optStatus}");
+        }
+        if (obj["post"] is JsonObject post && post["statusCode"]?.GetValue<int>() is { } postStatus)
+        {
+            AppendLine(builder, 2, $"POST: {postStatus}");
+        }
+    }
+
+    private static void RenderStdioSection(StringBuilder builder, JsonObject obj)
+    {
+        CopyStringField(builder, 2, obj, "command");
+        if (obj["arguments"] is JsonArray args && args.Count > 0)
+        {
+            AppendLine(builder, 2, $"arguments: {JoinStrings(args)}");
+        }
+        CopyStringField(builder, 2, obj, "workingDirectory");
+        if (obj["environment"] is JsonObject env && env.Count > 0)
+        {
+            AppendLine(builder, 2, $"environment: {env.Count} variables");
+        }
+    }
+
+    private static void RenderCallNonExistentToolSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        CopyStringField(builder, 2, obj, "outcome");
+        CopyStringField(builder, 2, obj, "toolNameUsed");
+        CopyIntField(builder, 2, obj, "jsonRpcErrorCode");
+        CopyStringField(builder, 2, obj, "jsonRpcErrorMessage");
+        if (obj["toolResultIsError"]?.GetValue<bool>() is bool isErr)
+        {
+            AppendLine(builder, 2, $"toolResultIsError: {(isErr ? "true" : "false")}");
+        }
+        CopyStringField(builder, 2, obj, "transportError");
+    }
+
+    private static void RenderObservationSection(StringBuilder builder, JsonObject obj, JsonSerializerOptions jsonOptions)
+    {
+        if (obj["observationDurationMs"]?.GetValue<double>() is { } ms)
+        {
+            AppendLine(builder, 2, $"observationDurationMs: {ms:F1}");
+        }
+        if (obj["advertisedCapabilities"] is JsonArray adv)
+        {
+            AppendLine(builder, 2, $"advertisedCapabilities: {JoinStrings(adv)}");
+        }
+        if (obj["inboundCountsByMethod"] is JsonObject counts && counts.Count > 0)
+        {
+            AppendLine(builder, 2, $"inboundCountsByMethod: {JoinKeyValues(counts)}");
+        }
+        if (obj["inboundRequests"] is JsonArray reqs && reqs.Count > 0)
+        {
+            AppendLine(builder, 2, $"inboundRequests: {reqs.Count}");
+        }
+        CopyStringField(builder, 2, obj, "error");
+    }
+
+    private static void RenderMetricsSection(StringBuilder builder, JsonObject obj)
+    {
+        if (obj["fields"] is JsonArray fields)
+        {
+            AppendLine(builder, 2, $"fields: {fields.Count}");
+            foreach (var field in fields.OfType<JsonObject>())
+            {
+                var path = field["path"]?.GetValue<string>() ?? "?";
+                var chars = field["charLength"]?.GetValue<int>();
+                var urls = field["urlCount"]?.GetValue<int>();
+                var ctrl = field["controlCharCount"]?.GetValue<int>();
+                AppendLine(builder, 3, $"- {path}: chars={chars} urls={urls} ctrl={ctrl}");
+            }
+        }
+    }
+
+    private static void RenderHashingSection(StringBuilder builder, JsonObject obj)
+    {
+        CopyStringField(builder, 2, obj, "algorithm");
+        CopyStringField(builder, 2, obj, "serverFingerprint");
+        if (obj["toolHashes"] is JsonObject th && th.Count > 0)
+        {
+            AppendLine(builder, 2, $"toolHashes: {th.Count}");
+        }
+        if (obj["promptHashes"] is JsonObject ph && ph.Count > 0)
+        {
+            AppendLine(builder, 2, $"promptHashes: {ph.Count}");
+        }
+        if (obj["resourceHashes"] is JsonObject rh && rh.Count > 0)
+        {
+            AppendLine(builder, 2, $"resourceHashes: {rh.Count}");
+        }
+    }
+
+    private static void RenderHeaderMap(StringBuilder builder, int indent, JsonObject headers)
+    {
+        foreach (var (k, v) in headers)
+        {
+            if (string.Equals(k, "other", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (v is JsonValue val && val.TryGetValue<string>(out var s) && !string.IsNullOrEmpty(s))
+            {
+                AppendLine(builder, indent, $"{k}: {Truncate(s, 200)}");
+            }
+        }
+    }
+
+    private static void CopyStringField(StringBuilder builder, int indent, JsonObject obj, string key)
+    {
+        if (obj[key] is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrEmpty(s))
+        {
+            AppendLine(builder, indent, $"{key}: {s}");
+        }
+    }
+
+    private static void CopyIntField(StringBuilder builder, int indent, JsonObject obj, string key)
+    {
+        if (obj[key] is JsonValue v && v.TryGetValue<int>(out var i))
+        {
+            AppendLine(builder, indent, $"{key}: {i}");
+        }
+    }
+
+    private static string JoinStrings(JsonArray array)
+        => string.Join(", ", array.OfType<JsonValue>()
+            .Select(v => v.TryGetValue<string>(out var s) ? s : null)
+            .Where(s => !string.IsNullOrEmpty(s)));
+
+    private static string JoinKeyValues(JsonObject obj)
+        => string.Join(", ", obj.Select(kv => $"{kv.Key}={kv.Value}"));
+
+    private static string Truncate(string s, int max)
+        => s.Length <= max ? s : s.Substring(0, max) + "...";
 
     private static string FormatScanDiff(ScanDiff.ScanDiffReport diff, JsonSerializerOptions jsonOptions)
     {

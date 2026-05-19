@@ -34,11 +34,13 @@ internal sealed class ProtocolCheck : IScanCheck
                 : new ResourcesCapabilityView(ListChanged: caps.Resources.ListChanged, Subscribe: caps.Resources.Subscribe),
             Logging: caps?.Logging is null ? null : new CapabilityFlagView(),
             Completions: caps?.Completions is null ? null : new CapabilityFlagView(),
-            Tasks: CheckSessionHelpers.GetProp(caps, "Tasks") is null ? null : new CapabilityFlagView(),
+#pragma warning disable MCPEXP001 // Tasks + Extensions are marked experimental on the SDK; we surface them verbatim.
+            Tasks: caps?.Tasks is null ? null : new CapabilityFlagView(),
             Experimental: CheckSessionHelpers.SafeNode(caps?.Experimental),
-            Extensions: CheckSessionHelpers.SafeNode(CheckSessionHelpers.GetProp(caps, "Extensions")));
+            Extensions: CheckSessionHelpers.SafeNode(caps?.Extensions));
+#pragma warning restore MCPEXP001
 
-        var sessionId = CheckSessionHelpers.GetProp(client, "SessionId")?.ToString();
+        var sessionId = client.SessionId;
 
         var data = new ProtocolData(
             NegotiatedProtocolVersion: client.NegotiatedProtocolVersion,

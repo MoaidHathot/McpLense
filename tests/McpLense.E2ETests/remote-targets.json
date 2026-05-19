@@ -1,0 +1,16 @@
+{
+  "//": "Configurable list of public MCP servers exercised by ConfigurableRemoteSmokeTests.",
+  "//1": "All tests gated on MCPLENSE_E2E_REMOTE=1 so default CI never fires.",
+  "//2": "Add new entries by appending to 'targets'; each gets one scan + one set of expectations.",
+  "targets": [
+    {
+      "name": "context7",
+      "url": "https://mcp.context7.com/mcp",
+      "expectations": {
+        "authClassification": "anonymous",
+        "expectToolsListFetched": true,
+        "minToolCount": 1
+      }
+    }
+  ]
+}
