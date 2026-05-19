@@ -92,6 +92,9 @@ Usage
   mcplense inspect [target-options] [common-options]
   mcplense scan      [<url>] [target-options] [common-options]
   mcplense auth-scan [<url>] [target-options] [common-options]
+  mcplense observe   [<url>] [target-options] [common-options]
+  mcplense fetch-resource <uri-or-template> [<url>] [target-options] [common-options]
+  mcplense diff <baseline-before> <baseline-after>
   mcplense tui [target-options] [common-options]
   mcplense tools [target-options] [common-options]
   mcplense resources [target-options] [common-options]
@@ -261,42 +264,101 @@ Auth scanning (`mcplense auth-scan`)
     mcplense auth-scan https://server.example/mcp --profiles ./agent365.json --profile agent365
 
 Full audit (`mcplense scan`)
-  `scan` is the comprehensive, fact-only audit command: everything auth-scan reports plus the
-  server's full identity / protocol / capability surface, the entire tool / prompt / resource
-  enumeration (when one of the auth paths works), TLS certificate details, security-relevant
-  HTTP response headers, OAuth authorization-server metadata (opt-in), behaviour probes, and
-  stdio configuration. Designed for cataloguing a fleet of MCP servers and feeding the
-  output to downstream policy / risk tooling.
+  `scan` runs the full IScanCheck pipeline against the target(s). Every check publishes its
+  output under `checks.<id>` in the report. Designed for cataloguing a fleet of MCP servers
+  and feeding the output to downstream policy / risk tooling. Fact-only - the scanner
+  extracts data; consumers classify.
 
   Scope:
     --classify-only            Skip profile attempts AND skip enumeration that depends on
                                them. The auth block is still emitted.
     --check-authorization-servers
                                Opt in to fetching every advertised authorization-server
-                               metadata document (RFC 8414 / OIDC discovery). Off by default
-                               so air-gapped / CI runs don't make surprise outbound calls to
-                               login.microsoftonline.com & friends.
+                               metadata document (RFC 8414 / OIDC discovery).
+    --enable <check-id>        Force-enable a check. Repeatable. Overrides config + default.
+    --disable <check-id>       Force-disable a check. Repeatable. Overrides config + default.
+    --baseline <path>          After running the scan, write the resulting JSON report to
+                               <path>. If <path> is a directory, the file goes under
+                               <path>/<host>/<UTC-timestamp>.json. Default base directory
+                               (when config doesn't override) is the current directory.
+    --diff <baseline-path>     After running the scan, diff against the JSON baseline at
+                               <path> and emit the structural diff instead of the full
+                               scan report.
 
-  What the audit reports per server:
-    auth                       Same shape as auth-scan: classification, RFC 9728 metadata,
-                               profile attempts.
-    serverInfo                 name / version / title / description / websiteUrl / _meta.
-    protocol                   negotiatedProtocolVersion, full capabilities block, verbatim
-                               instructions text + length, top-level _meta.
-    tools                      Every tool: name, title, description (verbatim), inputSchema,
-                               outputSchema, declared annotations (readOnlyHint / etc.) and
-                               which annotations the server did NOT declare. No labelling -
-                               consumers decide policy.
-    prompts / resources / resourceTemplates
-                               Same shape: declared fields verbatim plus URI scheme.
-    security                   mixedContent flag, TLS leaf cert (subject / issuer / SANs /
-                               validity / signatureAlgorithm / negotiated TLS version), and
-                               every security-relevant response header captured from the
-                               unauthenticated probe.
-    oauth                      (only when classification is oauth-rfc9728) every
-                               authorization-server's RFC 8414 metadata when
-                               --check-authorization-servers is set, plus DCR endpoint
-                               observation.
+  Built-in checks (per `IScanCheck.Id` - configurable via scan.checks.<id> in the config file):
+    auth                         RFC 9728 classification + profile attempts.
+    transport                    Unauthenticated probe: status, headers, TLS leaf cert.
+    tlsChain                     TLS intermediate chain + validation outcome.
+    authenticatedHeaders         Same headers shape but from an authenticated GET.
+    corsPreflight                OPTIONS preflight against the MCP URL with synthetic Origin.
+    authorizationServers         Per-AS RFC 8414 fields (opt-in via flag or config).
+    dcrEndpoint                  RFC 7591 DCR endpoint surface (opt-in via config).
+    serverInfo                   Implementation name / version / title / description / icons.
+    protocol                     Negotiated version + full capabilities block + verbatim
+                                 server instructions + sessionId.
+    tools                        Per-tool: name, description, schemas, annotations, missing
+                                 annotations, schemaFingerprint (parameter counts,
+                                 type histogram, format list, AdditionalProperties, etc.).
+    prompts                      Per-prompt: name, description, arguments, icons, _meta.
+    resources                    Per-resource: uri + scheme, name, mimeType, description,
+                                 size, annotations, icons. Plus a top-level scheme histogram.
+    stdio                        Resolved command / args / cwd / env (stdio targets only).
+    behavior.callNonExistentTool Calls a tool the server doesn't expose; captures response.
+    behavior.serverInitiated     Holds session open and observes inbound server messages.
+                                 Opt-in via config. Configurable duration + advertised
+                                 client capabilities.
+    metrics                      Per text field: char/line/url/markdown/control-char counts.
+    hashing                      Per-tool / per-prompt / per-resource contentHash + a
+                                 top-level serverFingerprint. Powers the diff engine.
+
+  Works on:
+    mcplense scan https://server.example/mcp
+    mcplense scan https://server.example/mcp --check-authorization-servers
+    mcplense scan https://server.example/mcp --enable behavior.serverInitiated
+    mcplense scan https://server.example/mcp --baseline ./baselines/
+    mcplense scan https://server.example/mcp --diff ./baselines/server.example/old.json
+    mcplense scan https://server.example/mcp --profiles ./agent365.json --classify-only
+
+Observation (`mcplense observe`)
+  Single-check shortcut: runs ONLY the auth + behavior.serverInitiated checks against the
+  target. Use --timeout to control the observation duration (the configured
+  observationDurationSeconds is honoured first; --timeout caps it).
+
+Resource fetch (`mcplense fetch-resource`)
+  Drill-down: opens a session and reads the named resource verbatim. Same as
+  `mcplense read <uri>`, kept as a named command for clarity in tooling pipelines.
+
+Diff (`mcplense diff`)
+  Pure file-to-file structural diff: takes two baseline JSON files written by previous
+  scans and emits the differences. No network.
+
+Configuration file (`McpLense.Config.json`)
+  Single JSON file auto-discovered from `$XDG_CONFIG_HOME/McpLense/McpLense.Config.json` or
+  `%APPDATA%/McpLense/McpLense.Config.json`. May also live in the legacy filename
+  `McpLense.Profiles.json` - both are read. Top-level keys:
+    authProfiles    (array) - auth profile definitions (unchanged from earlier releases).
+    scan            (object) - scan-pipeline configuration.
+
+  `scan` block shape:
+    {
+      "checks": {
+        "auth":                   { "enabled": true },
+        "behavior.serverInitiated": {
+          "enabled": false,
+          "observationDurationSeconds": 2,
+          "advertiseCapabilities": ["sampling", "elicitation", "roots", "listChanged"]
+        },
+        "metrics": {
+          "enabled": true,
+          "urlExtractionFields": ["serverInstructions", "toolDescription", "promptDescription"]
+        }
+      },
+      "output": {
+        "baselineDir": "./baselines"
+      }
+    }
+  Config-file enable/disable wins over the check's IsEnabledByDefault. CLI --enable /
+  --disable flags win over both.
     behavior                   callNonExistentTool: verbatim JSON-RPC response (code /
                                message / data) when we call a tool name the server doesn't
                                expose. Useful for spotting information leakage.

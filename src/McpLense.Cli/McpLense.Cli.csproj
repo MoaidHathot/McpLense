@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>McpLense.Cli</AssemblyName>
+    <RootNamespace>McpLense.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Tool packaging">
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>mcplense</ToolCommandName>
+    <PackageId>McpLense.Cli</PackageId>
+    <Version>0.4.0-preview.1</Version>
+    <Description>Command-line tool for inspecting and scanning MCP servers: auth surface, capabilities, TLS posture, OAuth metadata, and behavioural probes. Built on top of the McpLense library.</Description>
+    <PackageTags>mcp;model-context-protocol;debugging;cli;dotnet-tool;scanning</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\McpLense\McpLense.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dumpify" />
+    <PackageReference Include="Spectre.Console" />
+  </ItemGroup>
+
+  <ItemGroup Label="Internals access">
+    <InternalsVisibleTo Include="McpLense.UnitTests" />
+    <InternalsVisibleTo Include="McpLense.IntegrationTests" />
+    <InternalsVisibleTo Include="McpLense.E2ETests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

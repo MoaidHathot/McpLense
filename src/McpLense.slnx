@@ -6,4 +6,5 @@
   <Project Path="../tests/McpLense.TestServer/McpLense.TestServer.csproj" />
   <Project Path="../tests/McpLense.UnitTests/McpLense.UnitTests.csproj" />
   <Project Path="McpLense/McpLense.csproj" />
+  <Project Path="McpLense.Cli/McpLense.Cli.csproj" />
 </Solution>

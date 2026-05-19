@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\McpLense\McpLense.csproj" />
+    <ProjectReference Include="..\..\src\McpLense.Cli\McpLense.Cli.csproj" />
   </ItemGroup>
 
 </Project>

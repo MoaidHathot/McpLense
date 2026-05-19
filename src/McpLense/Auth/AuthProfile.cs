@@ -18,4 +18,4 @@ namespace McpLense;
 /// Set this when you want to override the default ordering for a specific profile, e.g. force
 /// an interactive-browser profile to beat a same-resource azure-cli profile.
 /// </param>
-internal sealed record AuthProfile(string Name, ResolvedAuth Auth, int? Priority = null);
+public sealed record AuthProfile(string Name, ResolvedAuth Auth, int? Priority = null);

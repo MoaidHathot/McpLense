@@ -2,6 +2,7 @@ using System.Collections;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using McpLense.Scanning;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 
@@ -25,12 +26,73 @@ internal static class McpExecutor
             return new ExecutionOutcome(logoutReport, logoutReport.Servers.Any(entry => !entry.Success));
         }
 
+        if (command.Command is AppCommand.Diff)
+        {
+            // Pure file-to-file diff: no scan, just deserialize two baseline files and emit
+            // the structural diff. The CLI passes the two paths via Subject + DiffBaselinePath.
+            if (string.IsNullOrEmpty(command.Subject) || string.IsNullOrEmpty(command.DiffBaselinePath))
+            {
+                throw new UserInputException("'diff' requires two baseline paths: 'mcplense diff <before> <after>'.");
+            }
+
+            var before = await BaselineWriter.ReadAsync(command.Subject, cancellationToken).ConfigureAwait(false);
+            var after = await BaselineWriter.ReadAsync(command.DiffBaselinePath, cancellationToken).ConfigureAwait(false);
+            var diff = ScanDiff.Diff(before, after);
+            return new ExecutionOutcome(diff, false);
+        }
+
+        if (command.Command is AppCommand.Scan)
+        {
+            // New scan goes through the IScanCheck pipeline. Baseline / diff knobs are
+            // honoured here.
+            var cliEnables = command.CheckEnables is null ? null : new HashSet<string>(command.CheckEnables, StringComparer.OrdinalIgnoreCase);
+            var cliDisables = command.CheckDisables is null ? null : new HashSet<string>(command.CheckDisables, StringComparer.OrdinalIgnoreCase);
+            var parallel = command.ParallelServers ?? 1;
+
+            // Progress reporting: silent in --quiet mode; basic [n/N] line in default; the
+            // CLI's Verbose toggle is honoured by the dispatcher / pipeline elsewhere via
+            // the same path.
+            Action<int, int, string, TimeSpan>? progressCallback = null;
+            if (!command.Quiet)
+            {
+                progressCallback = (index, total, name, elapsed) =>
+                {
+                    Console.Error.WriteLine($"[{index}/{total}] {name}: ok ({elapsed.TotalSeconds:F1}s)");
+                };
+            }
+
+            var scanReport = await Scanning.ScanCommandDispatcher.RunAsync(
+                command.Target,
+                command.Timeout,
+                cliEnables,
+                cliDisables,
+                cancellationToken,
+                maxDegreeOfParallelism: parallel,
+                progress: progressCallback).ConfigureAwait(false);
+
+            if (!string.IsNullOrEmpty(command.BaselinePath))
+            {
+                var resolvedPath = BaselineWriter.ResolvePath(command.BaselinePath, null, scanReport);
+                await BaselineWriter.WriteAsync(resolvedPath, scanReport, cancellationToken).ConfigureAwait(false);
+                if (!command.Quiet)
+                {
+                    Console.Error.WriteLine($"baseline written: {resolvedPath}");
+                }
+            }
+
+            if (!string.IsNullOrEmpty(command.DiffBaselinePath))
+            {
+                var baseline = await BaselineWriter.ReadAsync(command.DiffBaselinePath, cancellationToken).ConfigureAwait(false);
+                var diff = ScanDiff.Diff(baseline, scanReport);
+                return new ExecutionOutcome(diff, false);
+            }
+
+            return new ExecutionOutcome(scanReport, false);
+        }
+
         var servers = await TargetResolver.ResolveAsync(command.Target, cancellationToken);
 
-        // Scan / auth-scan are discovery-only commands: classify auth and (optionally) test
-        // profiles, plus - for `scan` - the wider audit (capabilities, tools, resources, TLS,
-        // headers, OAuth metadata, behaviour probes). Both dispatch BEFORE the standard
-        // AttachProfilesAsync call because they own their own auth flow.
+        // auth-scan still uses the original AuthScanner directly (faster path, no full audit).
         if (command.Command is AppCommand.AuthScan)
         {
             var authScanReport = await DispatchAuthScanAsync(servers, command.Target, command.Timeout, cancellationToken).ConfigureAwait(false);
@@ -38,11 +100,23 @@ internal static class McpExecutor
             return new ExecutionOutcome(authScanReport, hasErrors);
         }
 
-        if (command.Command is AppCommand.Scan)
+        // observe = long-duration ServerInitiatedObservationCheck only.
+        if (command.Command is AppCommand.Observe)
         {
-            var auditReport = await DispatchAuditAsync(servers, command.Target, command.Timeout, cancellationToken).ConfigureAwait(false);
-            var hasErrors = auditReport.Servers.Any(entry => entry.Error is not null);
-            return new ExecutionOutcome(auditReport, hasErrors);
+            var observe = await DispatchObserveAsync(command, cancellationToken).ConfigureAwait(false);
+            return new ExecutionOutcome(observe, false);
+        }
+
+        if (command.Command is AppCommand.FetchResource)
+        {
+            if (string.IsNullOrEmpty(command.Subject))
+            {
+                throw new UserInputException("'fetch-resource' requires a resource URI as the first positional argument.");
+            }
+
+            // Resolve via standard inspect path, then read the named resource.
+            servers = await AttachProfilesAsync(servers, command.Target, cancellationToken).ConfigureAwait(false);
+            return await ReadResourceAsync(SingleServer(servers), command.Subject, command.Arguments, command.Timeout, cancellationToken).ConfigureAwait(false);
         }
 
         // Resolve auth profiles for HTTP servers that don't already have inline auth (i.e.
@@ -67,6 +141,42 @@ internal static class McpExecutor
     }
 
     /// <summary>
+    /// 'observe' command: like scan but only runs the auth + server-initiated observation
+    /// checks, with the configured (longer) duration. Forces the observation check on.
+    /// </summary>
+    private static async Task<ExecutionOutcome> DispatchObserveAsync(ParsedCommand command, CancellationToken cancellationToken)
+    {
+        var enables = new HashSet<string>(command.CheckEnables ?? [], StringComparer.OrdinalIgnoreCase) { "behavior.serverInitiated" };
+        var disables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Disable everything that isn't directly part of the observation pipeline so we don't
+        // pay for tools/prompts/resources/TLS work in a focused observation run. The auth
+        // check + transport probe stay (we need a session); the rest is off.
+        foreach (var off in new[]
+                 {
+                     "tlsChain", "authenticatedHeaders", "corsPreflight", "dcrEndpoint",
+                     "authorizationServers", "metrics", "hashing",
+                     "behavior.callNonExistentTool", "serverInfo", "protocol",
+                     "tools", "prompts", "resources"
+                 })
+        {
+            if (!enables.Contains(off))
+            {
+                disables.Add(off);
+            }
+        }
+
+        var report = await ScanCommandDispatcher.RunAsync(
+            command.Target,
+            command.Timeout,
+            enables,
+            disables,
+            cancellationToken).ConfigureAwait(false);
+
+        return new ExecutionOutcome(report, false);
+    }
+
+    /// <summary>
     /// Loads the merged set of profile paths (explicit --profiles flags + auto-discovered
     /// defaults) and hands them to <see cref="AuthScanner.ScanAsync"/>. Profile load failures
     /// surface as a <see cref="UserInputException"/> from <see cref="ProfileLoader"/> rather
@@ -88,31 +198,6 @@ internal static class McpExecutor
             servers,
             profiles,
             target.AuthOverrides,
-            handshakeTimeout: timeout,
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Same profile-load logic as the auth-only scan, then drives the full
-    /// <see cref="Auditor"/> orchestration. <see cref="AuthOverrides.CheckAuthorizationServers"/>
-    /// is the only audit-specific knob that flows through this method.
-    /// </summary>
-    private static async Task<AuditReport> DispatchAuditAsync(
-        IReadOnlyList<ResolvedServer> servers,
-        TargetOptions target,
-        TimeSpan timeout,
-        CancellationToken cancellationToken)
-    {
-        var profilePaths = ResolveProfilePaths(target.ProfilePaths);
-        var profiles = profilePaths.Count == 0
-            ? Array.Empty<AuthProfile>()
-            : await ProfileLoader.LoadAsync(profilePaths, new EnvironmentExpander(), cancellationToken).ConfigureAwait(false);
-
-        return await Auditor.AuditAsync(
-            servers,
-            profiles,
-            target.AuthOverrides,
-            checkAuthorizationServers: target.AuthOverrides.CheckAuthorizationServers,
             handshakeTimeout: timeout,
             cancellationToken).ConfigureAwait(false);
     }

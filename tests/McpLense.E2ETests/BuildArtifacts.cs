@@ -7,7 +7,10 @@ namespace McpLense.E2ETests;
 internal static class BuildArtifacts
 {
     private static readonly Lazy<string> _repoRoot = new(LocateRepoRoot);
-    private static readonly Lazy<string> _mainAppDll = new(() => LocateAssembly("McpLense", Path.Combine("src", "McpLense", "bin")));
+    // After the McpLense -> McpLense (library) + McpLense.Cli (exe) split, the runnable
+    // assembly is McpLense.Cli.dll. CliRunner invokes `dotnet <this dll>` to spin up the
+    // tool just like a real `dotnet tool` install would.
+    private static readonly Lazy<string> _mainAppDll = new(() => LocateAssembly("McpLense.Cli", Path.Combine("src", "McpLense.Cli", "bin")));
     private static readonly Lazy<string> _testServerDll = new(() => LocateAssembly("McpLense.TestServer", Path.Combine("tests", "McpLense.TestServer", "bin")));
     private static readonly Lazy<string> _testHttpServerDll = new(() => LocateAssembly("McpLense.TestHttpServer", Path.Combine("tests", "McpLense.TestHttpServer", "bin")));
 

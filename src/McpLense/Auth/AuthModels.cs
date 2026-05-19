@@ -3,7 +3,7 @@ namespace McpLense;
 /// <summary>
 /// Identifies how mcplense authenticates outbound HTTP requests to an MCP server.
 /// </summary>
-internal enum AuthKind
+public enum AuthKind
 {
     /// <summary>No authentication. Outbound requests carry no <c>Authorization</c> header.</summary>
     None,
@@ -77,7 +77,7 @@ internal enum AuthKind
 /// <param name="ResourceUri">
 /// RFC 8707 resource indicator. Defaults to the MCP server URL when null.
 /// </param>
-internal sealed record ResolvedAuth(
+public sealed record ResolvedAuth(
     AuthKind Kind,
     string? Token = null,
     IReadOnlyList<string>? Scopes = null,
@@ -133,7 +133,7 @@ internal sealed record ResolvedAuth(
 /// metadata and surfaces the fields verbatim. Off by default so air-gapped / CI users don't
 /// silently make outbound calls to <c>login.microsoftonline.com</c> &amp; friends.
 /// </param>
-internal sealed record AuthOverrides(
+public sealed record AuthOverrides(
     AuthKind? Kind = null,
     string? Token = null,
     string? Profile = null,
@@ -159,9 +159,10 @@ internal sealed record AuthOverrides(
 
 /// <summary>
 /// Surface-level exception raised when authentication setup fails (factory, handler, cache, etc.).
-/// Propagates to <see cref="App"/>'s top-level error handler and renders as a 1-line stderr message.
+/// Propagates to the CLI's top-level error handler and renders as a 1-line stderr message.
+/// Embedding hosts can catch and surface it however they like.
 /// </summary>
-internal sealed class McpLenseAuthException : Exception
+public sealed class McpLenseAuthException : Exception
 {
     public McpLenseAuthException(string message)
         : base(message)

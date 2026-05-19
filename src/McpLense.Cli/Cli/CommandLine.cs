@@ -3,63 +3,6 @@ using System.Text.Json.Nodes;
 
 namespace McpLense;
 
-internal enum AppCommand
-{
-    Help,
-    Version,
-    Tui,
-    Inspect,
-    Tools,
-    Resources,
-    Prompts,
-    Call,
-    Read,
-    Prompt,
-    Login,
-    Logout,
-    Scan,
-    AuthScan
-}
-
-internal enum OutputFormat
-{
-    Text,
-    Json,
-    Dumpify
-}
-
-internal enum TransportPreference
-{
-    Auto,
-    StreamableHttp,
-    Sse
-}
-
-internal sealed record ParsedCommand(
-    AppCommand Command,
-    string? Subject,
-    JsonObject? Arguments,
-    OutputFormat Format,
-    TimeSpan Timeout,
-    TargetOptions Target,
-    bool ProgressEnabled);
-
-internal sealed record TargetOptions(
-    IReadOnlyList<string> ConfigPaths,
-    IReadOnlyList<string> ServerNames,
-    IReadOnlyList<string> ProfilePaths,
-    string? DisplayName,
-    Uri? Url,
-    TransportPreference Transport,
-    IReadOnlyDictionary<string, string> Headers,
-    string? Command,
-    IReadOnlyList<string> CommandArguments,
-    string? WorkingDirectory,
-    IReadOnlyDictionary<string, string> Environment,
-    AuthOverrides AuthOverrides);
-
-internal sealed class UserInputException(string message) : Exception(message);
-
 internal static class CommandLineParser
 {
     /// <summary>Long options that act as boolean switches and do NOT consume the next argument.</summary>
@@ -69,7 +12,22 @@ internal static class CommandLineParser
         "try-all",
         "all",
         "classify-only",
-        "check-authorization-servers"
+        "check-authorization-servers",
+        "quiet",
+        "verbose"
+    };
+
+    /// <summary>Long options that can appear multiple times (repeatable).</summary>
+    private static readonly HashSet<string> RepeatableOptions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "config",
+        "profiles",
+        "server",
+        "header",
+        "command-arg",
+        "env",
+        "enable",
+        "disable"
     };
 
     public static ParsedCommand Parse(string[] args)
@@ -139,14 +97,52 @@ internal static class CommandLineParser
             return ParseLoginLogout(command, options, positionals);
         }
 
-        var (subject, urlPositional) = ParseSubjectAndUrl(command, positionals);
+        var (subject, urlPositional, extraPositionals) = ParseSubjectAndUrl(command, positionals);
         var arguments = ParseArguments(command, GetSingle(options, "args"));
         var target = ParseTarget(options, stdioTokens, urlPositional);
         var format = ParseFormat(GetSingle(options, "format"));
         var timeout = ParseTimeout(GetSingle(options, "timeout"));
         var progress = ParseProgress(GetSingle(options, "progress"), command);
 
-        return new ParsedCommand(command, subject, arguments, format, timeout, target, progress);
+        // Scan / observe / fetch-resource / diff specific knobs.
+        var baseline = GetSingle(options, "baseline");
+        var diffPath = GetSingle(options, "diff");
+        var enables = GetMany(options, "enable");
+        var disables = GetMany(options, "disable");
+        var parallelRaw = GetSingle(options, "parallel-servers");
+        int? parallel = null;
+        if (parallelRaw is not null)
+        {
+            if (!int.TryParse(parallelRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var p) || p < 1)
+            {
+                throw new UserInputException($"--parallel-servers must be a positive integer, got '{parallelRaw}'.");
+            }
+            parallel = p;
+        }
+        var quiet = string.Equals(GetSingle(options, "quiet"), "true", StringComparison.OrdinalIgnoreCase);
+        var verbose = string.Equals(GetSingle(options, "verbose"), "true", StringComparison.OrdinalIgnoreCase);
+
+        // For 'diff' the two positional arguments are the baseline files - we shove them
+        // into Subject + DiffBaselinePath.
+        if (command is AppCommand.Diff)
+        {
+            if (extraPositionals.Count != 1 || subject is null)
+            {
+                throw new UserInputException("'diff' requires exactly two positional baseline paths: 'mcplense diff <before> <after>'.");
+            }
+
+            diffPath ??= extraPositionals[0];
+        }
+
+        return new ParsedCommand(
+            command, subject, arguments, format, timeout, target, progress,
+            BaselinePath: baseline,
+            DiffBaselinePath: diffPath,
+            CheckEnables: enables.Count > 0 ? enables : null,
+            CheckDisables: disables.Count > 0 ? disables : null,
+            ParallelServers: parallel,
+            Quiet: quiet,
+            Verbose: verbose);
     }
 
     /// <summary>
@@ -272,6 +268,9 @@ internal static class CommandLineParser
         "logout" => AppCommand.Logout,
         "scan" => AppCommand.Scan,
         "auth-scan" => AppCommand.AuthScan,
+        "observe" => AppCommand.Observe,
+        "fetch-resource" => AppCommand.FetchResource,
+        "diff" => AppCommand.Diff,
         _ => throw new UserInputException($"Unknown command '{value}'.")
     };
 
@@ -355,7 +354,14 @@ internal static class CommandLineParser
             "auth-token",
             "no-auth",
             "classify-only",
-            "check-authorization-servers"
+            "check-authorization-servers",
+            "baseline",
+            "diff",
+            "enable",
+            "disable",
+            "parallel-servers",
+            "quiet",
+            "verbose"
         };
 
         foreach (var option in options.Keys)
@@ -385,31 +391,66 @@ internal static class CommandLineParser
         {
             throw new UserInputException("--check-authorization-servers is only valid for 'scan'.");
         }
+
+        if (command is not AppCommand.Scan && options.ContainsKey("baseline"))
+        {
+            throw new UserInputException("--baseline is only valid for 'scan'.");
+        }
+
+        if (command is not (AppCommand.Scan or AppCommand.Diff) && options.ContainsKey("diff"))
+        {
+            throw new UserInputException("--diff is only valid for 'scan' and 'diff'.");
+        }
+
+        if (command is not (AppCommand.Scan or AppCommand.Observe) && (options.ContainsKey("enable") || options.ContainsKey("disable")))
+        {
+            throw new UserInputException("--enable / --disable are only valid for 'scan' and 'observe'.");
+        }
+
+        if (command is not AppCommand.Scan && options.ContainsKey("parallel-servers"))
+        {
+            throw new UserInputException("--parallel-servers is only valid for 'scan'.");
+        }
+
+        if (options.ContainsKey("quiet") && options.ContainsKey("verbose"))
+        {
+            throw new UserInputException("--quiet and --verbose cannot be combined.");
+        }
     }
 
     /// <summary>
-    /// Splits positional arguments into the (optional) subject for call/read/prompt and the
-    /// (optional) URL positional accepted by every other command.
+    /// Splits positional arguments into the (optional) subject for call/read/prompt/diff and
+    /// the (optional) URL positional accepted by every other command. The third tuple field
+    /// holds extra positionals after subject (used by <c>diff</c> for the second baseline
+    /// path and by <c>fetch-resource</c> for the optional URL).
     /// </summary>
-    private static (string? Subject, string? UrlPositional) ParseSubjectAndUrl(AppCommand command, List<string> positionals)
+    private static (string? Subject, string? UrlPositional, IReadOnlyList<string> Extras) ParseSubjectAndUrl(AppCommand command, List<string> positionals)
     {
         switch (command)
         {
-            case AppCommand.Call or AppCommand.Read or AppCommand.Prompt:
+            case AppCommand.Call or AppCommand.Read or AppCommand.Prompt or AppCommand.FetchResource:
                 return positionals.Count switch
                 {
                     0 => throw new UserInputException($"{command.ToString().ToLowerInvariant()} requires a name or URI."),
-                    1 => (positionals[0], null),
-                    2 when LooksLikeUrl(positionals[1]) => (positionals[0], positionals[1]),
+                    1 => (positionals[0], null, Array.Empty<string>()),
+                    2 when LooksLikeUrl(positionals[1]) => (positionals[0], positionals[1], Array.Empty<string>()),
                     _ => throw new UserInputException(
                         $"{command.ToString().ToLowerInvariant()} accepts a single name or URI, optionally followed by a target URL.")
+                };
+
+            case AppCommand.Diff:
+                // Two positional baseline file paths.
+                return positionals.Count switch
+                {
+                    2 => (positionals[0], null, new[] { positionals[1] }),
+                    _ => throw new UserInputException("'diff' requires two positional baseline paths: 'mcplense diff <before> <after>'.")
                 };
 
             default:
                 return positionals.Count switch
                 {
-                    0 => (null, null),
-                    1 when LooksLikeUrl(positionals[0]) => (null, positionals[0]),
+                    0 => (null, null, Array.Empty<string>()),
+                    1 when LooksLikeUrl(positionals[0]) => (null, positionals[0], Array.Empty<string>()),
                     _ => throw new UserInputException(
                         $"{command.ToString().ToLowerInvariant()} accepts at most a single positional URL.")
                 };
