@@ -10,7 +10,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>mcplense</ToolCommandName>
     <PackageId>McpLense.Cli</PackageId>
-    <Version>0.6.0-preview.1</Version>
+    <!-- Version is centralised in <repo>/Directory.Build.props; do not override here. -->
     <Description>Command-line tool for inspecting and scanning MCP servers: auth surface, capabilities, TLS posture, OAuth metadata, and behavioural probes. Built on top of the McpLense library.</Description>
     <PackageTags>mcp;model-context-protocol;debugging;cli;dotnet-tool;scanning</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

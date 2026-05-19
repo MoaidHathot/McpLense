@@ -7,7 +7,7 @@
 
   <PropertyGroup Label="NuGet packaging (library)">
     <PackageId>McpLense</PackageId>
-    <Version>0.6.0-preview.1</Version>
+    <!-- Version is centralised in <repo>/Directory.Build.props; do not override here. -->
     <Description>Library powering the McpLense CLI: scans MCP servers for auth surface, capabilities, TLS posture, OAuth metadata, and other facts useful for security / risk classification. Reference this package to integrate scanning into your own tooling or to register custom IScanCheck implementations.</Description>
     <PackageTags>mcp;model-context-protocol;scanning;security;library</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

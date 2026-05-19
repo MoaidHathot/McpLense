@@ -8,6 +8,16 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>
 
+  <PropertyGroup Label="Shared package version - single source of truth">
+    <!--
+      Bump this property and BOTH McpLense (library) + McpLense.Cli (dotnet tool) ship at
+      the same version. Per-project csproj files MUST NOT override <Version>; if they need
+      package-specific overrides they should derive from $(Version) (e.g. via
+      $(VersionPrefix) / $(VersionSuffix)).
+    -->
+    <Version>0.4.0</Version>
+  </PropertyGroup>
+
   <PropertyGroup Label="Shared package metadata">
     <Authors>Moaid Hathot</Authors>
     <Company>Moaid Hathot</Company>

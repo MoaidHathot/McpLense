@@ -1,57 +1,56 @@
 # Next steps
 
-Living roadmap after 0.6.0-preview.1.
+Living roadmap after 0.4.0.
 
-## Delivered in 0.6.0-preview.1
+## Delivered in 0.4.0
 
+- **Single shared version**: every NuGet package (`McpLense` library + `McpLense.Cli` tool)
+  derives its version from `<Version>` in the root `Directory.Build.props`. Bumping that
+  single property ships both packages at the lockstep version. Per-project csproj files
+  no longer carry a `<Version>` override.
 - Per-target headers (`targets[]`) and pattern overlays (`targetPatterns[]`) in
-  `McpLense.Config.json`. CLI gains `@<name>` positional syntax for named targets
-  ("the dispatcher resolves the URL"). Per-key last-write-wins merge with three layers:
-  pattern -> target -> CLI flag.
+  `McpLense.Config.json`. CLI gains `@<name>` positional syntax for named targets.
+  Per-key last-write-wins merge with three layers: pattern -> target -> CLI flag.
+- Overlay applies uniformly across EVERY command that opens an MCP connection
+  (`scan`, `inspect`, `tools`, `resources`, `prompts`, `call`, `read`, `prompt`,
+  `fetch-resource`, `auth-scan`, `observe`) - not just `scan`. Shared
+  `TargetOverlayApplicator` is used by both `ScanCommandDispatcher` and `McpExecutor`.
 - Probe coverage gap closed: with `scope: "All"` (the default), per-target headers
   ride along with same-origin probes (TransportProbe, CorsPreflightCheck,
   AuthenticatedHeadersCheck, DcrEndpointCheck, AuthProbe + RFC 9728 metadata fetch).
   Cross-origin fetches NEVER get MCP-server headers. `scope: "Session"` reverts to
   the previous session-only behaviour per target.
 - Per-target `disabledChecks`, `profile`, `transport`, `timeoutSeconds` wiring.
-- Stderr `matched: patterns=N target=NAME -> K headers, scope=...` line under
-  non-quiet so users can see what overlay applied per server.
+- Stderr observability:
+  - `matched: patterns=N target=NAME -> K headers, scope=...` line under non-quiet.
+  - `--verbose` adds per-header `name: value` lines (sensitive header values redacted
+    to length-only).
+  - `auth: ...` lines for every non-scan command: profile load, probe classification,
+    cache hits, picked profile + reason (cache-hit vs precedence vs single-profile).
 - New URL-glob matcher (`UrlGlob`): single `*` = one host label OR one path segment,
   `**` = any sequence including `/`, host case-insensitive, path case-sensitive.
 - New test MCP mode `headers` that records inbound HTTP requests via a `/capture`
   endpoint; new integration tests assert per-target headers reach the right
-  surface (session vs CORS preflight) under the two scope modes.
+  surface (session vs CORS preflight) under the two scope modes AND on non-scan
+  commands via McpExecutor.
 - Docs + sample: `docs/scan-checks.md#per-target-configuration`, README "Per-target
   headers (config file)" section, `samples/targets.json` worked example.
 
-Build + test state: Release `-warnaserror` clean. 535 unit + 55 integration + 35 E2E
+Build + test state: Release `-warnaserror` clean. 543 unit + 56 integration + 35 E2E
 + 3 skipped (gated remote smokes).
 
-## Delivered in 0.5.0-preview.1
+## Earlier deliveries
 
-- 1.1 In-repo test MCP servers: new `tests/McpLense.TestMcps/` project hosting
-  Bare / Rich / Sampling / Leaky modes selected via `--mode`. Wired into integration
-  tests (`TestMcpsScanTests`, 4 tests).
-- 1.2 Remote-target fixture file: `tests/McpLense.E2ETests/remote-targets.json` driving
-  `ConfigurableRemoteSmokeTests` (theory + MemberData), gated on `MCPLENSE_E2E_REMOTE=1`.
-  Added `SkipUnlessEnvTheoryAttribute` for theory-shaped env-gated tests.
-- 1.5 Per-check structured text renderers replace the JSON-payload fallback in
-  `mcplense scan --format text`. Every built-in check has a focused renderer;
-  extension checks fall back to JSON.
-- 3.1 Reduced reflection: direct property access on `ProtocolResource`, `ProtocolPrompt`,
-  `ProtocolTool`, `ServerCapabilities`, `Implementation` where the SDK shape is stable.
-  Reflection retained only for SDK-experimental / SDK-evolving members (e.g. McpException
-  ErrorCode, Implementation.Meta).
-- 3.3 Cancellation hygiene: linked-token timeouts thrown from inside a check now surface
-  as `CheckOutcome.Error = "Timed out."` rather than escape the pipeline. Regression test
-  added.
-- 3.6 Partial: introduced `ICommandHandler` abstraction. Full migration of every command
-  body to handler classes deferred (see below).
-- 4.4 `pack.ps1` packs BOTH `McpLense` (library) and `McpLense.Cli` (tool) by default;
-  flags for library-only / CLI-only and a single-call dual-push pipeline.
-- 4.5 Documentation: README scan + extensibility section; `docs/scan-checks.md` reference
-  for every built-in check; `docs/security-classification-recipes.md` with jq recipes for
-  downstream policy / risk classification.
+- 0.3.x preview: scan pipeline (16 built-in checks), library / CLI split, baseline +
+  diff, observe / fetch-resource / diff commands.
+- Inbound interception (sampling / elicitation / roots + 6 notifications).
+- Cancellation hygiene, direct property access on stable SDK types, per-check
+  structured text renderers.
+- In-repo test MCPs (`bare`, `rich`, `sampling`, `leaky`).
+- Remote-target smoke fixture (`MCPLENSE_E2E_REMOTE=1` gated).
+- `pack.ps1` packs both packages; `-LibraryOnly` / `-CliOnly` / `-Push`.
+- README scan + extensibility section; `docs/scan-checks.md` per-check reference;
+  `docs/security-classification-recipes.md` jq recipes.
 
 ## Carried forward
 
