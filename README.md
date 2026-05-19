@@ -48,6 +48,31 @@ See `docs/scan-checks.md` for the complete per-check reference and
 `docs/security-classification-recipes.md` for jq-based recipes that classify scan output
 for downstream policy / risk tooling.
 
+## AI Agent Skill
+
+`McpLense` ships an [Agent Skill](https://agentskills.io/) under `skills/mcplense/`
+so any skills-aware AI agent (Claude Code, Claude, Cursor, OpenCode, Goose, Gemini CLI,
+OpenHands, GitHub Copilot, Roo Code, Kiro, and others) can discover and use the CLI
+without reading the full README.
+
+```bash
+# Claude Code (personal install)
+mkdir -p ~/.claude/skills
+cp -R skills/mcplense ~/.claude/skills/
+
+# Or project-local
+mkdir -p .claude/skills
+cp -R skills/mcplense .claude/skills/
+```
+
+See [`skills/README.md`](skills/README.md) for install paths for every supported client.
+The skill teaches agents the command surface (`inspect` / `tools` / `scan` / `diff` /
+`call` / `read` / `prompt` / `fetch-resource` / `auth-scan` / `observe`), the unified
+`McpLense.Config.json` schema (per-target headers, glob patterns, scope semantics),
+profile-based authentication (Bearer, OAuth, Entra interactive-browser, Azure CLI), and
+common jq recipes for downstream classification.
+
+
 ### Custom checks via the library
 
 Reference the `McpLense` package and register your own `IScanCheck` either through the
