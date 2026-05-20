@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>McpLense.TestPlugin</AssemblyName>
+    <RootNamespace>McpLense.TestPlugin</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- This is a plugin under test - it's loaded at runtime by the test project,
+         never referenced as a NuGet package and never published. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\McpLense\McpLense.csproj">
+      <!-- Don't copy McpLense.dll alongside the plugin output; the host already owns
+           the canonical instance and the AssemblyLoadContext is wired to defer to it. -->
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

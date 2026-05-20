@@ -39,6 +39,18 @@ internal sealed class AuthorizationServerProbe : IAuthorizationServerProbe, IDis
     {
     }
 
+    /// <summary>
+    /// Production overload: when an <see cref="IHttpClientFactory"/> is available (e.g.
+    /// the CLI's <c>AddMcpLense</c> wires one in), reuse the shared <c>mcplense-probe</c>
+    /// named client so sockets are pooled across every probe + check in the run.
+    /// </summary>
+    public AuthorizationServerProbe(IHttpClientFactory factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        _ownsHttpClient = false;
+        _httpClient = factory.CreateClient(McpLense.Scanning.McpLenseServiceCollectionExtensions.ProbeHttpClientName);
+    }
+
     /// <summary>For tests: inject a fake <see cref="HttpClient"/> backed by a test handler.</summary>
     internal AuthorizationServerProbe(HttpClient? httpClient)
     {

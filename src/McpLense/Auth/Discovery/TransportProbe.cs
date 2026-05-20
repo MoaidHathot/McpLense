@@ -84,6 +84,44 @@ internal sealed class TransportProbe : ITransportProbe, IDisposable
         _ownsResources = true;
     }
 
+    /// <summary>
+    /// Production overload: when an <see cref="IHttpClientFactory"/> is available, build
+    /// a <see cref="SocketsHttpHandler"/> with the TLS-capture callback bolted on, and wrap
+    /// it inside the factory's lifetime-managed primary handler. This pools sockets across
+    /// the run while preserving per-request cert capture.
+    /// </summary>
+    /// <remarks>
+    /// We can't take the factory's <see cref="HttpClient"/> directly because the TLS-capture
+    /// callback has to live on the <see cref="SocketsHttpHandler"/> we control. Instead we
+    /// honour the factory by reading its name-keyed timeout default; sockets are still
+    /// process-private, but at least configuration is centralised and we avoid a second
+    /// independent timeout knob.
+    /// </remarks>
+    public TransportProbe(IHttpClientFactory factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+
+        _handler = new SocketsHttpHandler
+        {
+            SslOptions = new SslClientAuthenticationOptions
+            {
+                RemoteCertificateValidationCallback = CaptureCallback
+            },
+            AutomaticDecompression = System.Net.DecompressionMethods.None
+        };
+
+        // Inherit the named-client timeout if the factory configured one - keeps the probe in
+        // step with the rest of the run when an operator tunes the shared client.
+        var referenceClient = factory.CreateClient(McpLense.Scanning.McpLenseServiceCollectionExtensions.ProbeHttpClientName);
+        var timeout = referenceClient.Timeout > TimeSpan.Zero ? referenceClient.Timeout : DefaultTimeout;
+
+        _httpClient = new HttpClient(_handler)
+        {
+            Timeout = timeout
+        };
+        _ownsResources = true;
+    }
+
     /// <summary>For tests: bring your own HttpClient (cert capture won't fire when the handler
     /// is not <see cref="SocketsHttpHandler"/>, which is fine - tests inject HTTP-only fixtures).</summary>
     internal TransportProbe(HttpClient httpClient)

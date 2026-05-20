@@ -23,6 +23,14 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\McpLense\McpLense.csproj" />
     <ProjectReference Include="..\..\src\McpLense.Cli\McpLense.Cli.csproj" />
+    <!-- Build the test plugin so its DLL exists before unit tests run, but do NOT
+         reference its assembly - the plugin is meant to be loaded via
+         ScanPluginLoader at runtime. -->
+    <ProjectReference Include="..\McpLense.TestPlugin\McpLense.TestPlugin.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>

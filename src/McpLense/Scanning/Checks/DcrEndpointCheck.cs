@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using McpLense.Scanning.TargetResolution;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace McpLense.Scanning.Checks;
 
@@ -29,10 +30,24 @@ internal sealed class DcrEndpointCheck : IScanCheck
             return CheckOutcome.Skipped;
         }
 
-        using var http = new HttpClient(new SocketsHttpHandler(), disposeHandler: true)
+        // Prefer the shared HttpClient pool when the host wired AddMcpLense (registers the
+        // "mcplense-probe" named client). Fall back to a one-off client when the pipeline
+        // was built via ScanPipelineBuilder with a minimal ServiceCollection.
+        var factory = context.Services.GetService<IHttpClientFactory>();
+        HttpClient http;
+        bool ownHttp;
+        if (factory is not null)
         {
-            Timeout = TimeSpan.FromSeconds(10)
-        };
+            http = factory.CreateClient(McpLenseServiceCollectionExtensions.ProbeHttpClientName);
+            ownHttp = false;
+        }
+        else
+        {
+            http = new HttpClient(new SocketsHttpHandler(), disposeHandler: true) { Timeout = TimeSpan.FromSeconds(10) };
+            ownHttp = true;
+        }
+        try
+        {
 
         // Per-target headers travel ONLY when the DCR endpoint is on the same origin as the
         // MCP server. The DCR endpoint usually lives on the AS host (e.g. login.micro-
@@ -52,6 +67,14 @@ internal sealed class DcrEndpointCheck : IScanCheck
         var postResult = await TryAsync(http, HttpMethod.Post, endpoint, body: "{}", probeHeaders, cancellationToken).ConfigureAwait(false);
 
         return new CheckOutcome(Ran: true, Data: CheckSessionHelpers.ToNode(new DcrEndpointData(endpoint.ToString(), optionsResult, postResult)), Error: null);
+        }
+        finally
+        {
+            if (ownHttp)
+            {
+                http.Dispose();
+            }
+        }
     }
 
     private static async Task<EndpointProbe> TryAsync(

@@ -284,9 +284,9 @@ public class TuiAppTests
         // 1. Server prompt: select first server (Enter at index 0).
         console.Input.PushKey(ConsoleKey.Enter);
 
-        // 2. Section prompt items: Overview, Tools, Resources, Resource Templates, Prompts, Back.
-        //    Down x5 -> Back, Enter.
-        for (var i = 0; i < 5; i++)
+        // 2. Section prompt items: Overview, Tools, Resources, Resource Templates, Prompts,
+        //    Bookmarks, Back. Down x6 -> Back, Enter.
+        for (var i = 0; i < 6; i++)
         {
             console.Input.PushKey(ConsoleKey.DownArrow);
         }

@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/anomalyco/McpLense/main/docs/schema/mcplense-config.schema.json",
+  "title": "McpLense.Config.json",
+  "description": "Unified configuration for the McpLense CLI: auth profiles, per-URL target bindings, URL-glob pattern overlays, and scan-pipeline configuration. Loaded from $XDG_CONFIG_HOME/McpLense/McpLense.Config.json (or %APPDATA%\\McpLense\\McpLense.Config.json on Windows). The legacy filename 'McpLense.Profiles.json' is also accepted.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "authProfiles": {
+      "type": "array",
+      "description": "Named, reusable authentication recipes. Each profile describes HOW to authenticate, decoupled from any specific URL.",
+      "items": { "$ref": "#/$defs/authProfile" }
+    },
+    "targets": {
+      "type": "array",
+      "description": "Per-URL target bindings. Address one on the CLI with '@<name>' or by passing the matching URL positionally.",
+      "items": { "$ref": "#/$defs/target" }
+    },
+    "targetPatterns": {
+      "type": "array",
+      "description": "URL-glob overlays applied to every command that opens an MCP connection. Lowest-priority layer of the header/target merge.",
+      "items": { "$ref": "#/$defs/targetPattern" }
+    },
+    "scan": {
+      "type": "object",
+      "description": "Scan-pipeline configuration: per-check toggles + knobs and baseline output settings.",
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "type": "object",
+          "description": "Per-check configuration keyed by IScanCheck.Id (e.g. 'auth', 'transport', 'behavior.serverInitiated').",
+          "additionalProperties": { "$ref": "#/$defs/checkConfig" }
+        },
+        "output": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baselineDir": {
+              "type": "string",
+              "description": "Base directory for '--baseline <path>' when path is a directory. Defaults to the current directory."
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "envString": {
+      "type": "string",
+      "description": "Environment-expandable string. Forms: 'env:VAR' (whole-string, required), '${VAR}' (substring, required), '${VAR:-default}' (substring with default), '$$' (literal '$')."
+    },
+    "headersMap": {
+      "type": "object",
+      "description": "HTTP header bag. Keys are header names; values are env-expandable strings.",
+      "additionalProperties": { "$ref": "#/$defs/envString" }
+    },
+    "scope": {
+      "type": "string",
+      "description": "Whether per-target headers ride along with same-origin probes (CORS preflight, transport probe, authenticated-headers, DCR endpoint) in addition to the MCP session.",
+      "enum": ["All", "Session"],
+      "default": "All"
+    },
+    "transport": {
+      "type": "string",
+      "description": "HTTP transport mode for the MCP connection.",
+      "enum": ["auto", "streamable-http", "sse"],
+      "default": "auto"
+    },
+    "authProfile": {
+      "type": "object",
+      "required": ["name", "auth"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Profile identifier. Used with '--profile <name>' and as the default MSAL cache name."
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Tiebreaker rank for profile auto-pick. Higher wins. Built-in kind defaults: azure-cli=400, interactive-browser=300, oauth=200, bearer=100."
+        },
+        "auth": {
+          "oneOf": [
+            { "$ref": "#/$defs/authBearer" },
+            { "$ref": "#/$defs/authOAuth" },
+            { "$ref": "#/$defs/authInteractiveBrowser" },
+            { "$ref": "#/$defs/authAzureCli" }
+          ]
+        }
+      }
+    },
+    "authBearer": {
+      "type": "object",
+      "required": ["type", "token"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "bearer" },
+        "token": { "$ref": "#/$defs/envString", "description": "Static bearer token. Use env-expansion ('env:GITHUB_TOKEN') so secrets stay out of the config file." }
+      }
+    },
+    "authOAuth": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "oauth" },
+        "scopes": {
+          "type": "array",
+          "description": "OAuth scopes to request.",
+          "items": { "$ref": "#/$defs/envString" }
+        },
+        "issuer": { "$ref": "#/$defs/envString", "description": "Authorization server issuer URL. Required when the MCP server does not publish RFC 9728 PRM." },
+        "authorizationEndpoint": { "$ref": "#/$defs/envString" },
+        "tokenEndpoint": { "$ref": "#/$defs/envString" },
+        "clientId": { "$ref": "#/$defs/envString", "description": "Pre-registered client id. Omit to attempt Dynamic Client Registration (RFC 7591)." }
+      }
+    },
+    "authInteractiveBrowser": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "interactive-browser" },
+        "clientId": { "$ref": "#/$defs/envString", "description": "Public-client app id (e.g. the VS Code GUID 'aebc6443-996d-45c2-90f0-388ff96faa56'). Required." },
+        "tenantId": { "$ref": "#/$defs/envString", "description": "Entra tenant. Omit to default to 'common'." },
+        "scopes": {
+          "type": "array",
+          "description": "Entra scopes. The '<audience>/.default' form is automatically rewritten from the server's PRM when applicable.",
+          "items": { "$ref": "#/$defs/envString" }
+        },
+        "cacheName": { "type": "string", "description": "Override the MSAL cache key. Use 'mcp-proxy' to share state with mcp-proxy. Default: the profile name." }
+      }
+    },
+    "authAzureCli": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "azure-cli" },
+        "tenantId": { "$ref": "#/$defs/envString", "description": "Tenant override. Defaults to whatever 'az account show' reports." },
+        "scopes": {
+          "type": "array",
+          "description": "Azure CLI '--resource' values. Each scope shells out to 'az account get-access-token --resource <scope>'.",
+          "items": { "$ref": "#/$defs/envString" }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["name", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Address with '@<name>' on the CLI." },
+        "url": { "type": "string", "format": "uri", "description": "MCP server URL. Headers also apply automatically when scanning this URL directly." },
+        "headers": { "$ref": "#/$defs/headersMap" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "profile": { "type": "string", "description": "Name of an authProfile to attach by default." },
+        "transport": { "$ref": "#/$defs/transport" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Override the global --timeout for this target only." },
+        "disabledChecks": {
+          "type": "array",
+          "description": "Check ids to suppress for this target. Unioned with CLI --disable.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "targetPattern": {
+      "type": "object",
+      "required": ["match"],
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "type": "string",
+          "description": "URL glob. '*' matches one host label or one path segment, '**' matches any sequence including '/', '?' matches one char. Host part is case-insensitive; path part is case-sensitive. The scheme separator '://' is required."
+        },
+        "headers": { "$ref": "#/$defs/headersMap" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "profile": { "type": "string" },
+        "transport": { "$ref": "#/$defs/transport" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "disabledChecks": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "checkConfig": {
+      "type": "object",
+      "description": "Per-check configuration. The 'enabled' key is universal; the rest are check-specific knobs documented in docs/scan-checks.md.",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Override the check's IsEnabledByDefault. CLI --enable / --disable wins over this." },
+        "observationDurationSeconds": { "type": "integer", "minimum": 1, "description": "behavior.serverInitiated: how long to keep the session open observing inbound notifications." },
+        "advertiseCapabilities": {
+          "type": "array",
+          "description": "behavior.serverInitiated: which client-side capabilities to advertise during the handshake.",
+          "items": { "type": "string", "enum": ["sampling", "elicitation", "roots", "listChanged"] }
+        },
+        "urlExtractionFields": {
+          "type": "array",
+          "description": "metrics: which text fields to scan for URLs.",
+          "items": { "type": "string", "enum": ["serverInstructions", "toolDescription", "promptDescription", "resourceDescription"] }
+        }
+      }
+    }
+  }
+}

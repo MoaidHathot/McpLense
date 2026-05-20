@@ -2,6 +2,7 @@ using System.Collections;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using McpLense.Diagnostics;
 using McpLense.Scanning;
 using McpLense.Scanning.TargetResolution;
 using ModelContextProtocol;
@@ -58,7 +59,7 @@ internal static class McpExecutor
             {
                 progressCallback = (index, total, name, elapsed) =>
                 {
-                    Console.Error.WriteLine($"[{index}/{total}] {name}: ok ({elapsed.TotalSeconds:F1}s)");
+                    McpLenseLog.Write($"[{index}/{total}] {name}: ok ({elapsed.TotalSeconds:F1}s)");
                 };
             }
 
@@ -71,7 +72,8 @@ internal static class McpExecutor
                 maxDegreeOfParallelism: parallel,
                 progress: progressCallback,
                 quiet: command.Quiet,
-                verbose: command.Verbose).ConfigureAwait(false);
+                verbose: command.Verbose,
+                scanPluginPaths: command.ScanPlugins).ConfigureAwait(false);
 
             if (!string.IsNullOrEmpty(command.BaselinePath))
             {
@@ -79,7 +81,7 @@ internal static class McpExecutor
                 await BaselineWriter.WriteAsync(resolvedPath, scanReport, cancellationToken).ConfigureAwait(false);
                 if (!command.Quiet)
                 {
-                    Console.Error.WriteLine($"baseline written: {resolvedPath}");
+                    McpLenseLog.Write($"baseline written: {resolvedPath}");
                 }
             }
 
@@ -150,7 +152,7 @@ internal static class McpExecutor
         }
         else if (!command.Quiet)
         {
-            Console.Error.WriteLine("auth: --no-auth supplied; sending unauthenticated.");
+            McpLenseLog.Write("auth: --no-auth supplied; sending unauthenticated.");
         }
 
         return command.Command switch
@@ -468,7 +470,7 @@ internal static class McpExecutor
         {
             if (!quiet)
             {
-                Console.Error.WriteLine("auth: no profile (no --profiles supplied and no XDG/APPDATA defaults found); sending unauthenticated.");
+                McpLenseLog.Write("auth: no profile (no --profiles supplied and no XDG/APPDATA defaults found); sending unauthenticated.");
             }
             return servers;
         }
@@ -479,7 +481,7 @@ internal static class McpExecutor
         {
             var sources = string.Join(", ", profilePaths);
             var names = profiles.Count == 0 ? "(none)" : string.Join(", ", profiles.Select(p => $"{p.Name}({p.Auth.Kind})"));
-            Console.Error.WriteLine($"auth: {profiles.Count} profile(s) loaded from {sources}: {names}");
+            McpLenseLog.Write($"auth: {profiles.Count} profile(s) loaded from {sources}: {names}");
         }
 
         // --try-all is a runtime-only opt-in for now; runtime command paths still need a single
@@ -497,7 +499,7 @@ internal static class McpExecutor
         {
             if (!quiet)
             {
-                Console.Error.WriteLine("auth: no profiles found in the loaded files; sending unauthenticated.");
+                McpLenseLog.Write("auth: no profiles found in the loaded files; sending unauthenticated.");
             }
             return servers;
         }
@@ -526,7 +528,7 @@ internal static class McpExecutor
             // challenge to the resolver instead of an opaque 4xx.
             var probeHeaders = server.Headers.Count == 0 ? null : server.Headers;
             Action<string>? trace = verbose
-                ? message => Console.Error.WriteLine($"auth: {server.Url} - {message}")
+                ? message => McpLenseLog.Write($"auth: {server.Url} - {message}")
                 : null;
             var profile = await resolver.ResolveAsync(
                 server.Url!,
@@ -540,7 +542,7 @@ internal static class McpExecutor
             {
                 if (!quiet)
                 {
-                    Console.Error.WriteLine($"auth: {server.Url} -> no profile resolved; sending unauthenticated.");
+                    McpLenseLog.Write($"auth: {server.Url} -> no profile resolved; sending unauthenticated.");
                 }
                 result[index] = server;
                 continue;
@@ -560,7 +562,7 @@ internal static class McpExecutor
                 var scopeBit = (auth.Scopes is { Count: > 0 })
                     ? $", scopes=[{string.Join(", ", auth.Scopes)}]"
                     : string.Empty;
-                Console.Error.WriteLine(
+                McpLenseLog.Write(
                     $"auth: {server.Url} -> profile='{profile.Name}' kind={auth.Kind} ({via}){scopeBit}");
             }
 
@@ -1131,7 +1133,7 @@ internal static class McpExecutor
             pieces.Add(update.Message!);
         }
 
-        Console.Error.WriteLine(string.Join(" | ", pieces));
+        McpLenseLog.Write(string.Join(" | ", pieces));
     }
 
     private static Dictionary<string, object?> ToDictionary(JsonObject obj)

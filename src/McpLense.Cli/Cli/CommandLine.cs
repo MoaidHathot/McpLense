@@ -27,7 +27,8 @@ internal static class CommandLineParser
         "command-arg",
         "env",
         "enable",
-        "disable"
+        "disable",
+        "scan-plugin"
     };
 
     public static ParsedCommand Parse(string[] args)
@@ -55,6 +56,50 @@ internal static class CommandLineParser
         if (command is AppCommand.Version)
         {
             return new ParsedCommand(AppCommand.Version, null, null, OutputFormat.Text, TimeSpan.FromSeconds(30), EmptyTarget(), false);
+        }
+
+        if (command is AppCommand.Schema)
+        {
+            // `schema` accepts one positional kind ("config") and an optional `--output <path>`
+            // long option. Reuse the generic parser only for `--output` (and `--format` if the
+            // user wants the JSON re-rendered, though schema is always JSON in practice).
+            string? kind = null;
+            string? output = null;
+            for (var idx = 1; idx < cliArgs.Length; idx++)
+            {
+                var token = cliArgs[idx];
+                if (token is "-h" or "--help") return HelpCommand();
+                if (token == "--output" || token == "-o")
+                {
+                    if (idx + 1 >= cliArgs.Length) throw new UserInputException("--output requires a value.");
+                    output = cliArgs[++idx];
+                    continue;
+                }
+                if (token.StartsWith("--output=", StringComparison.Ordinal))
+                {
+                    output = token["--output=".Length..];
+                    continue;
+                }
+                if (token.StartsWith("-", StringComparison.Ordinal))
+                {
+                    throw new UserInputException($"Unknown option '{token}' for 'schema'.");
+                }
+                if (kind is not null)
+                {
+                    throw new UserInputException("'schema' accepts at most one positional argument.");
+                }
+                kind = token;
+            }
+
+            kind ??= "config";
+            if (!string.Equals(kind, "config", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new UserInputException($"Unknown schema kind '{kind}'. Supported: 'config'.");
+            }
+
+            var schemaArgs = new JsonObject { ["kind"] = kind };
+            if (!string.IsNullOrEmpty(output)) schemaArgs["output"] = output;
+            return new ParsedCommand(AppCommand.Schema, kind, schemaArgs, OutputFormat.Json, TimeSpan.FromSeconds(30), EmptyTarget(), false);
         }
 
         var options = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -121,6 +166,7 @@ internal static class CommandLineParser
         }
         var quiet = string.Equals(GetSingle(options, "quiet"), "true", StringComparison.OrdinalIgnoreCase);
         var verbose = string.Equals(GetSingle(options, "verbose"), "true", StringComparison.OrdinalIgnoreCase);
+        var scanPlugins = GetMany(options, "scan-plugin");
 
         // For 'diff' the two positional arguments are the baseline files - we shove them
         // into Subject + DiffBaselinePath.
@@ -142,7 +188,8 @@ internal static class CommandLineParser
             CheckDisables: disables.Count > 0 ? disables : null,
             ParallelServers: parallel,
             Quiet: quiet,
-            Verbose: verbose);
+            Verbose: verbose,
+            ScanPlugins: scanPlugins.Count > 0 ? scanPlugins : null);
     }
 
     /// <summary>
@@ -271,6 +318,7 @@ internal static class CommandLineParser
         "observe" => AppCommand.Observe,
         "fetch-resource" => AppCommand.FetchResource,
         "diff" => AppCommand.Diff,
+        "schema" => AppCommand.Schema,
         _ => throw new UserInputException($"Unknown command '{value}'.")
     };
 
@@ -400,6 +448,11 @@ internal static class CommandLineParser
         if (command is not (AppCommand.Scan or AppCommand.Diff) && options.ContainsKey("diff"))
         {
             throw new UserInputException("--diff is only valid for 'scan' and 'diff'.");
+        }
+
+        if (command is not AppCommand.Scan && options.ContainsKey("scan-plugin"))
+        {
+            throw new UserInputException("--scan-plugin is only valid for 'scan'.");
         }
 
         if (command is not (AppCommand.Scan or AppCommand.Observe) && (options.ContainsKey("enable") || options.ContainsKey("disable")))

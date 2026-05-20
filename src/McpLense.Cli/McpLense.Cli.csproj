@@ -35,4 +35,9 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <ItemGroup Label="Embedded resources">
+    <!-- Schema for McpLense.Config.json. Exposed at runtime via `mcplense schema`. -->
+    <EmbeddedResource Include="Cli\mcplense-config.schema.json" />
+  </ItemGroup>
+
 </Project>

@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace McpLense.Scanning.Checks;
 
@@ -40,7 +41,8 @@ internal sealed class AuthorizationServersCheck : IScanCheck
             return new CheckOutcome(Ran: true, Data: CheckSessionHelpers.ToNode(new AuthServersData([], null)), Error: null);
         }
 
-        using var probe = new AuthorizationServerProbe();
+        var factory = context.Services.GetService<IHttpClientFactory>();
+        using var probe = factory is null ? new AuthorizationServerProbe() : new AuthorizationServerProbe(factory);
         var entries = new List<ExpandedAuthorizationServerInfo>(issuers.Length);
         foreach (var issuer in issuers)
         {

@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dumpify;
+using McpLense.Diagnostics;
 
 namespace McpLense;
 
@@ -38,30 +39,35 @@ internal static class App
                 return await TuiApp.RunAsync(command);
             }
 
+            if (command.Command is AppCommand.Schema)
+            {
+                return await SchemaCommand.RunAsync(command);
+            }
+
             var result = await McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None);
             WriteOutput(command.Format, result.Payload);
             return result.HasErrors ? 1 : 0;
         }
         catch (UserInputException ex)
         {
-            Console.Error.WriteLine(ex.Message);
-            Console.Error.WriteLine();
-            Console.Error.WriteLine(CommandLineHelp.Text);
+            McpLenseLog.Write(ex.Message);
+            McpLenseLog.WriteBlank();
+            McpLenseLog.Write(CommandLineHelp.Text);
             return 1;
         }
         catch (McpLenseAuthException ex)
         {
-            Console.Error.WriteLine($"Authentication error: {ex.Message}");
+            McpLenseLog.Write($"Authentication error: {ex.Message}");
             return 1;
         }
         catch (OperationCanceledException)
         {
-            Console.Error.WriteLine("Operation timed out.");
+            McpLenseLog.Write("Operation timed out.");
             return 1;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"{ex.GetType().Name}: {ex.Message}");
+            McpLenseLog.Write($"{ex.GetType().Name}: {ex.Message}");
             return 1;
         }
     }
@@ -95,6 +101,7 @@ Usage
   mcplense observe   [<url|@target>] [target-options] [common-options]
   mcplense fetch-resource <uri-or-template> [<url|@target>] [target-options] [common-options]
   mcplense diff <baseline-before> <baseline-after>
+  mcplense schema [config] [--output <path>]
   mcplense tui [target-options] [common-options]
   mcplense tools [target-options] [common-options]
   mcplense resources [target-options] [common-options]
@@ -287,6 +294,12 @@ Full audit (`mcplense scan`)
     --diff <baseline-path>     After running the scan, diff against the JSON baseline at
                                <path> and emit the structural diff instead of the full
                                scan report.
+    --scan-plugin <path>       Load IScanCheck implementations from an external .NET
+                               assembly (or every *.dll in a directory). Repeatable.
+                               Plugins compile against the McpLense package and are
+                               loaded into an isolated AssemblyLoadContext that shares
+                               only the host's McpLense assembly. A plugin check whose
+                               Id matches a built-in replaces the built-in.
 
   Built-in checks (per `IScanCheck.Id` - configurable via scan.checks.<id> in the config file):
     auth                         RFC 9728 classification + profile attempts.

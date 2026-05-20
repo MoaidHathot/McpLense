@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace McpLense.Scanning.Checks;
 
@@ -21,7 +22,11 @@ internal sealed class TransportCheck : IScanCheck
             return CheckOutcome.Skipped;
         }
 
-        using var probe = new TransportProbe();
+        // Prefer the DI-registered HttpClient factory ("mcplense-probe") so socket pooling
+        // and timeouts stay centralised. Falls back to the parameterless constructor when
+        // the host wired the pipeline without DI.
+        var factory = context.Services.GetService<IHttpClientFactory>();
+        using var probe = factory is null ? new TransportProbe() : new TransportProbe(factory);
         // Apply per-target headers (e.g. x-mcp-ec-organization) to the unauthenticated probe
         // when the target overlay declares scope=all (the default). Scope=session keeps the
         // probe bare so the user can observe how an UNauthenticated request to the server

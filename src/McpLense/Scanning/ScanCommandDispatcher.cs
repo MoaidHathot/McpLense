@@ -1,3 +1,4 @@
+using McpLense.Diagnostics;
 using McpLense.Scanning.TargetResolution;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -20,7 +21,8 @@ internal static class ScanCommandDispatcher
         int maxDegreeOfParallelism = 1,
         Action<int, int, string, TimeSpan>? progress = null,
         bool quiet = false,
-        bool verbose = false)
+        bool verbose = false,
+        IReadOnlyList<string>? scanPluginPaths = null)
     {
         // Load merged config + profiles from the same paths the user gave (or XDG defaults).
         // We do this BEFORE TargetResolver so a positional @name reference can be resolved
@@ -64,6 +66,41 @@ internal static class ScanCommandDispatcher
             .AddDefaultChecks()
             .UseConfig(scanConfig)
             .UseServices(provider);
+
+        // Plugin checks load AFTER the built-ins so a plugin can shadow a built-in by
+        // declaring the same Id (ScanPipelineBuilder.AddCheck replaces by id). Load failures
+        // surface as ScanPluginException; the dispatcher catches and rethrows with the file
+        // path for actionability.
+        if (scanPluginPaths is { Count: > 0 })
+        {
+            foreach (var pluginPath in scanPluginPaths)
+            {
+                IReadOnlyList<IScanCheck> pluginChecks;
+                try
+                {
+                    pluginChecks = Directory.Exists(pluginPath)
+                        ? ScanPluginLoader.LoadFromDirectory(pluginPath)
+                        : ScanPluginLoader.LoadFromAssemblyPath(pluginPath);
+                }
+                catch (ScanPluginException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    throw new ScanPluginException($"Failed to load scan plugin '{pluginPath}': {ex.Message}", ex);
+                }
+
+                foreach (var check in pluginChecks)
+                {
+                    pipeline.AddCheck(check);
+                    if (!quiet)
+                    {
+                        McpLenseLog.Write($"scan-plugin: loaded {check.GetType().FullName} (id={check.Id}) from {pluginPath}");
+                    }
+                }
+            }
+        }
 
         foreach (var id in cliEnables ?? (IReadOnlySet<string>)new HashSet<string>())
         {

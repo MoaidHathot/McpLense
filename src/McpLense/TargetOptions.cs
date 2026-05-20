@@ -36,7 +36,8 @@ internal enum AppCommand
     AuthScan,
     Observe,
     FetchResource,
-    Diff
+    Diff,
+    Schema
 }
 
 /// <summary>Output format hint passed from the CLI down to the renderer.</summary>
@@ -66,7 +67,8 @@ internal sealed record ParsedCommand(
     IReadOnlyList<string>? CheckDisables = null,
     int? ParallelServers = null,
     bool Quiet = false,
-    bool Verbose = false);
+    bool Verbose = false,
+    IReadOnlyList<string>? ScanPlugins = null);
 
 /// <summary>
 /// Resolved target description used to drive scans and other read-only operations. Public so
