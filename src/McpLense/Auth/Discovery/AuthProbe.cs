@@ -40,6 +40,16 @@ namespace McpLense;
 /// Preserved verbatim so callers (like the auth-scan command) can classify servers that
 /// challenge with non-Bearer schemes or that lack RFC 9728 metadata.
 /// </param>
+/// <param name="ReasonPhrase">
+/// HTTP reason phrase from the unauthenticated probe response, when reached. Preserved
+/// verbatim so consumers can surface server-specific error context that doesn't fit into
+/// <see cref="StatusCode"/> alone (e.g. Agent365 / Microsoft endpoints).
+/// </param>
+/// <param name="DiagnosticHeaders">
+/// Verbatim copy of well-known diagnostic response headers (X-MS-Diagnostics, X-Trace-Id,
+/// X-Correlation-Id, ...) emitted by the unauthenticated probe response. Populated only when
+/// at least one such header is present.
+/// </param>
 internal sealed record AuthProbeResult(
     bool RequiresAuth = false,
     bool Inconclusive = false,
@@ -48,7 +58,9 @@ internal sealed record AuthProbeResult(
     IReadOnlyList<string>? AuthorizationServers = null,
     string? Resource = null,
     int? StatusCode = null,
-    string? WwwAuthenticate = null)
+    string? WwwAuthenticate = null,
+    string? ReasonPhrase = null,
+    IReadOnlyDictionary<string, string>? DiagnosticHeaders = null)
 {
     public static AuthProbeResult Empty { get; } = new();
 
@@ -201,6 +213,8 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         {
             var statusCode = (int)response.StatusCode;
             var wwwAuthenticate = JoinWwwAuthenticate(response);
+            var reasonPhrase = string.IsNullOrEmpty(response.ReasonPhrase) ? null : response.ReasonPhrase;
+            var diagnosticHeaders = CaptureDiagnosticHeaders(response);
             var hasAuthChallenge = response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                                    || response.Headers.WwwAuthenticate.Count > 0;
             var isSuccessStatus = response.IsSuccessStatusCode;
@@ -215,13 +229,18 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
                     return new AuthProbeResult(
                         RequiresAuth: true,
                         StatusCode: statusCode,
-                        WwwAuthenticate: wwwAuthenticate);
+                        WwwAuthenticate: wwwAuthenticate,
+                        ReasonPhrase: reasonPhrase,
+                        DiagnosticHeaders: diagnosticHeaders);
                 }
 
                 if (isSuccessStatus)
                 {
                     // Clean 2xx with no auth headers - server genuinely doesn't need auth.
-                    return new AuthProbeResult(StatusCode: statusCode);
+                    return new AuthProbeResult(
+                        StatusCode: statusCode,
+                        ReasonPhrase: reasonPhrase,
+                        DiagnosticHeaders: diagnosticHeaders);
                 }
 
                 // Non-2xx without an auth challenge. Could be a flake (Agent365 sometimes returns
@@ -233,7 +252,9 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
                 return new AuthProbeResult(
                     Inconclusive: true,
                     StatusCode: statusCode,
-                    WwwAuthenticate: wwwAuthenticate);
+                    WwwAuthenticate: wwwAuthenticate,
+                    ReasonPhrase: reasonPhrase,
+                    DiagnosticHeaders: diagnosticHeaders);
             }
 
             // RFC 9728 metadata URL: same-origin fetches honour the per-target overlay,
@@ -248,7 +269,9 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
             {
                 RequiresAuth = true,
                 StatusCode = statusCode,
-                WwwAuthenticate = wwwAuthenticate
+                WwwAuthenticate = wwwAuthenticate,
+                ReasonPhrase = reasonPhrase,
+                DiagnosticHeaders = diagnosticHeaders
             };
         }
         finally
@@ -272,6 +295,66 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
             string.IsNullOrEmpty(challenge.Parameter)
                 ? challenge.Scheme
                 : $"{challenge.Scheme} {challenge.Parameter}"));
+    }
+
+    /// <summary>
+    /// Allow-listed diagnostic headers carrying actionable error context. Microsoft endpoints
+    /// in particular ship trace ids and human-readable reasons here that consumers need to
+    /// surface to users. Headers outside this list are ignored to keep the report shape
+    /// predictable and avoid leaking arbitrary response payloads.
+    /// </summary>
+    private static readonly string[] DiagnosticHeaderAllowList =
+    {
+        "X-MS-Diagnostics",
+        "X-MS-Request-Id",
+        "X-MS-ErrorMessage",
+        "X-Trace-Id",
+        "X-Correlation-Id",
+        "X-Request-Id",
+        "X-Amz-Request-Id",
+        "X-Amzn-Trace-Id",
+        "X-Amz-Cf-Id",
+        "CF-Ray",
+        "WWW-Authenticate-Error"
+    };
+
+    /// <summary>
+    /// Captures the allow-listed diagnostic headers from <paramref name="response"/> verbatim.
+    /// Returns <c>null</c> when none are present so the field stays omitted from the JSON
+    /// output (consumers can branch on presence/absence directly).
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? CaptureDiagnosticHeaders(HttpResponseMessage response)
+    {
+        Dictionary<string, string>? captured = null;
+
+        foreach (var name in DiagnosticHeaderAllowList)
+        {
+            IEnumerable<string>? values = null;
+            if (response.Headers.TryGetValues(name, out var hv))
+            {
+                values = hv;
+            }
+            else if (response.Content?.Headers.TryGetValues(name, out var cv) == true)
+            {
+                values = cv;
+            }
+
+            if (values is null)
+            {
+                continue;
+            }
+
+            var joined = string.Join(", ", values);
+            if (string.IsNullOrEmpty(joined))
+            {
+                continue;
+            }
+
+            captured ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            captured[name] = joined;
+        }
+
+        return captured;
     }
 
     private async Task<HttpResponseMessage> SendUnauthenticatedAsync(

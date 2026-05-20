@@ -37,7 +37,45 @@ internal static class ScanCommandDispatcher
         // the config file's `targets[]` entries. Fail fast when the name doesn't match.
         target = TargetOverlayApplicator.ResolveNamedReference(target, scanConfig);
 
-        var servers = await TargetResolver.ResolveAsync(target, cancellationToken).ConfigureAwait(false);
+        // Skip the main TargetResolver pass when only --targets-from is set (no positional
+        // URL / @name / --config / --command), otherwise the resolver throws "No target was
+        // resolved".
+        var hasDirectTarget = target.Url is not null
+                              || target.Command is not null
+                              || target.ConfigPaths.Count > 0
+                              || !string.IsNullOrEmpty(target.NamedReference);
+
+        IReadOnlyList<ResolvedServer> servers = hasDirectTarget
+            ? await TargetResolver.ResolveAsync(target, cancellationToken).ConfigureAwait(false)
+            : Array.Empty<ResolvedServer>();
+
+        // --targets-from: extra targets sourced from a plain-text file (one URL or @name per
+        // line). Resolved against the loaded scanConfig for @name entries so a single config
+        // can drive a 1000-server scan with `--targets-from urls.txt`.
+        if (target.TargetsFromPaths is { Count: > 0 })
+        {
+            var extra = await TargetsFromFileLoader.LoadAsync(
+                target.TargetsFromPaths,
+                scanConfig,
+                cancellationToken).ConfigureAwait(false);
+            if (extra.Count > 0)
+            {
+                servers = servers.Concat(extra).ToArray();
+            }
+        }
+
+        // --http-only: drop stdio targets entirely. Applied AFTER target resolution so an
+        // `--config` file can mix stdio + HTTP and the consumer can still scan just the HTTP
+        // surface.
+        if (target.HttpOnly)
+        {
+            servers = servers.Where(s => s.Kind == ConnectionKind.Http).ToArray();
+        }
+
+        if (servers.Count == 0)
+        {
+            throw new UserInputException("No scan targets were resolved (after applying --http-only / --targets-from filters).");
+        }
 
         // Apply per-server overlay (headers, scope, transport, timeout, disabledChecks).
         // Same helper used by McpExecutor so non-scan commands behave identically.

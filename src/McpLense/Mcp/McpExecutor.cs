@@ -554,7 +554,8 @@ internal static class McpExecutor
                 probe,
                 cancellationToken,
                 probeHeaders,
-                server.HeaderScope).ConfigureAwait(false);
+                server.HeaderScope,
+                defaultScopeFallback: target.AuthOverrides.DefaultScope).ConfigureAwait(false);
 
             if (!quiet)
             {
@@ -612,7 +613,8 @@ internal static class McpExecutor
         IAuthProbe probe,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string>? probeHeaders = null,
-        Scanning.TargetResolution.TargetScope probeScope = Scanning.TargetResolution.TargetScope.All)
+        Scanning.TargetResolution.TargetScope probeScope = Scanning.TargetResolution.TargetScope.All,
+        string? defaultScopeFallback = null)
     {
         if (!AllScopesAreDefault(auth.Scopes))
         {
@@ -622,6 +624,15 @@ internal static class McpExecutor
         var probeResult = await probe.ProbeAsync(serverUrl, probeHeaders, probeScope, cancellationToken).ConfigureAwait(false);
         if (probeResult.Scopes is null || probeResult.Scopes.Count == 0)
         {
+            // No scopes advertised by RFC 9728 PRM. For Entra / AAD-backed MCPs that don't
+            // speak PRM at all, callers can supply --default-scope <audience>/.default so the
+            // token request still has a usable resource indicator. Only kicks in when the
+            // profile itself didn't pin a non-default scope (AllScopesAreDefault gate above).
+            if (!string.IsNullOrEmpty(defaultScopeFallback))
+            {
+                return auth with { Scopes = new[] { defaultScopeFallback } };
+            }
+
             return auth;
         }
 

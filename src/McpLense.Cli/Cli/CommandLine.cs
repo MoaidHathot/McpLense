@@ -14,7 +14,8 @@ internal static class CommandLineParser
         "classify-only",
         "check-authorization-servers",
         "quiet",
-        "verbose"
+        "verbose",
+        "http-only"
     };
 
     /// <summary>Long options that can appear multiple times (repeatable).</summary>
@@ -28,7 +29,8 @@ internal static class CommandLineParser
         "env",
         "enable",
         "disable",
-        "scan-plugin"
+        "scan-plugin",
+        "targets-from"
     };
 
     public static ParsedCommand Parse(string[] args)
@@ -144,7 +146,14 @@ internal static class CommandLineParser
 
         var (subject, urlPositional, extraPositionals) = ParseSubjectAndUrl(command, positionals);
         var arguments = ParseArguments(command, GetSingle(options, "args"));
-        var target = ParseTarget(options, stdioTokens, urlPositional);
+
+        // --targets-from is a scan-only fan-out source: when present it stands in for the
+        // positional URL / @name / --url / --command requirement so the user can hand
+        // McpLense the full target list (one URL or @name per line). Validation that the
+        // flag is only set for `scan` already happened in ValidateOptions; here we just
+        // tell ParseTarget to relax its "specify a target" requirement.
+        var hasTargetsFrom = options.ContainsKey("targets-from");
+        var target = ParseTarget(options, stdioTokens, urlPositional, allowEmptyTarget: hasTargetsFrom);
         var format = ParseFormat(GetSingle(options, "format"));
         var timeout = ParseTimeout(GetSingle(options, "timeout"));
         var progress = ParseProgress(GetSingle(options, "progress"), command);
@@ -168,6 +177,19 @@ internal static class CommandLineParser
         var verbose = string.Equals(GetSingle(options, "verbose"), "true", StringComparison.OrdinalIgnoreCase);
         var scanPlugins = GetMany(options, "scan-plugin");
 
+        var targetsFromPaths = GetMany(options, "targets-from");
+        var httpOnly = string.Equals(GetSingle(options, "http-only"), "true", StringComparison.OrdinalIgnoreCase);
+        var defaultScopeRaw = GetSingle(options, "default-scope");
+        string? defaultScope = null;
+        if (!string.IsNullOrEmpty(defaultScopeRaw))
+        {
+            defaultScope = new EnvironmentExpander().Expand(defaultScopeRaw, "--default-scope");
+            if (string.IsNullOrEmpty(defaultScope))
+            {
+                throw new UserInputException("--default-scope resolved to an empty value.");
+            }
+        }
+
         // For 'diff' the two positional arguments are the baseline files - we shove them
         // into Subject + DiffBaselinePath.
         if (command is AppCommand.Diff)
@@ -180,6 +202,16 @@ internal static class CommandLineParser
             diffPath ??= extraPositionals[0];
         }
 
+        // Fold the file-list / http-only / default-scope into TargetOptions so the
+        // dispatcher / pipeline see them via the same data surface library consumers do.
+        target = target with
+        {
+            TargetsFromPaths = targetsFromPaths.Count > 0 ? targetsFromPaths : null,
+            HttpOnly = httpOnly,
+            DefaultScope = defaultScope,
+            AuthOverrides = target.AuthOverrides with { DefaultScope = defaultScope }
+        };
+
         return new ParsedCommand(
             command, subject, arguments, format, timeout, target, progress,
             BaselinePath: baseline,
@@ -189,7 +221,10 @@ internal static class CommandLineParser
             ParallelServers: parallel,
             Quiet: quiet,
             Verbose: verbose,
-            ScanPlugins: scanPlugins.Count > 0 ? scanPlugins : null);
+            ScanPlugins: scanPlugins.Count > 0 ? scanPlugins : null,
+            TargetsFromPaths: targetsFromPaths.Count > 0 ? targetsFromPaths : null,
+            HttpOnly: httpOnly,
+            DefaultScope: defaultScope);
     }
 
     /// <summary>
@@ -409,7 +444,10 @@ internal static class CommandLineParser
             "disable",
             "parallel-servers",
             "quiet",
-            "verbose"
+            "verbose",
+            "targets-from",
+            "http-only",
+            "default-scope"
         };
 
         foreach (var option in options.Keys)
@@ -463,6 +501,21 @@ internal static class CommandLineParser
         if (command is not AppCommand.Scan && options.ContainsKey("parallel-servers"))
         {
             throw new UserInputException("--parallel-servers is only valid for 'scan'.");
+        }
+
+        if (command is not AppCommand.Scan && options.ContainsKey("targets-from"))
+        {
+            throw new UserInputException("--targets-from is only valid for 'scan'.");
+        }
+
+        if (command is not AppCommand.Scan && options.ContainsKey("http-only"))
+        {
+            throw new UserInputException("--http-only is only valid for 'scan'.");
+        }
+
+        if (command is not (AppCommand.Scan or AppCommand.AuthScan or AppCommand.Inspect or AppCommand.Tools or AppCommand.Resources or AppCommand.Prompts or AppCommand.Call or AppCommand.Read or AppCommand.Prompt or AppCommand.FetchResource or AppCommand.Observe) && options.ContainsKey("default-scope"))
+        {
+            throw new UserInputException("--default-scope is only valid for scan / inspect / read / call / prompt / fetch-resource / observe / auth-scan / tools / resources / prompts.");
         }
 
         if (options.ContainsKey("quiet") && options.ContainsKey("verbose"))
@@ -548,7 +601,7 @@ internal static class CommandLineParser
         return obj;
     }
 
-    private static TargetOptions ParseTarget(Dictionary<string, List<string>> options, string[] stdioTokens, string? urlPositional)
+    private static TargetOptions ParseTarget(Dictionary<string, List<string>> options, string[] stdioTokens, string? urlPositional, bool allowEmptyTarget = false)
     {
         var configPaths = GetMany(options, "config");
         // A positional that starts with '@' is a named-target reference (looked up against
@@ -595,6 +648,30 @@ internal static class CommandLineParser
 
         if (directCount == 0)
         {
+            if (allowEmptyTarget)
+            {
+                // --targets-from path: no positional target needed; the dispatcher will read
+                // URLs from the file(s).
+                var serverNamesEmpty = GetMany(options, "server");
+                if (serverNamesEmpty.Count > 0)
+                {
+                    throw new UserInputException("--server only applies to --config.");
+                }
+                return new TargetOptions(
+                    ConfigPaths: [],
+                    ServerNames: [],
+                    ProfilePaths: profilePaths,
+                    DisplayName: null,
+                    Url: null,
+                    Transport: TransportPreference.Auto,
+                    Headers: new Dictionary<string, string>(),
+                    Command: null,
+                    CommandArguments: [],
+                    WorkingDirectory: null,
+                    Environment: new Dictionary<string, string>(),
+                    AuthOverrides: ParseAuthOverrides(options));
+            }
+
             throw new UserInputException("Specify a target with a positional URL, @<target-name>, --config, --url, --command, or '-- <command ...>'.");
         }
 
@@ -820,6 +897,7 @@ internal static class CommandLineParser
     {
         null or "text" => OutputFormat.Text,
         "json" => OutputFormat.Json,
+        "jsonl" or "ndjson" => OutputFormat.Jsonl,
         "dump" or "dumpify" => OutputFormat.Dumpify,
         _ => throw new UserInputException($"Unknown format '{value}'.")
     };

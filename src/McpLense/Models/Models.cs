@@ -163,9 +163,47 @@ internal sealed record AuthScanReport(
     IReadOnlyList<ServerAuthScan> Servers);
 
 /// <summary>
+/// Stable wire identifiers for <see cref="ServerAuthScan.ServerStatus"/> - a coarse,
+/// consumer-friendly "can I talk to this server, and if so under what conditions?" enum.
+/// String-typed (not a C# enum) for the same forward-compat reason as
+/// <see cref="AuthClassifications"/>: new values must not break existing JSON consumers.
+/// Derived from the raw transport + auth signals so every fleet-classifier doesn't have to
+/// re-implement the same disambiguation logic.
+/// </summary>
+internal static class ServerAccessibility
+{
+    /// <summary>Server answered the unauthenticated MCP handshake; no credentials needed.</summary>
+    public const string Accessible = "accessible";
+
+    /// <summary>Server is reachable and asks for credentials (any flavour).</summary>
+    public const string RequiresAuth = "requires-auth";
+
+    /// <summary>Probe reached the server and got a 404 / 410.</summary>
+    public const string NotFound = "not-found";
+
+    /// <summary>Probe could not reach the server at all (DNS, TLS, connect, timeout, ...).</summary>
+    public const string Unreachable = "unreachable";
+
+    /// <summary>Not enough signal to classify (probe inconclusive, handshake non-auth failure, ...).</summary>
+    public const string Unknown = "unknown";
+}
+
+/// <summary>
 /// Per-server outcome from <c>mcplense scan</c>. Carries the classification, the raw signals
 /// that produced it, and one <see cref="ProfileAttempt"/> entry per profile actually exercised.
 /// </summary>
+/// <param name="ServerStatus">
+/// Coarse reachability/auth label derived from the raw probe + handshake signals. See
+/// <see cref="ServerAccessibility"/> for the stable wire values. Lets fleet consumers
+/// classify without re-implementing the transport-status / auth-challenge / handshake
+/// disambiguation themselves.
+/// </param>
+/// <param name="Rfcs">
+/// RFC numbers implicated by the classification (e.g. <c>"RFC 9728"</c>, <c>"RFC 6750"</c>,
+/// <c>"RFC 8414"</c>, <c>"RFC 7591"</c>). Empty when no auth RFCs apply (anonymous /
+/// non-Bearer). Mapped from <see cref="Classification"/> + <see cref="Details"/>; consumers
+/// that need finer detail should still pattern-match on the raw signals.
+/// </param>
 internal sealed record ServerAuthScan(
     string Name,
     string Transport,
@@ -174,6 +212,8 @@ internal sealed record ServerAuthScan(
     string Summary,
     AuthScanDetails Details,
     IReadOnlyList<ProfileAttempt> ProfileAttempts,
+    string ServerStatus = ServerAccessibility.Unknown,
+    IReadOnlyList<string>? Rfcs = null,
     string? Error = null);
 
 /// <summary>
@@ -181,8 +221,21 @@ internal sealed record ServerAuthScan(
 /// optional because the underlying probe may not surface them (anonymous servers, network
 /// failures, non-Bearer challenges, etc.).
 /// </summary>
+/// <param name="ReasonPhrase">
+/// HTTP reason phrase from the unauthenticated probe response (e.g. "Unauthorized",
+/// "Forbidden"). Preserved verbatim alongside <see cref="StatusCode"/> because some servers
+/// embed actionable error context here (e.g. Agent365 / Microsoft endpoints sometimes ship
+/// custom phrases like "Tenant restricted").
+/// </param>
+/// <param name="DiagnosticHeaders">
+/// Verbatim copy of well-known diagnostic response headers (X-MS-Diagnostics, X-Trace-Id,
+/// X-Correlation-Id, ...) emitted by the server. Populated only when at least one such header
+/// is present. Microsoft endpoints in particular carry actionable error info here that would
+/// otherwise be lost.
+/// </param>
 internal sealed record AuthScanDetails(
     int? StatusCode = null,
+    string? ReasonPhrase = null,
     string? WwwAuthenticate = null,
     string? ResourceMetadataUrl = null,
     string? Resource = null,
@@ -190,7 +243,8 @@ internal sealed record AuthScanDetails(
     IReadOnlyList<string>? AuthorizationServers = null,
     bool? AnonymousHandshakeSucceeded = null,
     string? AnonymousHandshakeError = null,
-    string? ProbeError = null);
+    string? ProbeError = null,
+    IReadOnlyDictionary<string, string>? DiagnosticHeaders = null);
 
 /// <summary>
 /// Outcome of attempting to open an MCP session against the target using a specific profile.

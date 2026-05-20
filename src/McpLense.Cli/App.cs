@@ -247,7 +247,11 @@ Authentication (auth profiles)
       tenantId field (optional; defaults to the CLI's current tenant).
 
 Common Options
-  --format <text|json|dumpify> Output format. Default: text.
+  --format <text|json|jsonl|dumpify>
+                               Output format. Default: text. 'jsonl' (alias 'ndjson') emits
+                               one JSON document per line: a header line, one server line
+                               per scanned server, and a trailer. Use for fleet-scale
+                               stream-reading.
   --timeout <seconds>          Per-server timeout. Default: 30.
   --progress [true|false]      Show live tool-call progress. Default: true for call.
   -h, --help                   Show help.
@@ -300,6 +304,17 @@ Full audit (`mcplense scan`)
                                loaded into an isolated AssemblyLoadContext that shares
                                only the host's McpLense assembly. A plugin check whose
                                Id matches a built-in replaces the built-in.
+    --targets-from <path>      Read scan targets from a plain-text file (one URL or
+                               @name per line; blank / '#'-prefixed lines ignored).
+                               Repeatable. Lets McpLense own the parallelism for
+                               fleet-scale scans instead of forking one process per
+                               server. Combine with --parallel-servers.
+    --http-only                Drop stdio targets after resolution. Useful when --config
+                               mixes stdio + HTTP and you only want the HTTP fleet.
+    --default-scope <value>    Fallback OAuth scope used by profiles when (a) the profile
+                               didn't pin a non-default scope and (b) RFC 9728 PRM didn't
+                               advertise one. Designed for Entra / AAD-backed MCPs that
+                               don't speak PRM. Example: 'api://my-aad-app/.default'.
 
   Built-in checks (per `IScanCheck.Id` - configurable via scan.checks.<id> in the config file):
     auth                         RFC 9728 classification + profile attempts.

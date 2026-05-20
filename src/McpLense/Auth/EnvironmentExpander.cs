@@ -17,7 +17,7 @@ namespace McpLense;
 ///
 /// Errors include the supplied JSON path / CLI flag name to make config files easy to debug.
 /// </summary>
-internal sealed class EnvironmentExpander
+public sealed class EnvironmentExpander
 {
     private readonly Func<string, string?> _lookup;
 
@@ -26,8 +26,11 @@ internal sealed class EnvironmentExpander
     {
     }
 
-    /// <summary>For tests: inject a custom variable lookup.</summary>
-    internal EnvironmentExpander(Func<string, string?> lookup)
+    /// <summary>
+    /// Inject a custom variable lookup. Useful for tests and for embedding hosts that want to
+    /// expand values against a non-process environment (e.g. a sealed secrets map).
+    /// </summary>
+    public EnvironmentExpander(Func<string, string?> lookup)
     {
         _lookup = lookup ?? throw new ArgumentNullException(nameof(lookup));
     }

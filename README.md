@@ -27,6 +27,13 @@ It can:
 | `McpLense.Cli` | End users running the CLI tool | `dotnet tool install --global McpLense.Cli` |
 | `McpLense` | Library consumers / extension authors | Reference via `<PackageReference Include="McpLense" />` |
 
+> **Upgrading from a pre-0.4 install?** Earlier preview releases shipped a `McpLense`
+> global tool that also installed an `mcplense.exe` shim. Both packages register the
+> same `mcplense` command on PATH, so only one wins. If `mcplense scan` says
+> "Unknown command 'scan'", you almost certainly have the old library-only package
+> claiming the command. Run `dotnet tool uninstall -g McpLense` first, then
+> `dotnet tool install -g McpLense.Cli`.
+
 From a local package while developing:
 
 ```bash

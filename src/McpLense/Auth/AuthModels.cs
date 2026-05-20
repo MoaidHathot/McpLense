@@ -133,6 +133,12 @@ public sealed record ResolvedAuth(
 /// metadata and surfaces the fields verbatim. Off by default so air-gapped / CI users don't
 /// silently make outbound calls to <c>login.microsoftonline.com</c> &amp; friends.
 /// </param>
+/// <param name="DefaultScope">
+/// Optional fallback OAuth scope used only when (a) the profile didn't pin a non-default
+/// scope and (b) RFC 9728 protected-resource metadata didn't advertise one. Designed for
+/// Entra / AAD-backed MCPs that don't speak PRM yet still need a
+/// <c>&lt;audience&gt;/.default</c> on the token request.
+/// </param>
 public sealed record AuthOverrides(
     AuthKind? Kind = null,
     string? Token = null,
@@ -141,7 +147,8 @@ public sealed record AuthOverrides(
     bool All = false,
     bool NoAuth = false,
     bool ClassifyOnly = false,
-    bool CheckAuthorizationServers = false)
+    bool CheckAuthorizationServers = false,
+    string? DefaultScope = null)
 {
     public static readonly AuthOverrides Empty = new();
 
@@ -154,7 +161,8 @@ public sealed record AuthOverrides(
            && !CheckAuthorizationServers
            && Kind is null
            && Token is null
-           && Profile is null;
+           && Profile is null
+           && DefaultScope is null;
 }
 
 /// <summary>

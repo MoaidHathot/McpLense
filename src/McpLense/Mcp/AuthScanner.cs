@@ -104,7 +104,9 @@ internal sealed class AuthScanner
                 Classification: AuthClassifications.Stdio,
                 Summary: "Stdio target - HTTP authentication does not apply.",
                 Details: new AuthScanDetails(),
-                ProfileAttempts: []);
+                ProfileAttempts: [],
+                ServerStatus: ServerAccessibility.Accessible,
+                Rfcs: []);
         }
 
         var (classification, summary, details) = await ClassifyAsync(server, handshakeTimeout, cancellationToken).ConfigureAwait(false);
@@ -132,8 +134,63 @@ internal sealed class AuthScanner
             Classification: classification,
             Summary: summary,
             Details: details,
-            ProfileAttempts: attempts);
+            ProfileAttempts: attempts,
+            ServerStatus: DeriveServerStatus(classification, details),
+            Rfcs: DeriveRfcs(classification));
     }
+
+    /// <summary>
+    /// Coarse, consumer-facing reachability label derived from the raw probe signals + the
+    /// final classification. See <see cref="ServerAccessibility"/> for the stable wire values.
+    /// Centralising the derivation here means every fleet consumer sees the same answer
+    /// instead of re-implementing the (status-code, www-authenticate, handshake) decision tree.
+    /// </summary>
+    internal static string DeriveServerStatus(string classification, AuthScanDetails details)
+    {
+        // 1. Classification wins for the unambiguous cases.
+        switch (classification)
+        {
+            case AuthClassifications.Stdio:
+            case AuthClassifications.Anonymous:
+                return ServerAccessibility.Accessible;
+
+            case AuthClassifications.OAuthRfc9728:
+            case AuthClassifications.OAuthBearerUnannounced:
+            case AuthClassifications.AuthRequiredUnspecified:
+                return ServerAccessibility.RequiresAuth;
+        }
+
+        // 2. Unknown classification - inspect the raw signals.
+        if (details.StatusCode is { } status)
+        {
+            if (status is 404 or 410)
+            {
+                return ServerAccessibility.NotFound;
+            }
+        }
+        else if (!string.IsNullOrEmpty(details.ProbeError))
+        {
+            // No status code at all + probe error = network-level failure (DNS, TLS, connect,
+            // timeout, ...). Distinguishable from "reached but inconclusive".
+            return ServerAccessibility.Unreachable;
+        }
+
+        return ServerAccessibility.Unknown;
+    }
+
+    /// <summary>
+    /// RFC numbers implicated by the classification. Returns an empty list for classifications
+    /// that don't map to any specific RFC (anonymous, stdio, non-Bearer challenges, unknown).
+    /// Consumers that need finer detail (e.g. distinguish DCR-supporting servers) should still
+    /// pattern-match on the raw signals + the <c>dcrEndpoint</c> / <c>authorizationServers</c>
+    /// check outputs.
+    /// </summary>
+    internal static IReadOnlyList<string> DeriveRfcs(string classification) => classification switch
+    {
+        AuthClassifications.OAuthRfc9728 => new[] { "RFC 9728", "RFC 6750", "RFC 8414" },
+        AuthClassifications.OAuthBearerUnannounced => new[] { "RFC 6750" },
+        _ => Array.Empty<string>()
+    };
 
     private async Task<(string Classification, string Summary, AuthScanDetails Details)> ClassifyAsync(
         ResolvedServer server,
@@ -169,11 +226,13 @@ internal sealed class AuthScanner
         // signals. Optional fields stay null when the probe didn't surface them.
         var baseDetails = new AuthScanDetails(
             StatusCode: probeResult.StatusCode,
+            ReasonPhrase: probeResult.ReasonPhrase,
             WwwAuthenticate: probeResult.WwwAuthenticate,
             ResourceMetadataUrl: probeResult.ResourceMetadataUrl,
             Resource: probeResult.Resource,
             Scopes: probeResult.Scopes,
-            AuthorizationServers: probeResult.AuthorizationServers);
+            AuthorizationServers: probeResult.AuthorizationServers,
+            DiagnosticHeaders: probeResult.DiagnosticHeaders);
 
         // Branch 1: the probe surfaced an explicit auth challenge (401 / WWW-Authenticate).
         // No need to attempt an unauthenticated MCP handshake - the server has told us
@@ -312,7 +371,7 @@ internal sealed class AuthScanner
         var attempts = new List<ProfileAttempt>();
         foreach (var profile in candidates)
         {
-            attempts.Add(await TryOneProfileAsync(server, profile, handshakeTimeout, cancellationToken).ConfigureAwait(false));
+            attempts.Add(await TryOneProfileAsync(server, profile, authOverrides.DefaultScope, handshakeTimeout, cancellationToken).ConfigureAwait(false));
         }
 
         return attempts;
@@ -321,6 +380,7 @@ internal sealed class AuthScanner
     private async Task<ProfileAttempt> TryOneProfileAsync(
         ResolvedServer server,
         AuthProfile profile,
+        string? defaultScopeFallback,
         TimeSpan handshakeTimeout,
         CancellationToken cancellationToken)
     {
@@ -330,11 +390,13 @@ internal sealed class AuthScanner
             // Reuse the runtime scope-substitution logic so a probe-aware profile picks up the
             // same scopes that 'inspect' would. This is critical for Entra-style profiles whose
             // configured scope is "<audience>/.default" - the probe usually has a better match.
+            // defaultScopeFallback covers AAD-backed MCPs that don't speak PRM at all.
             substitutedAuth = await McpExecutor.MaybeSubstituteScopesFromProbeAsync(
                 profile.Auth,
                 server.Url!,
                 _probe,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                defaultScopeFallback: defaultScopeFallback).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

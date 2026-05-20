@@ -45,6 +45,14 @@ internal enum OutputFormat
 {
     Text,
     Json,
+    /// <summary>
+    /// JSON Lines (NDJSON): one self-contained JSON document per output line. For
+    /// <c>scan</c> reports the layout is <c>{"kind":"header",...}</c> + one
+    /// <c>{"kind":"server",...}</c> per scanned server + <c>{"kind":"trailer",...}</c>.
+    /// Designed for fleet-scale consumers that want to stream-read without buffering the
+    /// whole report.
+    /// </summary>
+    Jsonl,
     Dumpify
 }
 
@@ -68,7 +76,10 @@ internal sealed record ParsedCommand(
     int? ParallelServers = null,
     bool Quiet = false,
     bool Verbose = false,
-    IReadOnlyList<string>? ScanPlugins = null);
+    IReadOnlyList<string>? ScanPlugins = null,
+    IReadOnlyList<string>? TargetsFromPaths = null,
+    bool HttpOnly = false,
+    string? DefaultScope = null);
 
 /// <summary>
 /// Resolved target description used to drive scans and other read-only operations. Public so
@@ -87,7 +98,27 @@ public sealed record TargetOptions(
     string? WorkingDirectory,
     IReadOnlyDictionary<string, string> Environment,
     AuthOverrides AuthOverrides,
-    string? NamedReference = null);
+    string? NamedReference = null,
+    /// <summary>
+    /// Paths to plain-text files where each non-blank, non-comment line is either an absolute
+    /// http(s) URL or an <c>@name</c> reference to a target in the loaded config. Lets fleet
+    /// consumers hand McpLense the full target list so it owns the parallelism and connection
+    /// pooling instead of forking one CLI process per server.
+    /// </summary>
+    IReadOnlyList<string>? TargetsFromPaths = null,
+    /// <summary>
+    /// When true, stdio targets resolved from <c>--config</c> are filtered out before the scan
+    /// runs. Useful for fleet-wide HTTP scans where the same config also defines local stdio
+    /// MCPs that the consumer doesn't care about.
+    /// </summary>
+    bool HttpOnly = false,
+    /// <summary>
+    /// Default OAuth scope used by profiles only when (a) the profile didn't pin a scope and
+    /// (b) the RFC 9728 protected-resource metadata didn't advertise one. Designed for Entra
+    /// / AAD-backed MCPs that don't speak PRM yet still need a <c>&lt;audience&gt;/.default</c>
+    /// scope on the token request.
+    /// </summary>
+    string? DefaultScope = null);
 
 /// <summary>
 /// Raised when the caller supplied invalid input - bad URL, missing required option, etc.
