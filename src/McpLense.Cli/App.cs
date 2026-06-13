@@ -51,8 +51,7 @@ internal static class App
         catch (UserInputException ex)
         {
             McpLenseLog.Write(ex.Message);
-            McpLenseLog.WriteBlank();
-            McpLenseLog.Write(CommandLineHelp.Text);
+            McpLenseLog.Write("Run 'mcplense help' for usage.");
             return 1;
         }
         catch (McpLenseAuthException ex)

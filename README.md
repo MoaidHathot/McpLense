@@ -4,7 +4,7 @@
 [![NuGet](https://img.shields.io/nuget/v/McpLense.svg?logo=nuget)](https://www.nuget.org/packages/McpLense)
 [![Downloads](https://img.shields.io/nuget/dt/McpLense.svg?logo=nuget)](https://www.nuget.org/packages/McpLense)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
-[![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](global.json)
+[![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](Directory.Build.props)
 
 `McpLense` is a `.NET tool` for debugging Model Context Protocol (MCP) servers.
 
@@ -862,7 +862,6 @@ McpLense/
 ├─ Directory.Build.props
 ├─ Directory.Packages.props         # Central package management
 ├─ NuGet.config                     # Pinned to nuget.org
-├─ global.json                      # Pinned .NET SDK
 ├─ coverlet.runsettings             # Coverage settings
 └─ .github/workflows/ci.yml         # Build + test + coverage matrix
 ```
