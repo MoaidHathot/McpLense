@@ -15,7 +15,7 @@
       package-specific overrides they should derive from $(Version) (e.g. via
       $(VersionPrefix) / $(VersionSuffix)).
     -->
-    <Version>0.7.0</Version>
+    <Version>0.8.0</Version>
   </PropertyGroup>
 
   <PropertyGroup Label="Shared package metadata">
