@@ -6,6 +6,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using McpLense;
 using Shouldly;
+using Spectre.Console;
+using Spectre.Console.Testing;
 using Xunit;
 
 namespace McpLense.IntegrationTests;
@@ -142,6 +144,102 @@ public class AppPipelineTests
         exitCode.ShouldBe(0);
         capture.StandardOutput.ShouldContain("\"fixture\"");
         capture.StandardOutput.ShouldContain("\"Echo\"");
+    }
+
+    [Fact]
+    public async Task RunAsync_InteractiveCall_PromptsForArgsAndCallsTool()
+    {
+        using var console = NewInteractiveConsole("hi-interactive");
+        var previous = AnsiConsole.Console;
+        AnsiConsole.Console = console;
+        try
+        {
+            using var capture = new ConsoleCapture();
+
+            var exitCode = await App.RunAsync([
+                "call", "Echo",
+                "--interactive",
+                "--format", "json",
+                "--timeout", "60",
+                "--",
+                "dotnet", "exec", TestServerLocator.TestServerDll
+            ]);
+
+            exitCode.ShouldBe(0);
+            capture.StandardOutput.ShouldContain("echo: hi-interactive");
+        }
+        finally
+        {
+            AnsiConsole.Console = previous;
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_InteractiveRead_PromptsForTemplateVariables()
+    {
+        using var console = NewInteractiveConsole("7");
+        var previous = AnsiConsole.Console;
+        AnsiConsole.Console = console;
+        try
+        {
+            using var capture = new ConsoleCapture();
+
+            var exitCode = await App.RunAsync([
+                "read", "docs://articles/{id}",
+                "--interactive",
+                "--format", "json",
+                "--timeout", "60",
+                "--",
+                "dotnet", "exec", TestServerLocator.TestServerDll
+            ]);
+
+            exitCode.ShouldBe(0);
+            capture.StandardOutput.ShouldContain("Article 7");
+        }
+        finally
+        {
+            AnsiConsole.Console = previous;
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_InteractivePrompt_PromptsForArgumentsAndGetsPrompt()
+    {
+        using var console = NewInteractiveConsole("world");
+        var previous = AnsiConsole.Console;
+        AnsiConsole.Console = console;
+        try
+        {
+            using var capture = new ConsoleCapture();
+
+            var exitCode = await App.RunAsync([
+                "prompt", "Greet",
+                "--interactive",
+                "--format", "json",
+                "--timeout", "60",
+                "--",
+                "dotnet", "exec", TestServerLocator.TestServerDll
+            ]);
+
+            exitCode.ShouldBe(0);
+            capture.StandardOutput.ShouldContain("Hello, world!");
+        }
+        finally
+        {
+            AnsiConsole.Console = previous;
+        }
+    }
+
+    private static TestConsole NewInteractiveConsole(params string[] lines)
+    {
+        var console = new TestConsole();
+        console.Profile.Capabilities.Interactive = true;
+        console.Profile.Width = 200;
+        foreach (var line in lines)
+        {
+            console.Input.PushTextWithEnter(line);
+        }
+        return console;
     }
 }
 

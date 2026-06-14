@@ -79,7 +79,15 @@ internal sealed record ParsedCommand(
     IReadOnlyList<string>? ScanPlugins = null,
     IReadOnlyList<string>? TargetsFromPaths = null,
     bool HttpOnly = false,
-    string? DefaultScope = null);
+    string? DefaultScope = null,
+    /// <summary>
+    /// When true, <c>call</c> / <c>read</c> / <c>prompt</c> prompt the user for arguments
+    /// interactively (reading the target's tool input-schema / prompt arguments / URI-template
+    /// variables) instead of taking them from <c>--args</c>. Declared defaults are pre-filled
+    /// and accepted with Enter. CLI-only flag; ignored by library hosts that build arguments
+    /// directly.
+    /// </summary>
+    bool Interactive = false);
 
 /// <summary>
 /// Resolved target description used to drive scans and other read-only operations. Public so

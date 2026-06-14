@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dumpify;
 using McpLense.Diagnostics;
+using Spectre.Console;
 
 namespace McpLense;
 
@@ -42,6 +43,11 @@ internal static class App
             if (command.Command is AppCommand.Schema)
             {
                 return await SchemaCommand.RunAsync(command);
+            }
+
+            if (command.Interactive && command.Command is AppCommand.Call or AppCommand.Read or AppCommand.Prompt)
+            {
+                command = await InteractivePrep.FillAsync(command, AnsiConsole.Console, JsonOptions, CancellationToken.None);
             }
 
             var result = await McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None);
@@ -105,9 +111,9 @@ Usage
   mcplense tools [target-options] [common-options]
   mcplense resources [target-options] [common-options]
   mcplense prompts [target-options] [common-options]
-  mcplense call <tool-name> [<url|@target>] [target-options] [common-options] [--args <json>]
-  mcplense read <uri-or-template> [<url|@target>] [target-options] [common-options] [--args <json>]
-  mcplense prompt <prompt-name> [<url|@target>] [target-options] [common-options] [--args <json>]
+  mcplense call <tool-name> [<url|@target>] [target-options] [common-options] [--args <json> | --interactive]
+  mcplense read <uri-or-template> [<url|@target>] [target-options] [common-options] [--args <json> | --interactive]
+  mcplense prompt <prompt-name> [<url|@target>] [target-options] [common-options] [--args <json> | --interactive]
   mcplense login   {--all | --profile <name> | <url>} [--profiles <path>] [common-options]
   mcplense logout  {--all | --profile <name> | <url>} [--profiles <path>] [common-options]
   mcplense help
@@ -253,6 +259,10 @@ Common Options
                                stream-reading.
   --timeout <seconds>          Per-server timeout. Default: 30.
   --progress [true|false]      Show live tool-call progress. Default: true for call.
+  -i, --interactive            Prompt for arguments interactively (call / read / prompt) instead
+                               of passing --args. Reads the tool's input schema / the prompt's
+                               arguments / the URI-template variables and asks for each value,
+                               pre-filling any declared default (press Enter to accept it).
   -h, --help                   Show help.
 
 Auth scanning (`mcplense auth-scan`)
@@ -361,6 +371,15 @@ Resource fetch (`mcplense fetch-resource`)
 Diff (`mcplense diff`)
   Pure file-to-file structural diff: takes two baseline JSON files written by previous
   scans and emits the differences. No network.
+
+Interactive explorer (`mcplense tui`)
+  Keyboard-driven TUI to browse a server's tools / resources / resource templates / prompts
+  (with per-section search + persistent bookmarks) AND invoke them. Drill into a tool and pick
+  "Call tool": McpLense reads its input schema and prompts for each argument (required marked
+  `*`, declared defaults pre-filled - press Enter to accept, or type to override), echoes the
+  equivalent `mcplense call ... --args` line, then runs it and shows the result. The same
+  applies to reading resources / resource templates (URI-template variables are elicited) and
+  getting prompts. For one-shot use without the TUI, add `--interactive` to call / read / prompt.
 
 Configuration file (`McpLense.Config.json`)
   Single JSON file auto-discovered from `$XDG_CONFIG_HOME/McpLense/McpLense.Config.json` or

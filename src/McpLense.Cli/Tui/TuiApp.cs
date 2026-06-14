@@ -31,20 +31,31 @@ internal static class TuiApp
             throw new InvalidOperationException("TUI expected an inspect report.");
         }
 
-        return await RenderAsync(report, console, waitForKey, bookmarkStore);
+        // Re-drive the same parsed command for invocations so tool calls / reads / prompt
+        // fetches authenticate exactly the way the equivalent CLI command would.
+        var invoker = new McpExecutorInvoker(command, multiServer: report.Servers.Count > 1);
+        return await RenderAsync(report, console, waitForKey, bookmarkStore, invoker);
     }
 
     internal static Task<int> RenderAsync(
         InspectReport report,
         IAnsiConsole console,
         Func<Task> waitForKey)
-        => RenderAsync(report, console, waitForKey, bookmarkStore: null);
+        => RenderAsync(report, console, waitForKey, bookmarkStore: null, invoker: null);
+
+    internal static Task<int> RenderAsync(
+        InspectReport report,
+        IAnsiConsole console,
+        Func<Task> waitForKey,
+        TuiBookmarkStore? bookmarkStore)
+        => RenderAsync(report, console, waitForKey, bookmarkStore, invoker: null);
 
     internal static async Task<int> RenderAsync(
         InspectReport report,
         IAnsiConsole console,
         Func<Task> waitForKey,
-        TuiBookmarkStore? bookmarkStore)
+        TuiBookmarkStore? bookmarkStore,
+        IMcpInvoker? invoker)
     {
         var servers = report.Servers;
         if (servers.Count == 0)
@@ -54,6 +65,7 @@ internal static class TuiApp
         }
 
         bookmarkStore ??= TuiBookmarkStore.InMemory();
+        var session = new TuiSession(console, waitForKey, bookmarkStore, invoker);
 
         while (true)
         {
@@ -75,16 +87,14 @@ internal static class TuiApp
 
             var selectedServer = serverOptions.First(option => option.Label == selectedServerLabel).Server;
 
-            await ShowServerAsync(console, selectedServer, waitForKey, bookmarkStore);
+            await ShowServerAsync(session, selectedServer);
         }
     }
 
-    private static async Task ShowServerAsync(
-        IAnsiConsole console,
-        ServerInspection server,
-        Func<Task> waitForKey,
-        TuiBookmarkStore bookmarks)
+    private static async Task ShowServerAsync(TuiSession session, ServerInspection server)
     {
+        var console = session.Console;
+
         // Section-level filter state. Each section keeps its own filter so jumping between
         // Tools / Resources doesn't carry the term over; that matches user intuition for
         // a section-scoped search.
@@ -101,7 +111,7 @@ internal static class TuiApp
             console.Clear();
             RenderServerSummary(console, server);
 
-            var bookmarksForServer = bookmarks.ForServer(server.Name);
+            var bookmarksForServer = session.Bookmarks.ForServer(server.Name);
             var bookmarksLabel = bookmarksForServer.Count == 0
                 ? "Bookmarks"
                 : $"Bookmarks ({bookmarksForServer.Count})";
@@ -118,7 +128,7 @@ internal static class TuiApp
 
             if (choice == bookmarksLabel)
             {
-                await ShowBookmarksAsync(console, server, bookmarks, waitForKey);
+                await ShowBookmarksAsync(console, server, session.Bookmarks, session.WaitForKey);
                 continue;
             }
 
@@ -129,19 +139,19 @@ internal static class TuiApp
                 case "Overview":
                     RenderOverview(console, server);
                     console.MarkupLine("\n[grey]Press any key to continue...[/]");
-                    await waitForKey();
+                    await session.WaitForKey();
                     break;
                 case "Tools":
-                    await ShowToolsAsync(console, server, filters, bookmarks, waitForKey);
+                    await ShowToolsAsync(session, server, filters);
                     break;
                 case "Resources":
-                    await ShowResourcesAsync(console, server, filters, bookmarks, waitForKey);
+                    await ShowResourcesAsync(session, server, filters);
                     break;
                 case "Resource Templates":
-                    await ShowResourceTemplatesAsync(console, server, filters, bookmarks, waitForKey);
+                    await ShowResourceTemplatesAsync(session, server, filters);
                     break;
                 case "Prompts":
-                    await ShowPromptsAsync(console, server, filters, bookmarks, waitForKey);
+                    await ShowPromptsAsync(session, server, filters);
                     break;
             }
         }
@@ -149,13 +159,9 @@ internal static class TuiApp
 
     // --- Sections with search + bookmarks + drilldown ---------------
 
-    private static async Task ShowToolsAsync(
-        IAnsiConsole console,
-        ServerInspection server,
-        IDictionary<string, string> filters,
-        TuiBookmarkStore bookmarks,
-        Func<Task> waitForKey)
+    private static async Task ShowToolsAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
     {
+        var console = session.Console;
         while (true)
         {
             console.Clear();
@@ -166,13 +172,13 @@ internal static class TuiApp
             if (server.Tools.Error is not null)
             {
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
-                await waitForKey();
+                await session.WaitForKey();
                 return;
             }
 
             var matches = FilterTools(server.Tools.Items, filter);
             var choices = BuildItemChoices(matches.Select(t => t.Name), filter);
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Tools").PageSize(15).AddChoices(choices));
+            var action = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title("Tools").PageSize(15).AddChoices(choices));
 
             if (action == BackChoice) return;
             if (action == SearchChoice)
@@ -186,7 +192,7 @@ internal static class TuiApp
                 continue;
             }
 
-            // Drilldown: selected tool name -> render schema preview + bookmark toggle.
+            // Drilldown: selected tool name -> render schema preview + actions.
             var name = StripPrefix(action);
             var tool = matches.FirstOrDefault(t => t.Name == name);
             if (tool is null)
@@ -194,17 +200,13 @@ internal static class TuiApp
                 continue;
             }
 
-            await ShowToolDetailAsync(console, server, tool, bookmarks, waitForKey);
+            await ShowToolDetailAsync(session, server, tool);
         }
     }
 
-    private static async Task ShowToolDetailAsync(
-        IAnsiConsole console,
-        ServerInspection server,
-        ToolInfo tool,
-        TuiBookmarkStore bookmarks,
-        Func<Task> waitForKey)
+    private static async Task ShowToolDetailAsync(TuiSession session, ServerInspection server, ToolInfo tool)
     {
+        var console = session.Console;
         while (true)
         {
             console.Clear();
@@ -212,28 +214,31 @@ internal static class TuiApp
             RenderToolDetail(console, tool);
 
             var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.Tool, tool.Name);
-            var bookmarked = bookmarks.Contains(bookmark);
-            var toggle = bookmarked ? "Unbookmark" : "Bookmark";
+            var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
 
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Tool actions").AddChoices(toggle, "Back"));
-            if (action == "Back") return;
-            if (action == toggle)
+            var choices = new List<string>();
+            if (session.Invoker is not null)
             {
-                bookmarks.Toggle(bookmark);
-                console.MarkupLine(bookmarked ? "[grey]Removed bookmark.[/]" : "[green]Bookmarked.[/]");
-                console.MarkupLine("[grey]Press any key to continue...[/]");
-                await waitForKey();
+                choices.Add(CallChoice);
             }
+            choices.Add(toggle);
+            choices.Add("Back");
+
+            var action = console.Prompt(new SelectionPrompt<string>().Title("Tool actions").AddChoices(choices));
+            if (action == "Back") return;
+            if (action == CallChoice)
+            {
+                await InvokeToolAsync(session, server, tool);
+                continue;
+            }
+
+            await ToggleBookmarkAsync(session, bookmark);
         }
     }
 
-    private static async Task ShowResourcesAsync(
-        IAnsiConsole console,
-        ServerInspection server,
-        IDictionary<string, string> filters,
-        TuiBookmarkStore bookmarks,
-        Func<Task> waitForKey)
+    private static async Task ShowResourcesAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
     {
+        var console = session.Console;
         while (true)
         {
             console.Clear();
@@ -244,13 +249,13 @@ internal static class TuiApp
             if (server.Resources.Error is not null)
             {
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
-                await waitForKey();
+                await session.WaitForKey();
                 return;
             }
 
             var matches = FilterResources(server.Resources.Items, filter);
             var choices = BuildItemChoices(matches.Select(r => r.Name ?? r.Uri ?? "(unnamed)"), filter);
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Resources").PageSize(15).AddChoices(choices));
+            var action = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title("Resources").PageSize(15).AddChoices(choices));
 
             if (action == BackChoice) return;
             if (action == SearchChoice)
@@ -268,18 +273,45 @@ internal static class TuiApp
             var resource = matches.FirstOrDefault(r => (r.Name ?? r.Uri ?? "(unnamed)") == name);
             if (resource is null) continue;
 
-            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.Resource, resource.Uri ?? resource.Name ?? "(unnamed)");
-            await ToggleBookmarkInteractiveAsync(console, bookmarks, bookmark, waitForKey);
+            await ShowResourceDetailAsync(session, server, resource);
         }
     }
 
-    private static async Task ShowResourceTemplatesAsync(
-        IAnsiConsole console,
-        ServerInspection server,
-        IDictionary<string, string> filters,
-        TuiBookmarkStore bookmarks,
-        Func<Task> waitForKey)
+    private static async Task ShowResourceDetailAsync(TuiSession session, ServerInspection server, ResourceInfo resource)
     {
+        var console = session.Console;
+        while (true)
+        {
+            console.Clear();
+            RenderServerSummary(console, server);
+            RenderResourceDetail(console, resource);
+
+            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.Resource, resource.Uri ?? resource.Name ?? "(unnamed)");
+            var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
+
+            var choices = new List<string>();
+            if (session.Invoker is not null && !string.IsNullOrEmpty(resource.Uri))
+            {
+                choices.Add(ReadChoice);
+            }
+            choices.Add(toggle);
+            choices.Add("Back");
+
+            var action = console.Prompt(new SelectionPrompt<string>().Title("Resource actions").AddChoices(choices));
+            if (action == "Back") return;
+            if (action == ReadChoice)
+            {
+                await InvokeReadAsync(session, server, resource.Uri!, arguments: null, label: $"read {resource.Uri}");
+                continue;
+            }
+
+            await ToggleBookmarkAsync(session, bookmark);
+        }
+    }
+
+    private static async Task ShowResourceTemplatesAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+    {
+        var console = session.Console;
         while (true)
         {
             console.Clear();
@@ -290,13 +322,13 @@ internal static class TuiApp
             if (server.ResourceTemplates.Error is not null)
             {
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
-                await waitForKey();
+                await session.WaitForKey();
                 return;
             }
 
             var matches = FilterResourceTemplates(server.ResourceTemplates.Items, filter);
             var choices = BuildItemChoices(matches.Select(t => t.Name ?? t.UriTemplate ?? "(unnamed)"), filter);
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Resource Templates").PageSize(15).AddChoices(choices));
+            var action = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title("Resource Templates").PageSize(15).AddChoices(choices));
 
             if (action == BackChoice) return;
             if (action == SearchChoice)
@@ -314,18 +346,46 @@ internal static class TuiApp
             var template = matches.FirstOrDefault(t => (t.Name ?? t.UriTemplate ?? "(unnamed)") == name);
             if (template is null) continue;
 
-            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.ResourceTemplate, template.UriTemplate ?? template.Name ?? "(unnamed)");
-            await ToggleBookmarkInteractiveAsync(console, bookmarks, bookmark, waitForKey);
+            await ShowResourceTemplateDetailAsync(session, server, template);
         }
     }
 
-    private static async Task ShowPromptsAsync(
-        IAnsiConsole console,
-        ServerInspection server,
-        IDictionary<string, string> filters,
-        TuiBookmarkStore bookmarks,
-        Func<Task> waitForKey)
+    private static async Task ShowResourceTemplateDetailAsync(TuiSession session, ServerInspection server, ResourceTemplateInfo template)
     {
+        var console = session.Console;
+        while (true)
+        {
+            console.Clear();
+            RenderServerSummary(console, server);
+            RenderResourceTemplateDetail(console, template);
+
+            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.ResourceTemplate, template.UriTemplate ?? template.Name ?? "(unnamed)");
+            var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
+
+            var choices = new List<string>();
+            if (session.Invoker is not null && !string.IsNullOrEmpty(template.UriTemplate))
+            {
+                choices.Add(ReadChoice);
+            }
+            choices.Add(toggle);
+            choices.Add("Back");
+
+            var action = console.Prompt(new SelectionPrompt<string>().Title("Resource template actions").AddChoices(choices));
+            if (action == "Back") return;
+            if (action == ReadChoice)
+            {
+                var variables = ArgumentElicitor.ElicitTemplateVariables(console, template.UriTemplate!);
+                await InvokeReadAsync(session, server, template.UriTemplate!, variables, label: $"read {template.UriTemplate}");
+                continue;
+            }
+
+            await ToggleBookmarkAsync(session, bookmark);
+        }
+    }
+
+    private static async Task ShowPromptsAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+    {
+        var console = session.Console;
         while (true)
         {
             console.Clear();
@@ -336,13 +396,13 @@ internal static class TuiApp
             if (server.Prompts.Error is not null)
             {
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
-                await waitForKey();
+                await session.WaitForKey();
                 return;
             }
 
             var matches = FilterPrompts(server.Prompts.Items, filter);
             var choices = BuildItemChoices(matches.Select(p => p.Name), filter);
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Prompts").PageSize(15).AddChoices(choices));
+            var action = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title("Prompts").PageSize(15).AddChoices(choices));
 
             if (action == BackChoice) return;
             if (action == SearchChoice)
@@ -360,9 +420,113 @@ internal static class TuiApp
             var prompt = matches.FirstOrDefault(p => p.Name == name);
             if (prompt is null) continue;
 
-            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.Prompt, prompt.Name);
-            await ToggleBookmarkInteractiveAsync(console, bookmarks, bookmark, waitForKey);
+            await ShowPromptDetailAsync(session, server, prompt);
         }
+    }
+
+    private static async Task ShowPromptDetailAsync(TuiSession session, ServerInspection server, PromptInfo prompt)
+    {
+        var console = session.Console;
+        while (true)
+        {
+            console.Clear();
+            RenderServerSummary(console, server);
+            RenderPromptDetail(console, prompt);
+
+            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.Prompt, prompt.Name);
+            var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
+
+            var choices = new List<string>();
+            if (session.Invoker is not null)
+            {
+                choices.Add(GetPromptChoice);
+            }
+            choices.Add(toggle);
+            choices.Add("Back");
+
+            var action = console.Prompt(new SelectionPrompt<string>().Title("Prompt actions").AddChoices(choices));
+            if (action == "Back") return;
+            if (action == GetPromptChoice)
+            {
+                await InvokePromptAsync(session, server, prompt);
+                continue;
+            }
+
+            await ToggleBookmarkAsync(session, bookmark);
+        }
+    }
+
+    // --- Invocation drivers -----------------------------------------
+
+    private static async Task InvokeToolAsync(TuiSession session, ServerInspection server, ToolInfo tool)
+    {
+        var console = session.Console;
+        var arguments = ArgumentElicitor.ElicitToolArguments(console, tool.InputSchema);
+
+        if (!ConfirmRun(session, "call", tool.Name, arguments, server))
+        {
+            return;
+        }
+
+        var result = await SafeInvokeAsync(() => session.Invoker!.CallToolAsync(server.Name, tool.Name, arguments, CancellationToken.None));
+        await RenderInvocationResultAsync(session, $"call {tool.Name}", result);
+    }
+
+    private static async Task InvokeReadAsync(TuiSession session, ServerInspection server, string resourceOrTemplate, JsonObject? arguments, string label)
+    {
+        if (!ConfirmRun(session, "read", resourceOrTemplate, arguments, server))
+        {
+            return;
+        }
+
+        var result = await SafeInvokeAsync(() => session.Invoker!.ReadResourceAsync(server.Name, resourceOrTemplate, arguments, CancellationToken.None));
+        await RenderInvocationResultAsync(session, label, result);
+    }
+
+    private static async Task InvokePromptAsync(TuiSession session, ServerInspection server, PromptInfo prompt)
+    {
+        var console = session.Console;
+        var arguments = ArgumentElicitor.ElicitPromptArguments(console, prompt.Arguments);
+
+        if (!ConfirmRun(session, "prompt", prompt.Name, arguments, server))
+        {
+            return;
+        }
+
+        var result = await SafeInvokeAsync(() => session.Invoker!.GetPromptAsync(server.Name, prompt.Name, arguments, CancellationToken.None));
+        await RenderInvocationResultAsync(session, $"prompt {prompt.Name}", result);
+    }
+
+    private static bool ConfirmRun(TuiSession session, string verb, string subject, JsonObject? arguments, ServerInspection server)
+    {
+        var console = session.Console;
+        var equivalent = ArgumentElicitor.BuildEquivalentCommand(verb, subject, arguments, server.Transport, server.Target);
+        console.MarkupLine($"[grey]equivalent:[/] {Markup.Escape(equivalent)}");
+        return console.Confirm("Run now?");
+    }
+
+    private static async Task<InvokeResult> SafeInvokeAsync(Func<Task<InvokeResult>> invoke)
+    {
+        try
+        {
+            return await invoke();
+        }
+        catch (Exception ex)
+        {
+            return new InvokeResult($"{ex.GetType().Name}: {ex.Message}", HasErrors: true);
+        }
+    }
+
+    private static async Task RenderInvocationResultAsync(TuiSession session, string title, InvokeResult result)
+    {
+        var console = session.Console;
+        console.WriteLine();
+        console.MarkupLine(result.HasErrors
+            ? $"[red]x {Markup.Escape(title)} (errors)[/]"
+            : $"[green]+ {Markup.Escape(title)}[/]");
+        console.WriteLine(result.Text);
+        console.MarkupLine("\n[grey]Press any key to continue...[/]");
+        await session.WaitForKey();
     }
 
     private static async Task ShowBookmarksAsync(
@@ -396,22 +560,13 @@ internal static class TuiApp
         await waitForKey();
     }
 
-    private static async Task ToggleBookmarkInteractiveAsync(
-        IAnsiConsole console,
-        TuiBookmarkStore bookmarks,
-        TuiBookmark bookmark,
-        Func<Task> waitForKey)
+    private static async Task ToggleBookmarkAsync(TuiSession session, TuiBookmark bookmark)
     {
-        var existed = bookmarks.Contains(bookmark);
-        var prompt = existed ? "Unbookmark" : "Bookmark";
-        var action = console.Prompt(new SelectionPrompt<string>().Title("Selected").AddChoices(prompt, "Back"));
-        if (action == prompt)
-        {
-            bookmarks.Toggle(bookmark);
-            console.MarkupLine(existed ? "[grey]Removed bookmark.[/]" : "[green]Bookmarked.[/]");
-            console.MarkupLine("[grey]Press any key to continue...[/]");
-            await waitForKey();
-        }
+        var existed = session.Bookmarks.Contains(bookmark);
+        session.Bookmarks.Toggle(bookmark);
+        session.Console.MarkupLine(existed ? "[grey]Removed bookmark.[/]" : "[green]Bookmarked.[/]");
+        session.Console.MarkupLine("[grey]Press any key to continue...[/]");
+        await session.WaitForKey();
     }
 
     // --- Choice helpers --------------------------------------------------
@@ -419,6 +574,9 @@ internal static class TuiApp
     private const string SearchChoice = "[Search…]";
     private const string ClearFilterChoice = "[Clear filter]";
     private const string BackChoice = "[Back]";
+    private const string CallChoice = "Call tool";
+    private const string ReadChoice = "Read";
+    private const string GetPromptChoice = "Get prompt";
 
     private static IEnumerable<string> BuildItemChoices(IEnumerable<string> names, string filter)
     {
@@ -624,6 +782,68 @@ internal static class TuiApp
         console.Write(root);
     }
 
+    internal static void RenderResourceDetail(IAnsiConsole console, ResourceInfo resource)
+    {
+        var body = $"[bold]{Markup.Escape(resource.Name ?? "(unnamed)")}[/]\n[grey]{Markup.Escape(resource.Uri ?? "(no uri)")}[/]";
+        if (!string.IsNullOrWhiteSpace(resource.MimeType))
+        {
+            body += $"\n[grey]mime: {Markup.Escape(resource.MimeType!)}[/]";
+        }
+        if (!string.IsNullOrWhiteSpace(resource.Description))
+        {
+            body += $"\n{Markup.Escape(resource.Description!)}";
+        }
+        console.Write(new Panel(body) { Header = new PanelHeader("Resource") });
+    }
+
+    internal static void RenderResourceTemplateDetail(IAnsiConsole console, ResourceTemplateInfo template)
+    {
+        var body = $"[bold]{Markup.Escape(template.Name ?? "(unnamed)")}[/]\n[grey]{Markup.Escape(template.UriTemplate ?? "(no template)")}[/]";
+        if (!string.IsNullOrWhiteSpace(template.MimeType))
+        {
+            body += $"\n[grey]mime: {Markup.Escape(template.MimeType!)}[/]";
+        }
+        if (!string.IsNullOrWhiteSpace(template.Description))
+        {
+            body += $"\n{Markup.Escape(template.Description!)}";
+        }
+
+        console.Write(new Panel(body) { Header = new PanelHeader("Resource template") });
+
+        var variables = ArgumentElicitor.ExtractTemplateVariables(template.UriTemplate ?? string.Empty);
+        if (variables.Count > 0)
+        {
+            console.MarkupLine($"[grey]variables:[/] {Markup.Escape(string.Join(", ", variables))}");
+        }
+    }
+
+    internal static void RenderPromptDetail(IAnsiConsole console, PromptInfo prompt)
+    {
+        console.Write(new Panel($"[bold]{Markup.Escape(prompt.Name)}[/]\n[grey]{Markup.Escape(prompt.Description ?? string.Empty)}[/]")
+        {
+            Header = new PanelHeader("Prompt")
+        });
+
+        if (prompt.Arguments.Count == 0)
+        {
+            console.MarkupLine("[grey]No arguments declared.[/]");
+            return;
+        }
+
+        var table = new Table().RoundedBorder();
+        table.AddColumn("Argument");
+        table.AddColumn("Required");
+        table.AddColumn("Description");
+        foreach (var argument in prompt.Arguments)
+        {
+            table.AddRow(
+                Markup.Escape(argument.Name ?? "(unnamed)"),
+                argument.Required ? "yes" : "no",
+                Markup.Escape(argument.Description ?? string.Empty));
+        }
+        console.Write(table);
+    }
+
     private static void AppendSchemaNode(IHasTreeNodes parent, JsonNode? node)
     {
         if (node is null)
@@ -718,4 +938,17 @@ internal static class TuiApp
         Console.ReadKey(true);
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Per-render-loop dependencies threaded through the navigation methods: the console, the
+    /// "press a key" hook (swappable in tests), the bookmark store, and the optional invoker
+    /// that turns the explorer into an interactive caller. <see cref="Invoker"/> is null for
+    /// pure-render callers (library hosts, unit tests) - in that case the Call/Read/Get actions
+    /// are simply not offered.
+    /// </summary>
+    private sealed record TuiSession(
+        IAnsiConsole Console,
+        Func<Task> WaitForKey,
+        TuiBookmarkStore Bookmarks,
+        IMcpInvoker? Invoker);
 }

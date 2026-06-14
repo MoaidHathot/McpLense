@@ -15,7 +15,8 @@ internal static class CommandLineParser
         "check-authorization-servers",
         "quiet",
         "verbose",
-        "http-only"
+        "http-only",
+        "interactive"
     };
 
     /// <summary>Long options that can appear multiple times (repeatable).</summary>
@@ -128,6 +129,12 @@ internal static class CommandLineParser
                 continue;
             }
 
+            if (token is "-i")
+            {
+                AddOption(options, "interactive", "true");
+                continue;
+            }
+
             if (token.StartsWith("--", StringComparison.Ordinal))
             {
                 ParseLongOption(token, cliArgs, options, ref index);
@@ -175,6 +182,7 @@ internal static class CommandLineParser
         }
         var quiet = string.Equals(GetSingle(options, "quiet"), "true", StringComparison.OrdinalIgnoreCase);
         var verbose = string.Equals(GetSingle(options, "verbose"), "true", StringComparison.OrdinalIgnoreCase);
+        var interactive = string.Equals(GetSingle(options, "interactive"), "true", StringComparison.OrdinalIgnoreCase);
         var scanPlugins = GetMany(options, "scan-plugin");
 
         var targetsFromPaths = GetMany(options, "targets-from");
@@ -224,7 +232,8 @@ internal static class CommandLineParser
             ScanPlugins: scanPlugins.Count > 0 ? scanPlugins : null,
             TargetsFromPaths: targetsFromPaths.Count > 0 ? targetsFromPaths : null,
             HttpOnly: httpOnly,
-            DefaultScope: defaultScope);
+            DefaultScope: defaultScope,
+            Interactive: interactive);
     }
 
     /// <summary>
@@ -447,7 +456,8 @@ internal static class CommandLineParser
             "verbose",
             "targets-from",
             "http-only",
-            "default-scope"
+            "default-scope",
+            "interactive"
         };
 
         foreach (var option in options.Keys)
@@ -521,6 +531,11 @@ internal static class CommandLineParser
         if (options.ContainsKey("quiet") && options.ContainsKey("verbose"))
         {
             throw new UserInputException("--quiet and --verbose cannot be combined.");
+        }
+
+        if (command is not (AppCommand.Call or AppCommand.Read or AppCommand.Prompt) && options.ContainsKey("interactive"))
+        {
+            throw new UserInputException("--interactive is only valid for call, read, and prompt.");
         }
     }
 
