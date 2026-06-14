@@ -243,13 +243,13 @@ public class ArgumentElicitorTests
     }
 
     [Fact]
-    public void ElicitPromptArguments_RequiredAndOptional()
+    public async Task ElicitPromptArguments_RequiredAndOptional()
     {
         var console = NewConsole();
         console.Input.PushTextWithEnter("csharp");      // language (required)
         console.Input.PushTextWithEnter(string.Empty);  // code (optional) -> skipped
 
-        var result = ArgumentElicitor.ElicitPromptArguments(console,
+        var result = await ArgumentElicitor.ElicitPromptArgumentsAsync(console,
         [
             new PromptArgumentInfo("language", "Programming language", true),
             new PromptArgumentInfo("code", "Code to review", false)
@@ -260,17 +260,64 @@ public class ArgumentElicitorTests
     }
 
     [Fact]
-    public void ElicitTemplateVariables_PromptsForEachVariable()
+    public async Task ElicitPromptArguments_WithCompletions_OffersSuggestions()
+    {
+        var console = NewConsole();
+        console.Input.PushKey(ConsoleKey.Enter); // accept first suggestion "csharp"
+
+        var result = await ArgumentElicitor.ElicitPromptArgumentsAsync(console,
+            [new PromptArgumentInfo("language", null, true)],
+            new FakeCompletions("csharp", "python"));
+
+        result["language"]!.GetValue<string>().ShouldBe("csharp");
+    }
+
+    [Fact]
+    public async Task ElicitPromptArguments_WithCompletions_CustomValueFallsBackToText()
+    {
+        var console = NewConsole();
+        console.Input.PushKey(ConsoleKey.DownArrow); // a -> b
+        console.Input.PushKey(ConsoleKey.DownArrow); // b -> (enter a custom value)
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushTextWithEnter("zzz");
+
+        var result = await ArgumentElicitor.ElicitPromptArgumentsAsync(console,
+            [new PromptArgumentInfo("language", null, true)],
+            new FakeCompletions("a", "b"));
+
+        result["language"]!.GetValue<string>().ShouldBe("zzz");
+    }
+
+    [Fact]
+    public async Task ElicitTemplateVariables_PromptsForEachVariable()
     {
         var console = NewConsole();
         console.Input.PushTextWithEnter("42");
 
-        var result = ArgumentElicitor.ElicitTemplateVariables(console, "docs://articles/{id}");
+        var result = await ArgumentElicitor.ElicitTemplateVariablesAsync(console, "docs://articles/{id}");
 
         result["id"]!.GetValue<string>().ShouldBe("42");
     }
 
     [Fact]
-    public void ElicitTemplateVariables_NoVariables_ReturnsEmpty()
-        => ArgumentElicitor.ElicitTemplateVariables(NewConsole(), "config://app/settings").Count.ShouldBe(0);
+    public async Task ElicitTemplateVariables_WithCompletions_OffersSuggestions()
+    {
+        var console = NewConsole();
+        console.Input.PushKey(ConsoleKey.DownArrow); // 1 -> 2
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        var result = await ArgumentElicitor.ElicitTemplateVariablesAsync(console, "docs://articles/{id}", new FakeCompletions("1", "2"));
+
+        result["id"]!.GetValue<string>().ShouldBe("2");
+    }
+
+    [Fact]
+    public async Task ElicitTemplateVariables_NoVariables_ReturnsEmpty()
+        => (await ArgumentElicitor.ElicitTemplateVariablesAsync(NewConsole(), "config://app/settings")).Count.ShouldBe(0);
+
+    private sealed class FakeCompletions(params string[] values) : ICompletionSource
+    {
+        public Task<IReadOnlyList<string>> CompleteAsync(string argumentName, string partialValue, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<string>>(values);
+    }
 }

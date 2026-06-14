@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using McpLense;
+using ModelContextProtocol;
 using Shouldly;
 using Spectre.Console.Testing;
 using Xunit;
@@ -8,8 +9,8 @@ namespace McpLense.UnitTests.Tui;
 
 /// <summary>
 /// Drives the interactive-invocation path of the TUI end to end with a scripted console and a
-/// recording <see cref="IMcpInvoker"/> fake, so no transport is opened. Proves that selecting a
-/// tool and choosing "Call tool" elicits arguments and dispatches to the invoker.
+/// recording <see cref="IMcpSession"/> fake (opened via a fake connector), so no transport is
+/// opened. Proves that selecting a tool and choosing "Call tool" dispatches over the session.
 /// </summary>
 public class TuiInvokeTests
 {
@@ -21,25 +22,43 @@ public class TuiInvokeTests
         return console;
     }
 
-    private sealed class RecordingInvoker : IMcpInvoker
+    private sealed class RecordingSession : IMcpSession
     {
-        public string? ServerName;
         public string? ToolName;
         public JsonObject? Arguments;
 
-        public Task<InvokeResult> CallToolAsync(string serverName, string toolName, JsonObject arguments, CancellationToken cancellationToken)
+        public ServerReference Server { get; } = new("alpha", "stdio", "dotnet exec foo.dll");
+
+        public Task<IReadOnlyList<ToolInfo>> ListToolsAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<ToolInfo>>([]);
+
+        public Task<IReadOnlyList<PromptInfo>> ListPromptsAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<PromptInfo>>([]);
+
+        public Task<ToolCallReport> CallToolAsync(string toolName, JsonObject arguments, IProgress<ProgressNotificationValue>? progress, CancellationToken cancellationToken)
         {
-            ServerName = serverName;
             ToolName = toolName;
             Arguments = arguments;
-            return Task.FromResult(new InvokeResult("RESULT-OK", HasErrors: false));
+            var report = new ToolCallReport(
+                DateTimeOffset.UnixEpoch, Server, toolName, arguments, [],
+                new CallResultView(IsError: false, StructuredContent: null, Meta: null,
+                    Content: [new ContentBlockView("text", Text: "RESULT-OK")]));
+            return Task.FromResult(report);
         }
 
-        public Task<InvokeResult> ReadResourceAsync(string serverName, string resourceOrTemplate, JsonObject? arguments, CancellationToken cancellationToken)
-            => Task.FromResult(new InvokeResult("READ-OK", HasErrors: false));
+        public Task<ReadReport> ReadResourceAsync(string resourceOrTemplate, JsonObject? arguments, CancellationToken cancellationToken)
+            => Task.FromResult(new ReadReport(DateTimeOffset.UnixEpoch, Server, resourceOrTemplate, arguments, new ReadResourceView([])));
 
-        public Task<InvokeResult> GetPromptAsync(string serverName, string promptName, JsonObject arguments, CancellationToken cancellationToken)
-            => Task.FromResult(new InvokeResult("PROMPT-OK", HasErrors: false));
+        public Task<PromptCallReport> GetPromptAsync(string promptName, JsonObject arguments, CancellationToken cancellationToken)
+            => Task.FromResult(new PromptCallReport(DateTimeOffset.UnixEpoch, Server, promptName, arguments, new PromptResultView(null, [])));
+
+        public Task<IReadOnlyList<string>> CompletePromptArgumentAsync(string promptName, string argumentName, string partialValue, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<string>>([]);
+
+        public Task<IReadOnlyList<string>> CompleteTemplateArgumentAsync(string uriTemplate, string argumentName, string partialValue, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<string>>([]);
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private static ServerInspection SingleToolServer()
@@ -54,67 +73,65 @@ public class TuiInvokeTests
             Prompts: new SectionResult<PromptInfo>(false, []));
 
     [Fact]
-    public async Task CallTool_NoArgs_InvokesInvokerAndShowsResult()
+    public async Task CallTool_NoArgs_InvokesSessionAndShowsResult()
     {
         var console = NewConsole();
         var report = new InspectReport(DateTimeOffset.UtcNow, [SingleToolServer()]);
-        var invoker = new RecordingInvoker();
+        var session = new RecordingSession();
+        McpSessionConnector connector = (_, _) => Task.FromResult<IMcpSession>(session);
 
-        // Server select: pick "alpha" (index 0).
+        // Server select -> alpha.
         console.Input.PushKey(ConsoleKey.Enter);
-        // Section menu (Overview, Tools, ...): down to "Tools" (index 1).
+        // Section menu -> Tools (index 1).
         console.Input.PushKey(ConsoleKey.DownArrow);
         console.Input.PushKey(ConsoleKey.Enter);
-        // Tools list ([Search], [Back], Ping): down twice to "Ping".
-        console.Input.PushKey(ConsoleKey.DownArrow);
-        console.Input.PushKey(ConsoleKey.DownArrow);
-        console.Input.PushKey(ConsoleKey.Enter);
-        // Tool actions (Call tool, Bookmark, Back): pick "Call tool" (index 0).
-        console.Input.PushKey(ConsoleKey.Enter);
-        // Confirm "Run now?": accept default (yes).
-        console.Input.PushKey(ConsoleKey.Enter);
-        // Tool actions again: down twice to "Back".
+        // Tools list ([Search], [Back], Ping) -> Ping.
         console.Input.PushKey(ConsoleKey.DownArrow);
         console.Input.PushKey(ConsoleKey.DownArrow);
         console.Input.PushKey(ConsoleKey.Enter);
-        // Tools list again: down to "[Back]" (index 1).
+        // Tool actions (Call tool, Bookmark, Back) -> Call tool.
+        console.Input.PushKey(ConsoleKey.Enter);
+        // Confirm "Run now?" -> accept default (yes).
+        console.Input.PushKey(ConsoleKey.Enter);
+        // Tool actions again -> Back.
+        console.Input.PushKey(ConsoleKey.DownArrow);
         console.Input.PushKey(ConsoleKey.DownArrow);
         console.Input.PushKey(ConsoleKey.Enter);
-        // Section menu again: down 6 to "Back".
+        // Tools list -> [Back].
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+        // Section menu -> Back.
         for (var i = 0; i < 6; i++)
         {
             console.Input.PushKey(ConsoleKey.DownArrow);
         }
         console.Input.PushKey(ConsoleKey.Enter);
-        // Server select again: down to "Exit".
+        // Server select -> Exit.
         console.Input.PushKey(ConsoleKey.DownArrow);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask, bookmarkStore: null, invoker);
+        var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask, bookmarkStore: null, connector);
 
         exit.ShouldBe(0);
-        invoker.ToolName.ShouldBe("Ping");
-        invoker.ServerName.ShouldBe("alpha");
-        invoker.Arguments.ShouldNotBeNull();
-        invoker.Arguments!.Count.ShouldBe(0);
+        session.ToolName.ShouldBe("Ping");
+        session.Arguments.ShouldNotBeNull();
+        session.Arguments!.Count.ShouldBe(0);
         console.Output.ShouldContain("RESULT-OK");
     }
 
     [Fact]
-    public async Task ToolDetail_WithoutInvoker_OffersNoCallAction()
+    public async Task ToolDetail_WithoutConnector_OffersNoCallAction()
     {
         var console = NewConsole();
         var report = new InspectReport(DateTimeOffset.UtcNow, [SingleToolServer()]);
 
-        // Navigate into the tool detail, then straight back out, then exit.
         console.Input.PushKey(ConsoleKey.Enter);                 // server alpha
         console.Input.PushKey(ConsoleKey.DownArrow);             // Tools
         console.Input.PushKey(ConsoleKey.Enter);
         console.Input.PushKey(ConsoleKey.DownArrow);             // -> Ping
         console.Input.PushKey(ConsoleKey.DownArrow);
         console.Input.PushKey(ConsoleKey.Enter);
-        // Tool actions (Bookmark, Back) - no "Call tool" when invoker is null.
-        console.Input.PushKey(ConsoleKey.DownArrow);             // -> Back (index 1)
+        console.Input.PushKey(ConsoleKey.DownArrow);             // tool actions -> Back (Bookmark, Back)
         console.Input.PushKey(ConsoleKey.Enter);
         console.Input.PushKey(ConsoleKey.DownArrow);             // tools list -> [Back]
         console.Input.PushKey(ConsoleKey.Enter);

@@ -109,6 +109,7 @@ public class McpExecutorTests
         outcome.HasErrors.ShouldBeFalse();
         var report = outcome.Payload.ShouldBeOfType<ResourceListReport>();
         report.Servers[0].Items.ShouldContain(resource => resource.Uri == "config://app/settings");
+        report.Servers[0].Templates.ShouldContain(template => template.UriTemplate == "docs://articles/{id}");
     }
 
     [Fact]

@@ -11,7 +11,7 @@ internal static class TextFormatter
     {
         InspectReport report => FormatInspect(report, jsonOptions),
         ToolListReport report => FormatServerItems("tools", report.Servers, FormatTool, jsonOptions),
-        ResourceListReport report => FormatServerItems("resources", report.Servers, FormatResource, jsonOptions),
+        ResourceListReport report => FormatResourceList(report, jsonOptions),
         PromptListReport report => FormatServerItems("prompts", report.Servers, FormatPrompt, jsonOptions),
         ToolCallReport report => FormatToolCall(report, jsonOptions),
         ReadReport report => FormatRead(report, jsonOptions),
@@ -755,6 +755,49 @@ internal static class TextFormatter
             }
 
             if (index < servers.Count - 1)
+            {
+                builder.AppendLine();
+            }
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private static string FormatResourceList(ResourceListReport report, JsonSerializerOptions jsonOptions)
+    {
+        var builder = new StringBuilder();
+
+        for (var index = 0; index < report.Servers.Count; index++)
+        {
+            var server = report.Servers[index];
+            AppendServerHeader(builder, server.Name, server.Transport, server.Target);
+
+            if (server.Error is not null)
+            {
+                AppendLine(builder, 1, $"error: {server.Error}");
+            }
+            else
+            {
+                AppendLine(builder, 1, $"resources: {server.Items.Count}");
+                foreach (var item in server.Items)
+                {
+                    foreach (var line in FormatResource(item, jsonOptions))
+                    {
+                        AppendLine(builder, 1, line);
+                    }
+                }
+
+                AppendLine(builder, 1, $"resource templates: {server.Templates.Count}");
+                foreach (var template in server.Templates)
+                {
+                    foreach (var line in FormatResourceTemplate(template, jsonOptions))
+                    {
+                        AppendLine(builder, 1, line);
+                    }
+                }
+            }
+
+            if (index < report.Servers.Count - 1)
             {
                 builder.AppendLine();
             }

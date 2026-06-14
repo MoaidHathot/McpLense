@@ -7,6 +7,7 @@ using McpLense.Scanning;
 using McpLense.Scanning.TargetResolution;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace McpLense;
 
@@ -783,11 +784,15 @@ internal static class McpExecutor
         var results = await Task.WhenAll(servers.Select(server => WithClientAsync(server, timeout, cancellationToken, async (client, ct) =>
         {
             var items = await LoadResourcesAsync(client, ct);
-            return new ServerItems<ResourceInfo>(server.Name, FormatTransport(server.Kind), server.Target, items);
+            var templates = await LoadResourceTemplatesAsync(client, ct);
+            return new ServerResources(server.Name, FormatTransport(server.Kind), server.Target, items, templates);
         })));
 
-        return new ExecutionOutcome(new ResourceListReport(DateTimeOffset.UtcNow, servers.Zip(results, ToServerItems).ToArray()), results.Any(result => result.Error is not null));
+        return new ExecutionOutcome(new ResourceListReport(DateTimeOffset.UtcNow, servers.Zip(results, ToServerResources).ToArray()), results.Any(result => result.Error is not null));
     }
+
+    private static ServerResources ToServerResources(ResolvedServer server, OperationResult<ServerResources> result)
+        => result.Value ?? new ServerResources(server.Name, FormatTransport(server.Kind), server.Target, [], [], result.Error);
 
     private static async Task<ExecutionOutcome> ListPromptsAsync(IReadOnlyList<ResolvedServer> servers, TimeSpan timeout, CancellationToken cancellationToken)
     {
@@ -1341,4 +1346,128 @@ internal static class McpExecutor
     }
 
     private sealed record OperationResult<T>(T? Value, string? Error);
+
+    /// <summary>
+    /// Opens a persistent connection to the single server the command resolves to, reusing the
+    /// same resolve -> overlay -> auth-attach pipeline as <see cref="ExecuteAsync"/>. The caller
+    /// owns the returned session and must dispose it. For multi-server <c>--config</c> targets,
+    /// scope to one server first via <see cref="TargetOptions.ServerNames"/>.
+    /// </summary>
+    public static async Task<IMcpSession> ConnectAsync(ParsedCommand command, CancellationToken cancellationToken)
+    {
+        var scanConfigPaths = TargetConfigLoading.ResolveScanConfigPaths(command.Target.ProfilePaths);
+        var scanConfig = await ScanConfigLoader.LoadAsync(scanConfigPaths, cancellationToken).ConfigureAwait(false);
+        var target = TargetOverlayApplicator.ResolveNamedReference(command.Target, scanConfig);
+
+        var servers = await TargetResolver.ResolveAsync(target, cancellationToken).ConfigureAwait(false);
+        servers = TargetOverlayApplicator.Apply(servers, scanConfig, target, cliDisables: null, quiet: command.Quiet, verbose: command.Verbose);
+
+        if (!target.AuthOverrides.NoAuth)
+        {
+            servers = await AttachProfilesAsync(servers, target, cancellationToken, command.Quiet, command.Verbose).ConfigureAwait(false);
+        }
+
+        var server = SingleServer(servers);
+        var client = await CreateClientAsync(server, command.Timeout, cancellationToken).ConfigureAwait(false);
+        return new McpSession(client, server, command.Timeout);
+    }
+
+    /// <summary>
+    /// <see cref="IMcpSession"/> over a live <see cref="McpClient"/>. Nested so it can reuse the
+    /// executor's private result-mapping helpers (<see cref="MapCallResult"/> etc.). Each operation
+    /// is bounded by the command's per-server timeout, layered on the caller's cancellation token.
+    /// </summary>
+    private sealed class McpSession(McpClient client, ResolvedServer server, TimeSpan timeout) : IMcpSession
+    {
+        public ServerReference Server => ToReference(server);
+
+        public async Task<IReadOnlyList<ToolInfo>> ListToolsAsync(CancellationToken cancellationToken)
+        {
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            return await LoadToolsAsync(client, timeoutSource.Token).ConfigureAwait(false);
+        }
+
+        public async Task<IReadOnlyList<PromptInfo>> ListPromptsAsync(CancellationToken cancellationToken)
+        {
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            return await LoadPromptsAsync(client, timeoutSource.Token).ConfigureAwait(false);
+        }
+
+        public async Task<ToolCallReport> CallToolAsync(string toolName, JsonObject arguments, IProgress<ProgressNotificationValue>? progress, CancellationToken cancellationToken)
+        {
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            try
+            {
+                var response = await client.CallToolAsync(toolName, ToDictionary(arguments), progress: progress, options: null, cancellationToken: timeoutSource.Token).ConfigureAwait(false);
+                return new ToolCallReport(DateTimeOffset.UtcNow, ToReference(server), toolName, arguments, [], MapCallResult(response));
+            }
+            catch (Exception ex)
+            {
+                return new ToolCallReport(DateTimeOffset.UtcNow, ToReference(server), toolName, arguments, [], null, FormatException(ex));
+            }
+        }
+
+        public async Task<ReadReport> ReadResourceAsync(string resourceOrTemplate, JsonObject? arguments, CancellationToken cancellationToken)
+        {
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            try
+            {
+                object response = arguments is null
+                    ? await client.ReadResourceAsync(resourceOrTemplate, options: null, cancellationToken: timeoutSource.Token).ConfigureAwait(false)
+                    : await client.ReadResourceAsync(resourceOrTemplate, ToDictionary(arguments), options: null, cancellationToken: timeoutSource.Token).ConfigureAwait(false);
+                return new ReadReport(DateTimeOffset.UtcNow, ToReference(server), resourceOrTemplate, arguments, MapReadResult(response));
+            }
+            catch (Exception ex)
+            {
+                return new ReadReport(DateTimeOffset.UtcNow, ToReference(server), resourceOrTemplate, arguments, null, FormatException(ex));
+            }
+        }
+
+        public async Task<PromptCallReport> GetPromptAsync(string promptName, JsonObject arguments, CancellationToken cancellationToken)
+        {
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            try
+            {
+                var response = await client.GetPromptAsync(promptName, ToDictionary(arguments), options: null, cancellationToken: timeoutSource.Token).ConfigureAwait(false);
+                return new PromptCallReport(DateTimeOffset.UtcNow, ToReference(server), promptName, arguments, MapPromptResult(response));
+            }
+            catch (Exception ex)
+            {
+                return new PromptCallReport(DateTimeOffset.UtcNow, ToReference(server), promptName, arguments, null, FormatException(ex));
+            }
+        }
+
+        public async Task<IReadOnlyList<string>> CompletePromptArgumentAsync(string promptName, string argumentName, string partialValue, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var result = await client.CompleteAsync(new PromptReference { Name = promptName }, argumentName, partialValue, cancellationToken: cancellationToken).ConfigureAwait(false);
+                return result.Completion?.Values?.ToArray() ?? [];
+            }
+            catch
+            {
+                return [];
+            }
+        }
+
+        public async Task<IReadOnlyList<string>> CompleteTemplateArgumentAsync(string uriTemplate, string argumentName, string partialValue, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var result = await client.CompleteAsync(new ResourceTemplateReference { Uri = uriTemplate }, argumentName, partialValue, cancellationToken: cancellationToken).ConfigureAwait(false);
+                return result.Completion?.Values?.ToArray() ?? [];
+            }
+            catch
+            {
+                return [];
+            }
+        }
+
+        public ValueTask DisposeAsync() => client.DisposeAsync();
+    }
 }

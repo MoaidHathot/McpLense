@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using ModelContextProtocol;
 using Spectre.Console;
 
 namespace McpLense;
@@ -31,31 +32,32 @@ internal static class TuiApp
             throw new InvalidOperationException("TUI expected an inspect report.");
         }
 
-        // Re-drive the same parsed command for invocations so tool calls / reads / prompt
-        // fetches authenticate exactly the way the equivalent CLI command would.
-        var invoker = new McpExecutorInvoker(command, multiServer: report.Servers.Count > 1);
-        return await RenderAsync(report, console, waitForKey, bookmarkStore, invoker);
+        // Invocations open their own live session per server-visit (reusing the same parsed
+        // command), so a tool call / read / prompt authenticates exactly the way the equivalent
+        // CLI command would - and for stdio the server process stays up across calls.
+        var connector = InvocationRenderer.ConnectorFor(command);
+        return await RenderAsync(report, console, waitForKey, bookmarkStore, connector);
     }
 
     internal static Task<int> RenderAsync(
         InspectReport report,
         IAnsiConsole console,
         Func<Task> waitForKey)
-        => RenderAsync(report, console, waitForKey, bookmarkStore: null, invoker: null);
+        => RenderAsync(report, console, waitForKey, bookmarkStore: null, connector: null);
 
     internal static Task<int> RenderAsync(
         InspectReport report,
         IAnsiConsole console,
         Func<Task> waitForKey,
         TuiBookmarkStore? bookmarkStore)
-        => RenderAsync(report, console, waitForKey, bookmarkStore, invoker: null);
+        => RenderAsync(report, console, waitForKey, bookmarkStore, connector: null);
 
     internal static async Task<int> RenderAsync(
         InspectReport report,
         IAnsiConsole console,
         Func<Task> waitForKey,
         TuiBookmarkStore? bookmarkStore,
-        IMcpInvoker? invoker)
+        McpSessionConnector? connector)
     {
         var servers = report.Servers;
         if (servers.Count == 0)
@@ -65,7 +67,7 @@ internal static class TuiApp
         }
 
         bookmarkStore ??= TuiBookmarkStore.InMemory();
-        var session = new TuiSession(console, waitForKey, bookmarkStore, invoker);
+        var session = new TuiSession(console, waitForKey, bookmarkStore, connector);
 
         while (true)
         {
@@ -93,8 +95,6 @@ internal static class TuiApp
 
     private static async Task ShowServerAsync(TuiSession session, ServerInspection server)
     {
-        var console = session.Console;
-
         // Section-level filter state. Each section keeps its own filter so jumping between
         // Tools / Resources doesn't carry the term over; that matches user intuition for
         // a section-scoped search.
@@ -105,6 +105,22 @@ internal static class TuiApp
             ["Resource Templates"] = string.Empty,
             ["Prompts"] = string.Empty
         };
+
+        try
+        {
+            await RunServerLoopAsync(session, server, filters);
+        }
+        finally
+        {
+            // A live invocation session is opened lazily on first invoke; close it when leaving
+            // the server so we don't hold the transport (or keep a stdio process up) afterwards.
+            await session.CloseSessionAsync();
+        }
+    }
+
+    private static async Task RunServerLoopAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+    {
+        var console = session.Console;
 
         while (true)
         {
@@ -217,7 +233,7 @@ internal static class TuiApp
             var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
 
             var choices = new List<string>();
-            if (session.Invoker is not null)
+            if (session.Connector is not null)
             {
                 choices.Add(CallChoice);
             }
@@ -290,7 +306,7 @@ internal static class TuiApp
             var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
 
             var choices = new List<string>();
-            if (session.Invoker is not null && !string.IsNullOrEmpty(resource.Uri))
+            if (session.Connector is not null && !string.IsNullOrEmpty(resource.Uri))
             {
                 choices.Add(ReadChoice);
             }
@@ -301,7 +317,7 @@ internal static class TuiApp
             if (action == "Back") return;
             if (action == ReadChoice)
             {
-                await InvokeReadAsync(session, server, resource.Uri!, arguments: null, label: $"read {resource.Uri}");
+                await InvokeResourceAsync(session, server, resource.Uri!);
                 continue;
             }
 
@@ -363,7 +379,7 @@ internal static class TuiApp
             var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
 
             var choices = new List<string>();
-            if (session.Invoker is not null && !string.IsNullOrEmpty(template.UriTemplate))
+            if (session.Connector is not null && !string.IsNullOrEmpty(template.UriTemplate))
             {
                 choices.Add(ReadChoice);
             }
@@ -374,8 +390,7 @@ internal static class TuiApp
             if (action == "Back") return;
             if (action == ReadChoice)
             {
-                var variables = ArgumentElicitor.ElicitTemplateVariables(console, template.UriTemplate!);
-                await InvokeReadAsync(session, server, template.UriTemplate!, variables, label: $"read {template.UriTemplate}");
+                await InvokeTemplateAsync(session, server, template);
                 continue;
             }
 
@@ -437,7 +452,7 @@ internal static class TuiApp
             var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
 
             var choices = new List<string>();
-            if (session.Invoker is not null)
+            if (session.Connector is not null)
             {
                 choices.Add(GetPromptChoice);
             }
@@ -460,60 +475,157 @@ internal static class TuiApp
 
     private static async Task InvokeToolAsync(TuiSession session, ServerInspection server, ToolInfo tool)
     {
-        var console = session.Console;
-        var arguments = ArgumentElicitor.ElicitToolArguments(console, tool.InputSchema);
+        var mcp = await EnsureSessionAsync(session, server);
+        if (mcp is null) return;
 
-        if (!ConfirmRun(session, "call", tool.Name, arguments, server))
-        {
-            return;
-        }
+        var arguments = ArgumentElicitor.ElicitToolArguments(session.Console, tool.InputSchema);
+        if (!ConfirmRun(session, "call", tool.Name, arguments, server)) return;
 
-        var result = await SafeInvokeAsync(() => session.Invoker!.CallToolAsync(server.Name, tool.Name, arguments, CancellationToken.None));
-        await RenderInvocationResultAsync(session, $"call {tool.Name}", result);
+        var report = await RunWithProgressAsync(session, $"Calling {tool.Name}",
+            (progress, ct) => mcp.CallToolAsync(tool.Name, arguments, progress, ct));
+        await RenderInvocationResultAsync(session, $"call {tool.Name}", InvocationRenderer.Render(report));
     }
 
-    private static async Task InvokeReadAsync(TuiSession session, ServerInspection server, string resourceOrTemplate, JsonObject? arguments, string label)
+    private static async Task InvokeResourceAsync(TuiSession session, ServerInspection server, string uri)
     {
-        if (!ConfirmRun(session, "read", resourceOrTemplate, arguments, server))
-        {
-            return;
-        }
+        var mcp = await EnsureSessionAsync(session, server);
+        if (mcp is null) return;
 
-        var result = await SafeInvokeAsync(() => session.Invoker!.ReadResourceAsync(server.Name, resourceOrTemplate, arguments, CancellationToken.None));
-        await RenderInvocationResultAsync(session, label, result);
+        if (!ConfirmRun(session, "read", uri, arguments: null, server)) return;
+
+        var report = await mcp.ReadResourceAsync(uri, arguments: null, CancellationToken.None);
+        await RenderInvocationResultAsync(session, $"read {uri}", InvocationRenderer.Render(report));
+    }
+
+    private static async Task InvokeTemplateAsync(TuiSession session, ServerInspection server, ResourceTemplateInfo template)
+    {
+        var mcp = await EnsureSessionAsync(session, server);
+        if (mcp is null) return;
+
+        var uriTemplate = template.UriTemplate!;
+        var variables = await ArgumentElicitor.ElicitTemplateVariablesAsync(
+            session.Console, uriTemplate, new TemplateCompletionSource(mcp, uriTemplate));
+
+        if (!ConfirmRun(session, "read", uriTemplate, variables, server)) return;
+
+        var report = await mcp.ReadResourceAsync(uriTemplate, variables.Count > 0 ? variables : null, CancellationToken.None);
+        await RenderInvocationResultAsync(session, $"read {uriTemplate}", InvocationRenderer.Render(report));
     }
 
     private static async Task InvokePromptAsync(TuiSession session, ServerInspection server, PromptInfo prompt)
     {
-        var console = session.Console;
-        var arguments = ArgumentElicitor.ElicitPromptArguments(console, prompt.Arguments);
+        var mcp = await EnsureSessionAsync(session, server);
+        if (mcp is null) return;
 
-        if (!ConfirmRun(session, "prompt", prompt.Name, arguments, server))
+        var arguments = await ArgumentElicitor.ElicitPromptArgumentsAsync(
+            session.Console, prompt.Arguments, new PromptCompletionSource(mcp, prompt.Name));
+
+        if (!ConfirmRun(session, "prompt", prompt.Name, arguments, server)) return;
+
+        var report = await mcp.GetPromptAsync(prompt.Name, arguments, CancellationToken.None);
+        await RenderInvocationResultAsync(session, $"prompt {prompt.Name}", InvocationRenderer.Render(report));
+    }
+
+    /// <summary>
+    /// Lazily opens the live session for the selected server on first invoke and caches it on the
+    /// <see cref="TuiSession"/>; surfaces a friendly message and returns null when the connect fails.
+    /// </summary>
+    private static async Task<IMcpSession?> EnsureSessionAsync(TuiSession session, ServerInspection server)
+    {
+        if (session.Mcp is not null) return session.Mcp;
+        if (session.Connector is null) return null;
+
+        try
         {
-            return;
+            session.Mcp = await session.Connector(server.Name, CancellationToken.None);
+            return session.Mcp;
         }
-
-        var result = await SafeInvokeAsync(() => session.Invoker!.GetPromptAsync(server.Name, prompt.Name, arguments, CancellationToken.None));
-        await RenderInvocationResultAsync(session, $"prompt {prompt.Name}", result);
+        catch (Exception ex)
+        {
+            session.Console.MarkupLine($"[red]Could not open a session: {Markup.Escape(ex.Message)}[/]");
+            session.Console.MarkupLine("[grey]Press any key to continue...[/]");
+            await session.WaitForKey();
+            return null;
+        }
     }
 
     private static bool ConfirmRun(TuiSession session, string verb, string subject, JsonObject? arguments, ServerInspection server)
     {
-        var console = session.Console;
         var equivalent = ArgumentElicitor.BuildEquivalentCommand(verb, subject, arguments, server.Transport, server.Target);
-        console.MarkupLine($"[grey]equivalent:[/] {Markup.Escape(equivalent)}");
-        return console.Confirm("Run now?");
+        session.Console.MarkupLine($"[grey]equivalent:[/] {Markup.Escape(equivalent)}");
+        return session.Console.Confirm("Run now?");
     }
 
-    private static async Task<InvokeResult> SafeInvokeAsync(Func<Task<InvokeResult>> invoke)
+    /// <summary>
+    /// Runs a cancellable operation inside a live Spectre progress bar that the server's progress
+    /// notifications drive; pressing Esc cancels. The session maps cancellation to a clean error.
+    /// </summary>
+    private static async Task<T> RunWithProgressAsync<T>(TuiSession session, string title, Func<IProgress<ProgressNotificationValue>, CancellationToken, Task<T>> operation)
+    {
+        using var cts = new CancellationTokenSource();
+        var captured = default(T)!;
+
+        session.Console.MarkupLine("[grey](press Esc to cancel)[/]");
+        await session.Console.Progress()
+            .AutoClear(false)
+            .HideCompleted(false)
+            .Columns(
+                new TaskDescriptionColumn(),
+                new ProgressBarColumn(),
+                new PercentageColumn(),
+                new SpinnerColumn(),
+                new ElapsedTimeColumn())
+            .StartAsync(async ctx =>
+            {
+                var task = ctx.AddTask(Markup.Escape(title));
+                task.IsIndeterminate = true;
+                var progress = new Progress<ProgressNotificationValue>(value => ApplyProgress(task, title, value));
+
+                var operationTask = operation(progress, cts.Token);
+                while (!operationTask.IsCompleted)
+                {
+                    if (EscapePressed())
+                    {
+                        cts.Cancel();
+                    }
+
+                    await Task.WhenAny(operationTask, Task.Delay(80)).ConfigureAwait(false);
+                }
+
+                captured = await operationTask.ConfigureAwait(false);
+                task.IsIndeterminate = false;
+                task.Value = task.MaxValue;
+                task.StopTask();
+            }).ConfigureAwait(false);
+
+        return captured;
+    }
+
+    private static void ApplyProgress(ProgressTask task, string title, ProgressNotificationValue value)
+    {
+        if (value.Total is > 0)
+        {
+            task.IsIndeterminate = false;
+            task.MaxValue = value.Total.Value;
+            task.Value = value.Progress;
+        }
+
+        if (!string.IsNullOrWhiteSpace(value.Message))
+        {
+            task.Description = Markup.Escape($"{title} - {value.Message}");
+        }
+    }
+
+    private static bool EscapePressed()
     {
         try
         {
-            return await invoke();
+            return Console.KeyAvailable && Console.ReadKey(intercept: true).Key == ConsoleKey.Escape;
         }
-        catch (Exception ex)
+        catch (InvalidOperationException)
         {
-            return new InvokeResult($"{ex.GetType().Name}: {ex.Message}", HasErrors: true);
+            // stdin redirected (e.g. tests / pipes): no interactive cancel available.
+            return false;
         }
     }
 
@@ -941,14 +1053,31 @@ internal static class TuiApp
 
     /// <summary>
     /// Per-render-loop dependencies threaded through the navigation methods: the console, the
-    /// "press a key" hook (swappable in tests), the bookmark store, and the optional invoker
-    /// that turns the explorer into an interactive caller. <see cref="Invoker"/> is null for
-    /// pure-render callers (library hosts, unit tests) - in that case the Call/Read/Get actions
-    /// are simply not offered.
+    /// "press a key" hook (swappable in tests), the bookmark store, and the optional
+    /// <see cref="Connector"/> that turns the explorer into an interactive caller. When
+    /// <see cref="Connector"/> is null (library hosts / unit tests) the Call/Read/Get actions are
+    /// not offered. <see cref="Mcp"/> holds the live session for the current server, opened lazily
+    /// on first invoke and closed when leaving the server.
     /// </summary>
-    private sealed record TuiSession(
-        IAnsiConsole Console,
-        Func<Task> WaitForKey,
-        TuiBookmarkStore Bookmarks,
-        IMcpInvoker? Invoker);
+    private sealed class TuiSession(
+        IAnsiConsole console,
+        Func<Task> waitForKey,
+        TuiBookmarkStore bookmarks,
+        McpSessionConnector? connector)
+    {
+        public IAnsiConsole Console { get; } = console;
+        public Func<Task> WaitForKey { get; } = waitForKey;
+        public TuiBookmarkStore Bookmarks { get; } = bookmarks;
+        public McpSessionConnector? Connector { get; } = connector;
+        public IMcpSession? Mcp { get; set; }
+
+        public async Task CloseSessionAsync()
+        {
+            if (Mcp is not null)
+            {
+                await Mcp.DisposeAsync();
+                Mcp = null;
+            }
+        }
+    }
 }

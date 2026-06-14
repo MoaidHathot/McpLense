@@ -53,6 +53,12 @@ internal static class CommandLineParser
         var command = ParseCommand(cliArgs[0]);
         if (command is AppCommand.Help)
         {
+            // `mcplense help <command>` (or `-h <command>`) shows that command's help.
+            if (cliArgs.Length > 1 && TryParseCommand(cliArgs[1], out var topic))
+            {
+                return HelpCommand(topic);
+            }
+
             return HelpCommand();
         }
 
@@ -71,7 +77,7 @@ internal static class CommandLineParser
             for (var idx = 1; idx < cliArgs.Length; idx++)
             {
                 var token = cliArgs[idx];
-                if (token is "-h" or "--help") return HelpCommand();
+                if (token is "-h" or "--help") return HelpCommand(AppCommand.Schema);
                 if (token == "--output" || token == "-o")
                 {
                     if (idx + 1 >= cliArgs.Length) throw new UserInputException("--output requires a value.");
@@ -114,7 +120,7 @@ internal static class CommandLineParser
 
             if (token is "-h" or "--help")
             {
-                return HelpCommand();
+                return HelpCommand(command);
             }
 
             if (token is "-f")
@@ -339,32 +345,46 @@ internal static class CommandLineParser
         return new ParsedCommand(command, Subject: null, Arguments: null, format, timeout, target, ProgressEnabled: false);
     }
 
-    private static ParsedCommand HelpCommand() => new(AppCommand.Help, null, null, OutputFormat.Text, TimeSpan.FromSeconds(30), EmptyTarget(), false);
+    private static ParsedCommand HelpCommand(AppCommand? topic = null)
+    {
+        // The selected help topic rides in Subject as the AppCommand name; null / help / version
+        // mean "global help". App resolves it to per-command text via CommandHelp.
+        var subject = topic is null or AppCommand.Help or AppCommand.Version ? null : topic.Value.ToString();
+        return new(AppCommand.Help, subject, null, OutputFormat.Text, TimeSpan.FromSeconds(30), EmptyTarget(), false);
+    }
 
     private static TargetOptions EmptyTarget() => new([], [], [], null, null, TransportPreference.Auto, new Dictionary<string, string>(), null, [], null, new Dictionary<string, string>(), AuthOverrides.Empty);
 
-    private static AppCommand ParseCommand(string value) => value.ToLowerInvariant() switch
+    private static AppCommand ParseCommand(string value)
+        => TryParseCommand(value, out var command)
+            ? command
+            : throw new UserInputException($"Unknown command '{value}'.");
+
+    private static bool TryParseCommand(string value, out AppCommand command)
     {
-        "help" => AppCommand.Help,
-        "version" or "--version" or "-v" => AppCommand.Version,
-        "tui" => AppCommand.Tui,
-        "inspect" => AppCommand.Inspect,
-        "tools" => AppCommand.Tools,
-        "resources" => AppCommand.Resources,
-        "prompts" => AppCommand.Prompts,
-        "call" => AppCommand.Call,
-        "read" => AppCommand.Read,
-        "prompt" => AppCommand.Prompt,
-        "login" => AppCommand.Login,
-        "logout" => AppCommand.Logout,
-        "scan" => AppCommand.Scan,
-        "auth-scan" => AppCommand.AuthScan,
-        "observe" => AppCommand.Observe,
-        "fetch-resource" => AppCommand.FetchResource,
-        "diff" => AppCommand.Diff,
-        "schema" => AppCommand.Schema,
-        _ => throw new UserInputException($"Unknown command '{value}'.")
-    };
+        switch (value.ToLowerInvariant())
+        {
+            case "help" or "-h" or "--help": command = AppCommand.Help; return true;
+            case "version" or "--version" or "-v": command = AppCommand.Version; return true;
+            case "tui": command = AppCommand.Tui; return true;
+            case "inspect": command = AppCommand.Inspect; return true;
+            case "tools": command = AppCommand.Tools; return true;
+            case "resources": command = AppCommand.Resources; return true;
+            case "prompts": command = AppCommand.Prompts; return true;
+            case "call": command = AppCommand.Call; return true;
+            case "read": command = AppCommand.Read; return true;
+            case "prompt": command = AppCommand.Prompt; return true;
+            case "login": command = AppCommand.Login; return true;
+            case "logout": command = AppCommand.Logout; return true;
+            case "scan": command = AppCommand.Scan; return true;
+            case "auth-scan": command = AppCommand.AuthScan; return true;
+            case "observe": command = AppCommand.Observe; return true;
+            case "fetch-resource": command = AppCommand.FetchResource; return true;
+            case "diff": command = AppCommand.Diff; return true;
+            case "schema": command = AppCommand.Schema; return true;
+            default: command = default; return false;
+        }
+    }
 
     private static void ParseLongOption(string token, string[] args, Dictionary<string, List<string>> options, ref int index)
     {

@@ -48,11 +48,23 @@ internal sealed record SectionResult<T>(bool Supported, IReadOnlyList<T> Items, 
 
 internal sealed record ToolListReport(DateTimeOffset GeneratedAt, IReadOnlyList<ServerItems<ToolInfo>> Servers);
 
-internal sealed record ResourceListReport(DateTimeOffset GeneratedAt, IReadOnlyList<ServerItems<ResourceInfo>> Servers);
+internal sealed record ResourceListReport(DateTimeOffset GeneratedAt, IReadOnlyList<ServerResources> Servers);
 
 internal sealed record PromptListReport(DateTimeOffset GeneratedAt, IReadOnlyList<ServerItems<PromptInfo>> Servers);
 
 internal sealed record ServerItems<T>(string Name, string Transport, string Target, IReadOnlyList<T> Items, string? Error = null);
+
+/// <summary>
+/// Result of <c>mcplense resources</c> for one server: concrete resources (serialised as
+/// <c>items</c> for backward compatibility) plus the server's resource templates.
+/// </summary>
+internal sealed record ServerResources(
+    string Name,
+    string Transport,
+    string Target,
+    IReadOnlyList<ResourceInfo> Items,
+    IReadOnlyList<ResourceTemplateInfo> Templates,
+    string? Error = null);
 
 internal sealed record ToolCallReport(
     DateTimeOffset GeneratedAt,

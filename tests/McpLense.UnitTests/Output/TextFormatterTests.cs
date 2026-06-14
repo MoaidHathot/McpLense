@@ -94,15 +94,17 @@ public class TextFormatterTests
     public void Format_ResourceListReport_RendersResources()
     {
         var report = new ResourceListReport(DateTimeOffset.UnixEpoch, [
-            new ServerItems<ResourceInfo>("demo", "stdio", "node demo.js", [
-                new ResourceInfo("settings", "config://app/settings", "application/json", null)
-            ])
+            new ServerResources("demo", "stdio", "node demo.js",
+                [new ResourceInfo("settings", "config://app/settings", "application/json", null)],
+                [new ResourceTemplateInfo("Article", "docs://articles/{id}", "text/markdown", null)])
         ]);
 
         var output = TextFormatter.Format(report, JsonOptions);
 
         output.ShouldContain("resources: 1");
         output.ShouldContain("- settings: config://app/settings [application/json]");
+        output.ShouldContain("resource templates: 1");
+        output.ShouldContain("- Article: docs://articles/{id} [text/markdown]");
     }
 
     [Fact]

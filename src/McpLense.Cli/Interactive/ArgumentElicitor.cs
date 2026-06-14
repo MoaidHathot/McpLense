@@ -60,8 +60,12 @@ internal static class ArgumentElicitor
         return result;
     }
 
-    /// <summary>Prompts for each declared prompt argument (prompt arguments are always strings).</summary>
-    public static JsonObject ElicitPromptArguments(IAnsiConsole console, IReadOnlyList<PromptArgumentInfo> arguments)
+    /// <summary>
+    /// Prompts for each declared prompt argument (prompt arguments are always strings). When a
+    /// <paramref name="completions"/> source is supplied and the server offers suggestions, they
+    /// are shown as a pick-list with an "enter a custom value" escape.
+    /// </summary>
+    public static async Task<JsonObject> ElicitPromptArgumentsAsync(IAnsiConsole console, IReadOnlyList<PromptArgumentInfo> arguments, ICompletionSource? completions = null)
     {
         var result = new JsonObject();
         if (arguments.Count == 0)
@@ -84,14 +88,9 @@ internal static class ArgumentElicitor
             }
 
             var marker = argument.Required ? " [red]*[/]" : string.Empty;
-            var prompt = new TextPrompt<string>($"[green]{Markup.Escape(argument.Name)}[/]{marker}:");
-            if (!argument.Required)
-            {
-                prompt.AllowEmpty();
-            }
-
-            var value = console.Prompt(prompt);
-            if (string.IsNullOrEmpty(value) && !argument.Required)
+            var label = $"[green]{Markup.Escape(argument.Name)}[/]{marker}";
+            var value = await PromptStringAsync(console, label, argument.Required, completions, argument.Name).ConfigureAwait(false);
+            if (value is null)
             {
                 continue;
             }
@@ -102,8 +101,11 @@ internal static class ArgumentElicitor
         return result;
     }
 
-    /// <summary>Prompts for each <c>{variable}</c> in a resource URI-template.</summary>
-    public static JsonObject ElicitTemplateVariables(IAnsiConsole console, string uriTemplate)
+    /// <summary>
+    /// Prompts for each <c>{variable}</c> in a resource URI-template, offering server completions
+    /// when available.
+    /// </summary>
+    public static async Task<JsonObject> ElicitTemplateVariablesAsync(IAnsiConsole console, string uriTemplate, ICompletionSource? completions = null)
     {
         var variables = ExtractTemplateVariables(uriTemplate);
         var result = new JsonObject();
@@ -115,11 +117,63 @@ internal static class ArgumentElicitor
         console.MarkupLine("[grey]Fill in the URI-template variables:[/]");
         foreach (var variable in variables)
         {
-            var value = console.Prompt(new TextPrompt<string>($"[green]{Markup.Escape(variable)}[/]:"));
-            result[variable] = JsonValue.Create(value);
+            var label = $"[green]{Markup.Escape(variable)}[/]";
+            var value = await PromptStringAsync(console, label, required: true, completions, variable).ConfigureAwait(false);
+            result[variable] = JsonValue.Create(value ?? string.Empty);
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Prompts for one string value. When the completion source yields suggestions, shows them as a
+    /// selection (plus an "enter a custom value" escape, and "(skip)" for optional args); otherwise
+    /// falls back to free-text entry. Returns null when an optional value was left blank/skipped.
+    /// </summary>
+    private static async Task<string?> PromptStringAsync(IAnsiConsole console, string label, bool required, ICompletionSource? completions, string argumentName)
+    {
+        if (completions is not null)
+        {
+            IReadOnlyList<string> suggestions;
+            try
+            {
+                suggestions = await completions.CompleteAsync(argumentName, string.Empty, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                suggestions = [];
+            }
+
+            if (suggestions.Count > 0)
+            {
+                const string custom = "(enter a custom value)";
+                var choices = new List<string>(suggestions) { custom };
+                if (!required)
+                {
+                    choices.Add(SkipChoice);
+                }
+
+                var selection = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title(label).PageSize(12).AddChoices(choices));
+                if (selection == SkipChoice)
+                {
+                    return null;
+                }
+
+                if (selection != custom)
+                {
+                    return selection;
+                }
+            }
+        }
+
+        var prompt = new TextPrompt<string>($"{label}:");
+        if (!required)
+        {
+            prompt.AllowEmpty();
+        }
+
+        var value = console.Prompt(prompt);
+        return string.IsNullOrEmpty(value) && !required ? null : value;
     }
 
     // ---------------- Pure helpers (unit-tested) ----------------

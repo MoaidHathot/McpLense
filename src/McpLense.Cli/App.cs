@@ -25,7 +25,7 @@ internal static class App
 
             if (command.Command is AppCommand.Help)
             {
-                Console.WriteLine(CommandLineHelp.Text);
+                Console.WriteLine(CommandHelp.For(command.Subject));
                 return 0;
             }
 
@@ -47,7 +47,15 @@ internal static class App
 
             if (command.Interactive && command.Command is AppCommand.Call or AppCommand.Read or AppCommand.Prompt)
             {
-                command = await InteractivePrep.FillAsync(command, AnsiConsole.Console, JsonOptions, CancellationToken.None);
+                if (!AnsiConsole.Console.Profile.Capabilities.Interactive)
+                {
+                    throw new UserInputException(
+                        "--interactive needs an interactive terminal (stdin is not a TTY). Pass --args '<json>' instead.");
+                }
+
+                var interactive = await InteractiveRunner.RunAsync(command, AnsiConsole.Console, CancellationToken.None);
+                WriteOutput(command.Format, interactive.Payload);
+                return interactive.HasErrors ? 1 : 0;
             }
 
             var result = await McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None);
