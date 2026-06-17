@@ -165,9 +165,10 @@ internal static class CommandLineParser
         // positional URL / @name / --url / --command requirement so the user can hand
         // McpLense the full target list (one URL or @name per line). Validation that the
         // flag is only set for `scan` already happened in ValidateOptions; here we just
-        // tell ParseTarget to relax its "specify a target" requirement.
+        // tell ParseTarget to relax its "specify a target" requirement. 'diff' likewise needs
+        // no network target - it diffs two baseline files - so it relaxes the requirement too.
         var hasTargetsFrom = options.ContainsKey("targets-from");
-        var target = ParseTarget(options, stdioTokens, urlPositional, allowEmptyTarget: hasTargetsFrom);
+        var target = ParseTarget(options, stdioTokens, urlPositional, allowEmptyTarget: hasTargetsFrom || command is AppCommand.Diff);
         var format = ParseFormat(GetSingle(options, "format"));
         var timeout = ParseTimeout(GetSingle(options, "timeout"));
         var progress = ParseProgress(GetSingle(options, "progress"), command);
@@ -481,7 +482,8 @@ internal static class CommandLineParser
             "http-only",
             "default-scope",
             "interactive",
-            "server-stream"
+            "server-stream",
+            "scan-plugin"
         };
 
         foreach (var option in options.Keys)
