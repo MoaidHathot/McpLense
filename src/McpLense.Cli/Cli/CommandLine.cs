@@ -35,6 +35,63 @@ internal static class CommandLineParser
         "targets-from"
     };
 
+    /// <summary>A verb-restricted long option: the commands that accept it + the exact rejection message.</summary>
+    private sealed record OptionRule(AppCommand[] AllowedCommands, string Message);
+
+    /// <summary>
+    /// Long options accepted on (essentially) every command. Structural rules - e.g. a header on a
+    /// stdio target - are still enforced in <see cref="ParseTarget"/>; this set is purely "is the
+    /// option name known and unrestricted by verb".
+    /// </summary>
+    private static readonly HashSet<string> UniversalOptions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "config", "server", "profiles", "profile", "try-all", "all", "name", "url",
+        "transport", "header", "command", "command-arg", "cwd", "env", "format",
+        "timeout", "auth", "auth-token", "no-auth", "quiet", "verbose"
+    };
+
+    /// <summary>
+    /// Verb-restricted options: the single source of truth for which command each option belongs to
+    /// and the message shown otherwise. Replaces the long ladder of scattered "X is only valid for Y"
+    /// guards AND the separate known-options allowlist - the two used to be maintained independently,
+    /// which is how <c>--scan-plugin</c> ended up rejected and never reaching its handler. The known
+    /// set is now DERIVED (universal ∪ these keys), so the two can never drift again.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, OptionRule> RestrictedOptions = new Dictionary<string, OptionRule>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["args"] = new([AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--args is only valid for call, read, and prompt."),
+        ["progress"] = new([AppCommand.Call], "--progress is only valid for call."),
+        ["classify-only"] = new([AppCommand.Scan, AppCommand.AuthScan], "--classify-only is only valid for 'scan' and 'auth-scan'."),
+        ["check-authorization-servers"] = new([AppCommand.Scan], "--check-authorization-servers is only valid for 'scan'."),
+        ["baseline"] = new([AppCommand.Scan], "--baseline is only valid for 'scan'."),
+        ["diff"] = new([AppCommand.Scan, AppCommand.Diff], "--diff is only valid for 'scan' and 'diff'."),
+        ["scan-plugin"] = new([AppCommand.Scan], "--scan-plugin is only valid for 'scan'."),
+        ["enable"] = new([AppCommand.Scan, AppCommand.Observe], "--enable / --disable are only valid for 'scan' and 'observe'."),
+        ["disable"] = new([AppCommand.Scan, AppCommand.Observe], "--enable / --disable are only valid for 'scan' and 'observe'."),
+        ["parallel-servers"] = new([AppCommand.Scan], "--parallel-servers is only valid for 'scan'."),
+        ["targets-from"] = new([AppCommand.Scan], "--targets-from is only valid for 'scan'."),
+        ["http-only"] = new([AppCommand.Scan], "--http-only is only valid for 'scan'."),
+        ["default-scope"] = new(
+            [AppCommand.Scan, AppCommand.AuthScan, AppCommand.Inspect, AppCommand.Tools, AppCommand.Resources, AppCommand.Prompts, AppCommand.Call, AppCommand.Read, AppCommand.Prompt, AppCommand.FetchResource, AppCommand.Observe],
+            "--default-scope is only valid for scan / inspect / read / call / prompt / fetch-resource / observe / auth-scan / tools / resources / prompts."),
+        ["interactive"] = new([AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--interactive is only valid for call, read, and prompt."),
+        ["server-stream"] = new([AppCommand.Tui, AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--server-stream is only valid for tui and for interactive call, read, and prompt.")
+    };
+
+    /// <summary>Every recognised long option = universal ∪ restricted keys. Derived so the two can't drift.</summary>
+    private static readonly HashSet<string> KnownOptions = BuildKnownOptions();
+
+    private static HashSet<string> BuildKnownOptions()
+    {
+        var known = new HashSet<string>(UniversalOptions, StringComparer.OrdinalIgnoreCase);
+        foreach (var option in RestrictedOptions.Keys)
+        {
+            known.Add(option);
+        }
+
+        return known;
+    }
+
     public static ParsedCommand Parse(string[] args)
     {
         if (args.Length == 0)
@@ -446,127 +503,28 @@ internal static class CommandLineParser
 
     private static void ValidateOptions(Dictionary<string, List<string>> options, AppCommand command)
     {
-        var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "config",
-            "server",
-            "profiles",
-            "profile",
-            "try-all",
-            "all",
-            "name",
-            "url",
-            "transport",
-            "header",
-            "command",
-            "command-arg",
-            "cwd",
-            "env",
-            "format",
-            "timeout",
-            "args",
-            "progress",
-            "auth",
-            "auth-token",
-            "no-auth",
-            "classify-only",
-            "check-authorization-servers",
-            "baseline",
-            "diff",
-            "enable",
-            "disable",
-            "parallel-servers",
-            "quiet",
-            "verbose",
-            "targets-from",
-            "http-only",
-            "default-scope",
-            "interactive",
-            "server-stream",
-            "scan-plugin"
-        };
-
+        // Pass 1: reject unrecognised options first (so an unknown flag always wins over a
+        // verb-restriction message, matching the historical ordering).
         foreach (var option in options.Keys)
         {
-            if (!known.Contains(option))
+            if (!KnownOptions.Contains(option))
             {
                 throw new UserInputException($"Unknown option '--{option}'.");
             }
         }
 
-        if (command is not (AppCommand.Call or AppCommand.Read or AppCommand.Prompt) && options.ContainsKey("args"))
+        // Pass 2: enforce per-verb restrictions from the single registry.
+        foreach (var option in options.Keys)
         {
-            throw new UserInputException("--args is only valid for call, read, and prompt.");
-        }
-
-        if (command is not AppCommand.Call && options.ContainsKey("progress"))
-        {
-            throw new UserInputException("--progress is only valid for call.");
-        }
-
-        if (command is not (AppCommand.Scan or AppCommand.AuthScan) && options.ContainsKey("classify-only"))
-        {
-            throw new UserInputException("--classify-only is only valid for 'scan' and 'auth-scan'.");
-        }
-
-        if (command is not AppCommand.Scan && options.ContainsKey("check-authorization-servers"))
-        {
-            throw new UserInputException("--check-authorization-servers is only valid for 'scan'.");
-        }
-
-        if (command is not AppCommand.Scan && options.ContainsKey("baseline"))
-        {
-            throw new UserInputException("--baseline is only valid for 'scan'.");
-        }
-
-        if (command is not (AppCommand.Scan or AppCommand.Diff) && options.ContainsKey("diff"))
-        {
-            throw new UserInputException("--diff is only valid for 'scan' and 'diff'.");
-        }
-
-        if (command is not AppCommand.Scan && options.ContainsKey("scan-plugin"))
-        {
-            throw new UserInputException("--scan-plugin is only valid for 'scan'.");
-        }
-
-        if (command is not (AppCommand.Scan or AppCommand.Observe) && (options.ContainsKey("enable") || options.ContainsKey("disable")))
-        {
-            throw new UserInputException("--enable / --disable are only valid for 'scan' and 'observe'.");
-        }
-
-        if (command is not AppCommand.Scan && options.ContainsKey("parallel-servers"))
-        {
-            throw new UserInputException("--parallel-servers is only valid for 'scan'.");
-        }
-
-        if (command is not AppCommand.Scan && options.ContainsKey("targets-from"))
-        {
-            throw new UserInputException("--targets-from is only valid for 'scan'.");
-        }
-
-        if (command is not AppCommand.Scan && options.ContainsKey("http-only"))
-        {
-            throw new UserInputException("--http-only is only valid for 'scan'.");
-        }
-
-        if (command is not (AppCommand.Scan or AppCommand.AuthScan or AppCommand.Inspect or AppCommand.Tools or AppCommand.Resources or AppCommand.Prompts or AppCommand.Call or AppCommand.Read or AppCommand.Prompt or AppCommand.FetchResource or AppCommand.Observe) && options.ContainsKey("default-scope"))
-        {
-            throw new UserInputException("--default-scope is only valid for scan / inspect / read / call / prompt / fetch-resource / observe / auth-scan / tools / resources / prompts.");
+            if (RestrictedOptions.TryGetValue(option, out var rule) && !rule.AllowedCommands.Contains(command))
+            {
+                throw new UserInputException(rule.Message);
+            }
         }
 
         if (options.ContainsKey("quiet") && options.ContainsKey("verbose"))
         {
             throw new UserInputException("--quiet and --verbose cannot be combined.");
-        }
-
-        if (command is not (AppCommand.Call or AppCommand.Read or AppCommand.Prompt) && options.ContainsKey("interactive"))
-        {
-            throw new UserInputException("--interactive is only valid for call, read, and prompt.");
-        }
-
-        if (command is not (AppCommand.Tui or AppCommand.Call or AppCommand.Read or AppCommand.Prompt) && options.ContainsKey("server-stream"))
-        {
-            throw new UserInputException("--server-stream is only valid for tui and for interactive call, read, and prompt.");
         }
 
         if (command is AppCommand.Call or AppCommand.Read or AppCommand.Prompt
