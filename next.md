@@ -2,7 +2,7 @@
 
 Living roadmap.
 
-## T4: internal refactors + latent bug fixes (this session, pending release)
+## Delivered in 0.12.0 - internal refactors + latent bug fixes
 
 Pure-internal refactors (no user-visible behavior change) plus three latent bugs
 found while adding the characterization tests that made the refactors safe. Each
@@ -37,8 +37,6 @@ Latent bugs caught by the new characterization tests and fixed:
 - **`observe` double-wrapped its payload** - `DispatchObserveAsync` already returns an
   `ExecutionOutcome`, but `ExecuteAsync` wrapped it again, so its payload was an
   `ExecutionOutcome` instead of a `ScanReport` (inconsistent with `scan`).
-
-When released, the bug fixes warrant a version bump (likely 0.12.0).
 
 ## Delivered in 0.11.0
 
@@ -168,9 +166,9 @@ implemented; we documented + verified rather than re-implementing:
 
 ## Carried forward to a follow-up session
 
-- **A1 / A3 / A4 refactors: DONE.** Delivered in the T4 refactor pass - see "T4:
-  internal refactors + latent bug fixes" at the top of this file. (A1 McpExecutor
-  dictionary dispatch, A3 AuthScanner split, A4 CommandLine option registry.)
+- **A1 / A3 / A4 refactors: DONE.** Delivered in the T4 refactor pass - see "Delivered
+  in 0.12.0 - internal refactors + latent bug fixes" at the top of this file. (A1
+  McpExecutor dictionary dispatch, A3 AuthScanner split, A4 CommandLine option registry.)
 
 ## Delivered in 0.4.0
 
