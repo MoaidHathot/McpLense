@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using McpLense.Analysis;
 using McpLense.Scanning.TargetResolution;
 
 namespace McpLense.Scanning;
@@ -46,6 +47,13 @@ public sealed class ScanConfig
     /// <summary>Schema version reserved for future migrations.</summary>
     [JsonPropertyName("schemaVersion")]
     public int SchemaVersion { get; init; } = 1;
+
+    /// <summary>
+    /// Config for the analysis (findings) layer. Read from the top-level <c>analysis</c> block
+    /// (peer of <c>scan</c>); a legacy nested location under <c>scan.analysis</c> also deserializes.
+    /// </summary>
+    [JsonPropertyName("analysis")]
+    public AnalysisConfig Analysis { get; init; } = new();
 
     /// <summary>
     /// Returns the parsed config block for a given check id, or null when nothing was

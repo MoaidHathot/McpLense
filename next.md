@@ -2,6 +2,34 @@
 
 Living roadmap.
 
+## Delivered in 0.13.0 - findings/analysis layer (Phase 1)
+
+The first of a 5-phase push to make exploring MCPs easy for learning, debugging, and security.
+A new opt-in analysis layer turns the fact-only scan into severity-rated findings, kept strictly
+separate from the facts (the scan checks still never label anything).
+
+- **`mcplense analyze <url>`** and **`scan --findings`**: run the scan, then apply a built-in rule
+  pack via `FindingsAnalyzer` (a pure consumer of `ScanReport`) and emit a `FindingsReport`. Facts
+  and findings never interleave - `analyze` emits findings only; `scan --findings` emits
+  `{ scan, findings }` with separate top-level keys; plain `scan` is unchanged.
+- **Built-in rules** (`src/McpLense/Analysis/Rules/`) codify the security-classification recipes:
+  prompt-injection (hidden bidi/zero-width/control chars + instruction-hijacking phrases),
+  anonymous-destructive, weak-cors, mixed-content, tls-chain-invalid, tls-expiry, open-shape-input,
+  error-info-leak, description-url, missing-destructive-hint, unannounced-bearer. Each finding
+  carries an evidence path back into the scan facts + a remediation.
+- **CI gate**: `--fail-on <severity>` (or `analysis.failOn` in config) exits non-zero when a finding
+  meets/exceeds the threshold.
+- **Config-driven**: a top-level `analysis` block in `McpLense.Config.json`
+  (`analysis.rules.<id>.enabled` / `.severity`, `analysis.failOn`) configures rules + the gate, so
+  policy lives in config rather than CLI flags. Wired through `ScanConfig` + the loader + the schema.
+- Docs: `docs/analysis-rules.md` (rule + config reference), README "Findings" section, skill
+  COMMANDS.md, and a pointer atop `security-classification-recipes.md`.
+
+Build + test state: Release `-warnaserror` clean. 777 unit + 70 integration + 36 E2E + 6 gated.
+
+Remaining phases: 2 SARIF + rug-pull/baseline-approve; 3 learning (explain + markdown/HTML +
+sample calls); 4 debugging (trace + doctor + stdio stderr + watch); 5 Section-2 checks + serve.
+
 ## Delivered in 0.12.0 - internal refactors + latent bug fixes
 
 Pure-internal refactors (no user-visible behavior change) plus three latent bugs

@@ -76,6 +76,21 @@ public class CliE2ETests
     }
 
     [Fact]
+    public async Task Analyze_AgainstStdioTestServer_EmitsFindingsReport()
+    {
+        var args = CliRunner.WithStdioTestServer(
+            "analyze",
+            "--format", "json",
+            "--timeout", "60");
+
+        var result = await CliRunner.RunAsync(args, DefaultTimeout);
+
+        result.ExitCode.ShouldBe(0, $"stderr=<<{result.StandardError}>>");
+        result.StandardOutput.ShouldContain("\"findings\":");
+        result.StandardOutput.ShouldContain("\"servers\":");
+    }
+
+    [Fact]
     public async Task Tools_AgainstStdioTestServer_ListsKnownTools()
     {
         var args = CliRunner.WithStdioTestServer(

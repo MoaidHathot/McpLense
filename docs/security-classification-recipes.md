@@ -1,7 +1,11 @@
 # Security-classification recipes
 
-`mcplense scan` is deliberately fact-only: every check emits raw observations and never
-labels findings. Downstream tools (security policy engines, dashboards, CI gates)
+> **Many of these are now built in.** `mcplense analyze` ships a rule pack that codifies the recipes
+> below into severity-rated findings with a CI gate — see [analysis-rules.md](analysis-rules.md). The
+> recipes remain useful when you want to roll your own classification over the raw `scan` facts.
+
+`mcplense scan` is deliberately fact-only: every check emits raw observations and never labels
+findings. Downstream tools (security policy engines, dashboards, CI gates)
 classify on top of the data. This document collects practical recipes for that
 downstream step. None of them require new mcplense features - they pattern-match against
 the JSON the existing checks produce.

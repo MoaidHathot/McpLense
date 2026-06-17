@@ -37,6 +37,7 @@ internal enum AppCommand
     Observe,
     FetchResource,
     Diff,
+    Analyze,
     Schema
 }
 
@@ -94,7 +95,18 @@ internal sealed record ParsedCommand(
     /// request. Suppressed by default because some Streamable-HTTP servers drop the POST session when
     /// a parallel GET stream is opened; the <c>--server-stream</c> flag opts back in. CLI-only knob.
     /// </summary>
-    bool ServerStream = false);
+    bool ServerStream = false,
+    /// <summary>
+    /// <c>scan</c> only: when true, also run the analysis (findings) layer and emit facts + findings
+    /// together. <c>analyze</c> always runs findings regardless of this flag.
+    /// </summary>
+    bool Findings = false,
+    /// <summary>
+    /// CI gate for <c>analyze</c> / <c>scan --findings</c>: a severity name (info/low/medium/high/
+    /// critical). When any finding meets or exceeds it the process exits non-zero. Overrides
+    /// <c>analysis.failOn</c> from config; null means "use config (or never gate)".
+    /// </summary>
+    string? FailOn = null);
 
 /// <summary>
 /// Resolved target description used to drive scans and other read-only operations. Public so

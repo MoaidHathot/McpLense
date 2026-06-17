@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using McpLense.Analysis;
 using McpLense.Scanning;
 
 namespace McpLense;
@@ -20,8 +21,51 @@ internal static class TextFormatter
         AuthScanReport report => FormatAuthScan(report),
         ScanReport report => FormatScanReport(report, jsonOptions),
         ScanDiff.ScanDiffReport diff => FormatScanDiff(diff, jsonOptions),
+        FindingsReport findings => FormatFindings(findings),
+        AnalyzedScanReport analyzed => FormatScanReport(analyzed.Scan, jsonOptions) + "\n\n" + FormatFindings(analyzed.Findings),
         _ => JsonSerializer.Serialize(payload, jsonOptions)
     };
+
+    /// <summary>Human-readable findings: one block per server, most-severe-first, with evidence + fix.</summary>
+    private static string FormatFindings(FindingsReport report)
+    {
+        var sb = new StringBuilder();
+        foreach (var server in report.Servers)
+        {
+            if (server.Findings.Count == 0)
+            {
+                sb.AppendLine($"findings: none   {server.Target}");
+                continue;
+            }
+
+            var counts = server.Findings
+                .GroupBy(f => f.Severity)
+                .OrderByDescending(g => g.Key)
+                .Select(g => $"{g.Count()} {g.Key.ToWire()}");
+            sb.AppendLine($"findings: {server.Findings.Count} ({string.Join(", ", counts)})   {server.Target}");
+
+            foreach (var finding in server.Findings)
+            {
+                sb.AppendLine($"  [{finding.Severity.ToWire().ToUpperInvariant()}] {finding.RuleId}: {finding.Title}");
+                sb.AppendLine($"      at {finding.EvidencePath}");
+                if (!string.IsNullOrEmpty(finding.Evidence))
+                {
+                    sb.AppendLine($"      evidence: {finding.Evidence}");
+                }
+                sb.AppendLine($"      fix: {finding.Remediation}");
+            }
+        }
+
+        if (report.Servers.Count > 1 || report.Count > 0)
+        {
+            sb.Append(report.Count == 0
+                ? "total: no findings"
+                : $"total: {report.Count} finding(s), max severity {report.MaxSeverity?.ToWire()}");
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
 
     /// <summary>
     /// Renders the new <see cref="ScanReport"/> from the IScanCheck pipeline. Each server

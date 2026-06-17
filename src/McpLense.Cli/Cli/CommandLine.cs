@@ -17,7 +17,8 @@ internal static class CommandLineParser
         "verbose",
         "http-only",
         "interactive",
-        "server-stream"
+        "server-stream",
+        "findings"
     };
 
     /// <summary>Long options that can appear multiple times (repeatable).</summary>
@@ -62,20 +63,22 @@ internal static class CommandLineParser
         ["args"] = new([AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--args is only valid for call, read, and prompt."),
         ["progress"] = new([AppCommand.Call], "--progress is only valid for call."),
         ["classify-only"] = new([AppCommand.Scan, AppCommand.AuthScan], "--classify-only is only valid for 'scan' and 'auth-scan'."),
-        ["check-authorization-servers"] = new([AppCommand.Scan], "--check-authorization-servers is only valid for 'scan'."),
+        ["check-authorization-servers"] = new([AppCommand.Scan, AppCommand.Analyze], "--check-authorization-servers is only valid for 'scan' and 'analyze'."),
         ["baseline"] = new([AppCommand.Scan], "--baseline is only valid for 'scan'."),
         ["diff"] = new([AppCommand.Scan, AppCommand.Diff], "--diff is only valid for 'scan' and 'diff'."),
-        ["scan-plugin"] = new([AppCommand.Scan], "--scan-plugin is only valid for 'scan'."),
-        ["enable"] = new([AppCommand.Scan, AppCommand.Observe], "--enable / --disable are only valid for 'scan' and 'observe'."),
-        ["disable"] = new([AppCommand.Scan, AppCommand.Observe], "--enable / --disable are only valid for 'scan' and 'observe'."),
-        ["parallel-servers"] = new([AppCommand.Scan], "--parallel-servers is only valid for 'scan'."),
-        ["targets-from"] = new([AppCommand.Scan], "--targets-from is only valid for 'scan'."),
-        ["http-only"] = new([AppCommand.Scan], "--http-only is only valid for 'scan'."),
+        ["scan-plugin"] = new([AppCommand.Scan, AppCommand.Analyze], "--scan-plugin is only valid for 'scan' and 'analyze'."),
+        ["enable"] = new([AppCommand.Scan, AppCommand.Observe, AppCommand.Analyze], "--enable / --disable are only valid for 'scan', 'observe', and 'analyze'."),
+        ["disable"] = new([AppCommand.Scan, AppCommand.Observe, AppCommand.Analyze], "--enable / --disable are only valid for 'scan', 'observe', and 'analyze'."),
+        ["parallel-servers"] = new([AppCommand.Scan, AppCommand.Analyze], "--parallel-servers is only valid for 'scan' and 'analyze'."),
+        ["targets-from"] = new([AppCommand.Scan, AppCommand.Analyze], "--targets-from is only valid for 'scan' and 'analyze'."),
+        ["http-only"] = new([AppCommand.Scan, AppCommand.Analyze], "--http-only is only valid for 'scan' and 'analyze'."),
         ["default-scope"] = new(
-            [AppCommand.Scan, AppCommand.AuthScan, AppCommand.Inspect, AppCommand.Tools, AppCommand.Resources, AppCommand.Prompts, AppCommand.Call, AppCommand.Read, AppCommand.Prompt, AppCommand.FetchResource, AppCommand.Observe],
-            "--default-scope is only valid for scan / inspect / read / call / prompt / fetch-resource / observe / auth-scan / tools / resources / prompts."),
+            [AppCommand.Scan, AppCommand.AuthScan, AppCommand.Inspect, AppCommand.Tools, AppCommand.Resources, AppCommand.Prompts, AppCommand.Call, AppCommand.Read, AppCommand.Prompt, AppCommand.FetchResource, AppCommand.Observe, AppCommand.Analyze],
+            "--default-scope is only valid for scan / inspect / read / call / prompt / fetch-resource / observe / auth-scan / tools / resources / prompts / analyze."),
         ["interactive"] = new([AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--interactive is only valid for call, read, and prompt."),
-        ["server-stream"] = new([AppCommand.Tui, AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--server-stream is only valid for tui and for interactive call, read, and prompt.")
+        ["server-stream"] = new([AppCommand.Tui, AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--server-stream is only valid for tui and for interactive call, read, and prompt."),
+        ["findings"] = new([AppCommand.Scan], "--findings is only valid for 'scan' ('analyze' always produces findings)."),
+        ["fail-on"] = new([AppCommand.Scan, AppCommand.Analyze], "--fail-on is only valid for 'scan' (with --findings) and 'analyze'.")
     };
 
     /// <summary>Every recognised long option = universal ∪ restricted keys. Derived so the two can't drift.</summary>
@@ -249,6 +252,12 @@ internal static class CommandLineParser
         var verbose = string.Equals(GetSingle(options, "verbose"), "true", StringComparison.OrdinalIgnoreCase);
         var interactive = string.Equals(GetSingle(options, "interactive"), "true", StringComparison.OrdinalIgnoreCase);
         var serverStream = string.Equals(GetSingle(options, "server-stream"), "true", StringComparison.OrdinalIgnoreCase);
+        var findings = string.Equals(GetSingle(options, "findings"), "true", StringComparison.OrdinalIgnoreCase);
+        var failOn = GetSingle(options, "fail-on");
+        if (failOn is not null && McpLense.Analysis.Severities.TryParse(failOn) is null)
+        {
+            throw new UserInputException($"--fail-on '{failOn}' is not a severity. Use one of: info, low, medium, high, critical.");
+        }
         var scanPlugins = GetMany(options, "scan-plugin");
 
         var targetsFromPaths = GetMany(options, "targets-from");
@@ -300,7 +309,9 @@ internal static class CommandLineParser
             HttpOnly: httpOnly,
             DefaultScope: defaultScope,
             Interactive: interactive,
-            ServerStream: serverStream);
+            ServerStream: serverStream,
+            Findings: findings,
+            FailOn: failOn);
     }
 
     /// <summary>
@@ -442,6 +453,7 @@ internal static class CommandLineParser
             case "observe": command = AppCommand.Observe; return true;
             case "fetch-resource": command = AppCommand.FetchResource; return true;
             case "diff": command = AppCommand.Diff; return true;
+            case "analyze": command = AppCommand.Analyze; return true;
             case "schema": command = AppCommand.Schema; return true;
             default: command = default; return false;
         }

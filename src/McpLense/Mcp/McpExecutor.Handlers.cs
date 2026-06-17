@@ -1,4 +1,5 @@
 using System.Text.Json;
+using McpLense.Analysis;
 using McpLense.Diagnostics;
 using McpLense.Mcp;
 using McpLense.Scanning;
@@ -20,6 +21,7 @@ internal static partial class McpExecutor
             new LogoutHandler(),
             new DiffHandler(),
             new ScanHandler(),
+            new AnalyzeHandler(),
             new AuthScanHandler(),
             new ObserveHandler(),
             new FetchResourceHandler(),
@@ -132,31 +134,7 @@ internal static partial class McpExecutor
 
         public async Task<ExecutionOutcome> ExecuteAsync(ParsedCommand command, IReadOnlyList<ResolvedServer>? servers, JsonSerializerOptions jsonOptions, CancellationToken cancellationToken)
         {
-            var cliEnables = command.CheckEnables is null ? null : new HashSet<string>(command.CheckEnables, StringComparer.OrdinalIgnoreCase);
-            var cliDisables = command.CheckDisables is null ? null : new HashSet<string>(command.CheckDisables, StringComparer.OrdinalIgnoreCase);
-            var parallel = command.ParallelServers ?? 1;
-
-            // Progress reporting: silent in --quiet mode; basic [n/N] line otherwise.
-            Action<int, int, string, TimeSpan>? progressCallback = null;
-            if (!command.Quiet)
-            {
-                progressCallback = (index, total, name, elapsed) =>
-                {
-                    McpLenseLog.Write($"[{index}/{total}] {name}: ok ({elapsed.TotalSeconds:F1}s)");
-                };
-            }
-
-            var scanReport = await ScanCommandDispatcher.RunAsync(
-                command.Target,
-                command.Timeout,
-                cliEnables,
-                cliDisables,
-                cancellationToken,
-                maxDegreeOfParallelism: parallel,
-                progress: progressCallback,
-                quiet: command.Quiet,
-                verbose: command.Verbose,
-                scanPluginPaths: command.ScanPlugins).ConfigureAwait(false);
+            var scanReport = await RunScanAsync(command, cancellationToken).ConfigureAwait(false);
 
             if (!string.IsNullOrEmpty(command.BaselinePath))
             {
@@ -174,8 +152,77 @@ internal static partial class McpExecutor
                 return new ExecutionOutcome(ScanDiff.Diff(baseline, scanReport), false);
             }
 
+            // --findings: emit facts + findings together (separate top-level keys), gated by --fail-on.
+            if (command.Findings)
+            {
+                var (findings, gate) = await AnalyzeScanAsync(scanReport, command, cancellationToken).ConfigureAwait(false);
+                return new ExecutionOutcome(new AnalyzedScanReport(scanReport, findings), gate);
+            }
+
             return new ExecutionOutcome(scanReport, false);
         }
+    }
+
+    private sealed class AnalyzeHandler : ICommandHandler
+    {
+        public AppCommand Command => AppCommand.Analyze;
+        // Tier None: analyze runs the scan pipeline itself (via ScanCommandDispatcher), like scan.
+        public ServerResolution Resolution => ServerResolution.None;
+
+        public async Task<ExecutionOutcome> ExecuteAsync(ParsedCommand command, IReadOnlyList<ResolvedServer>? servers, JsonSerializerOptions jsonOptions, CancellationToken cancellationToken)
+        {
+            var scanReport = await RunScanAsync(command, cancellationToken).ConfigureAwait(false);
+            var (findings, gate) = await AnalyzeScanAsync(scanReport, command, cancellationToken).ConfigureAwait(false);
+            // HasErrors doubles as the CI-gate signal: non-zero exit when findings cross the threshold.
+            return new ExecutionOutcome(findings, gate);
+        }
+    }
+
+    /// <summary>Runs the scan pipeline for scan/analyze (shared so both produce identical facts).</summary>
+    private static async Task<Scanning.ScanReport> RunScanAsync(ParsedCommand command, CancellationToken cancellationToken)
+    {
+        var cliEnables = command.CheckEnables is null ? null : new HashSet<string>(command.CheckEnables, StringComparer.OrdinalIgnoreCase);
+        var cliDisables = command.CheckDisables is null ? null : new HashSet<string>(command.CheckDisables, StringComparer.OrdinalIgnoreCase);
+        var parallel = command.ParallelServers ?? 1;
+
+        Action<int, int, string, TimeSpan>? progressCallback = null;
+        if (!command.Quiet)
+        {
+            progressCallback = (index, total, name, elapsed) =>
+            {
+                McpLenseLog.Write($"[{index}/{total}] {name}: ok ({elapsed.TotalSeconds:F1}s)");
+            };
+        }
+
+        return await ScanCommandDispatcher.RunAsync(
+            command.Target,
+            command.Timeout,
+            cliEnables,
+            cliDisables,
+            cancellationToken,
+            maxDegreeOfParallelism: parallel,
+            progress: progressCallback,
+            quiet: command.Quiet,
+            verbose: command.Verbose,
+            scanPluginPaths: command.ScanPlugins).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the findings analysis over a scan report, applying the config's analysis block, and
+    /// computes the CI gate (effective threshold = --fail-on, else analysis.failOn from config).
+    /// </summary>
+    private static async Task<(FindingsReport Findings, bool GateExceeded)> AnalyzeScanAsync(
+        Scanning.ScanReport scanReport,
+        ParsedCommand command,
+        CancellationToken cancellationToken)
+    {
+        var configPaths = TargetConfigLoading.ResolveScanConfigPaths(command.Target.ProfilePaths);
+        var config = await ScanConfigLoader.LoadAsync(configPaths, cancellationToken).ConfigureAwait(false);
+
+        var findings = new FindingsAnalyzer().Analyze(scanReport, config.Analysis);
+        var threshold = Severities.TryParse(command.FailOn) ?? config.Analysis.FailOnThreshold;
+        var gate = threshold is { } t && findings.Exceeds(t);
+        return (findings, gate);
     }
 
     // --- Tier ResolveOnly: resolve + overlay, but no executor-driven auth attach -------------

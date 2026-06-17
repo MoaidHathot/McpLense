@@ -66,6 +66,23 @@ internal static class ScanConfigLoader
                 entry = new ScanConfig();
             }
 
+            // Top-level analysis block (peer of scan). Overrides any nested scan.analysis the
+            // deserialize above may have produced. Copied via object-initializer because ScanConfig
+            // is an init-only class (no record `with`).
+            if (rootObj["analysis"] is JsonObject topAnalysis
+                && topAnalysis.Deserialize<Analysis.AnalysisConfig>() is { } analysis)
+            {
+                entry = new ScanConfig
+                {
+                    Checks = entry.Checks,
+                    Output = entry.Output,
+                    Targets = entry.Targets,
+                    TargetPatterns = entry.TargetPatterns,
+                    SchemaVersion = entry.SchemaVersion,
+                    Analysis = analysis
+                };
+            }
+
             // Top-level targets / targetPatterns (peer of authProfiles + scan). We accept the
             // legacy nested location (under "scan") too via the deserialise above, but the
             // recommended layout is top-level so they stay alongside authProfiles.
@@ -255,6 +272,13 @@ internal static class ScanConfigLoader
         var patterns = new List<TargetPatternEntry>(left.TargetPatterns);
         patterns.AddRange(right.TargetPatterns);
 
+        // Analysis rules merge per-id (right wins); failOn is right-then-left.
+        var rules = new Dictionary<string, Analysis.AnalysisRuleConfig>(left.Analysis.Rules, StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, v) in right.Analysis.Rules)
+        {
+            rules[k] = v;
+        }
+
         return new ScanConfig
         {
             Checks = checks,
@@ -265,7 +289,12 @@ internal static class ScanConfigLoader
             },
             Targets = targets,
             TargetPatterns = patterns,
-            SchemaVersion = right.SchemaVersion != 0 ? right.SchemaVersion : left.SchemaVersion
+            SchemaVersion = right.SchemaVersion != 0 ? right.SchemaVersion : left.SchemaVersion,
+            Analysis = new Analysis.AnalysisConfig
+            {
+                Rules = rules,
+                FailOn = right.Analysis.FailOn ?? left.Analysis.FailOn
+            }
         };
     }
 }

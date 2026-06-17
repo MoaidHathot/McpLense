@@ -146,9 +146,29 @@ mcplense prompts [<url>]
 mcplense call <tool-name> [<url>]
 mcplense read <uri-or-template> [<url>]
 mcplense prompt <prompt-name> [<url>]
+mcplense scan [<url>]                            # fact-only audit pipeline
+mcplense analyze [<url>] [--fail-on <severity>]  # scan + severity-rated findings (CI gate)
 mcplense login   {--all | --profile <name> | <url>}
 mcplense logout  {--all | --profile <name> | <url>}
 ```
+
+### Findings (`analyze`)
+
+`scan` is deliberately **fact-only** — it records observations and never labels them. `analyze`
+runs the same scan, then applies a built-in rule pack (prompt-injection signals in tool
+descriptions, anonymous servers exposing destructive tools, open-shape input schemas, weak CORS,
+TLS posture, error info-leak, ...) and emits **findings** with severities. Facts and findings stay
+in separate documents.
+
+```bash
+mcplense analyze https://server.example/mcp                 # human-readable findings
+mcplense analyze https://server.example/mcp --fail-on high  # CI gate: non-zero exit at/above high
+mcplense scan https://server.example/mcp --findings --format json
+```
+
+Rules and severities are configured in `McpLense.Config.json` under the top-level `analysis` block
+(`analysis.rules.<id>.enabled` / `.severity`, `analysis.failOn`) - a fleet policy lives in config
+rather than CLI flags. See [docs/analysis-rules.md](docs/analysis-rules.md).
 
 ## Targets
 

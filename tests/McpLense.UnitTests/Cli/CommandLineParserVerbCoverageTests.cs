@@ -214,4 +214,46 @@ public class CommandLineParserVerbCoverageTests
         parsed.Target.NamedReference.ShouldBe("prod");
         parsed.Target.Headers.ShouldContainKey("x-test");
     }
+
+    // --- analyze / findings ------------------------------------------
+
+    [Fact]
+    public void Analyze_Url_IsRecognized()
+    {
+        var parsed = CommandLineParser.Parse(["analyze", "https://h/mcp"]);
+
+        parsed.Command.ShouldBe(AppCommand.Analyze);
+        parsed.Target.Url!.ToString().ShouldBe("https://h/mcp");
+    }
+
+    [Fact]
+    public void Analyze_FailOn_IsParsed()
+    {
+        var parsed = CommandLineParser.Parse(["analyze", "https://h/mcp", "--fail-on", "high"]);
+
+        parsed.FailOn.ShouldBe("high");
+    }
+
+    [Fact]
+    public void Analyze_FailOn_InvalidSeverity_Throws()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse(["analyze", "https://h/mcp", "--fail-on", "bogus"]));
+        ex.Message.ShouldContain("not a severity");
+    }
+
+    [Fact]
+    public void Scan_Findings_SetsFlag()
+    {
+        var parsed = CommandLineParser.Parse(["scan", "https://h/mcp", "--findings"]);
+
+        parsed.Findings.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Findings_OnInspect_Throws()
+        => Should.Throw<UserInputException>(() => CommandLineParser.Parse(["inspect", "https://h/mcp", "--findings"]));
+
+    [Fact]
+    public void FailOn_OnInspect_Throws()
+        => Should.Throw<UserInputException>(() => CommandLineParser.Parse(["inspect", "https://h/mcp", "--fail-on", "high"]));
 }

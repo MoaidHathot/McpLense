@@ -85,6 +85,25 @@ Common flags:
   different host, off by default).
 - `--classify-only` — skip profile attempts AND skip enumeration that
   depends on them. Only the `auth` block is emitted.
+- `--findings` — also run the analysis layer; emits `{ "scan": ..., "findings": ... }`.
+- `--fail-on <severity>` — with `--findings`, exit non-zero when a finding ≥ severity.
+
+### `mcplense analyze <url|@target>`
+
+Runs the scan pipeline, then classifies the fact-only output into severity-rated
+**findings** using a built-in rule pack (prompt-injection signals, tool poisoning,
+open-shape input, weak CORS, TLS posture, error info-leak, ...). The scan itself stays
+fact-only — `analyze` is a separate opt-in consumer. Output is a `FindingsReport`
+(`servers[].findings[]`, each with `ruleId`, `severity`, `evidencePath`, `remediation`).
+
+- `--fail-on <severity>` — CI gate: exit non-zero if any finding ≥ severity
+  (info/low/medium/high/critical). Overrides `analysis.failOn` from config.
+- Accepts the scan-shaping flags (`--enable`/`--disable`, `--scan-plugin`,
+  `--check-authorization-servers`, `--targets-from`, `--parallel-servers`).
+
+Rules and their severities are configured in `McpLense.Config.json` under the top-level
+`analysis` block (`analysis.rules.<id>.enabled` / `.severity`, `analysis.failOn`), so a
+fleet policy lives in config rather than CLI flags. See `docs/analysis-rules.md`.
 
 ### `mcplense auth-scan <url|@target>`
 

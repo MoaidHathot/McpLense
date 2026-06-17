@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using McpLense;
+using McpLense.Analysis;
 using McpLense.Scanning;
 using Shouldly;
 using Xunit;
@@ -325,6 +326,17 @@ public class McpExecutorTests
         var outcome = await McpExecutor.ExecuteAsync(BuildCommand(AppCommand.Scan), JsonOptions, CancellationToken.None);
 
         var report = outcome.Payload.ShouldBeOfType<ScanReport>();
+        report.Servers.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task Analyze_StdioTarget_ProducesFindingsReport()
+    {
+        var outcome = await McpExecutor.ExecuteAsync(BuildCommand(AppCommand.Analyze), JsonOptions, CancellationToken.None);
+
+        // No --fail-on -> never gates, so HasErrors stays false regardless of findings.
+        outcome.HasErrors.ShouldBeFalse();
+        var report = outcome.Payload.ShouldBeOfType<FindingsReport>();
         report.Servers.Count.ShouldBe(1);
     }
 

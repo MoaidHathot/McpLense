@@ -159,4 +159,28 @@ public class ScanConfigLoaderTargetsTests
         var config = await LoadFromTextAsync(Json);
         config.Targets[0].DisabledChecks!.ShouldBe(new[] { "corsPreflight", "tlsChain" });
     }
+
+    [Fact]
+    public async Task Top_level_analysis_block_is_loaded()
+    {
+        const string Json = """
+        {
+          "analysis": {
+            "failOn": "high",
+            "rules": {
+              "missing-destructive-hint": { "severity": "high" },
+              "description-url": { "enabled": false }
+            }
+          }
+        }
+        """;
+
+        var config = await LoadFromTextAsync(Json);
+
+        config.Analysis.FailOnThreshold.ShouldBe(McpLense.Analysis.Severity.High);
+        config.Analysis.SeverityFor("missing-destructive-hint", McpLense.Analysis.Severity.Low)
+            .ShouldBe(McpLense.Analysis.Severity.High);
+        config.Analysis.IsRuleEnabled("description-url", defaultEnabled: true).ShouldBeFalse();
+        config.Analysis.IsRuleEnabled("missing-destructive-hint", defaultEnabled: true).ShouldBeTrue();
+    }
 }

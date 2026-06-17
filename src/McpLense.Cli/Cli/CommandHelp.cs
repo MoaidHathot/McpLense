@@ -205,11 +205,42 @@ Scan options
   --targets-from <path>           Read targets (one URL/@name per line) (repeatable).
   --parallel-servers <n>          Scan up to n servers concurrently.
   --http-only                     Drop stdio targets after resolution.
+  --findings                      Also run the analysis layer and emit facts + findings.
+  --fail-on <severity>            With --findings: exit non-zero if a finding >= severity.
   --quiet | --verbose             Progress verbosity.
 
 Examples
   mcplense scan https://api.example.com/mcp --check-authorization-servers
   mcplense scan --targets-from fleet.txt --parallel-servers 8 --format jsonl
+
+Run 'mcplense help' for targets, auth, config, and the full reference.
+""",
+
+        [AppCommand.Analyze] = """
+mcplense analyze - run the scan pipeline, then classify the facts into severity-rated findings.
+
+Usage
+  mcplense analyze [<url|@target>] [target-options] [scan-options] [common-options]
+
+The scan stays fact-only; analyze is a separate opt-in consumer that applies a built-in rule
+pack (prompt-injection signals, tool poisoning, open-shape input, weak CORS, TLS posture, ...)
+and emits a findings report. Rules and their severities are configurable in McpLense.Config.json
+under the top-level "analysis" block; nothing about the underlying scan facts changes.
+
+Options
+  --fail-on <severity>            Exit non-zero if any finding >= severity (info/low/medium/
+                                  high/critical). Overrides analysis.failOn from config.
+  --enable / --disable <id>       Toggle scan checks (findings depend on the facts they emit).
+  --check-authorization-servers   Fetch advertised authorization-server metadata.
+  --scan-plugin <path>            Load external IScanCheck assemblies (repeatable).
+  --targets-from <path>           Analyze a fleet (one URL/@name per line) (repeatable).
+  --parallel-servers <n>          Scan up to n servers concurrently.
+  --format <text|json|...>        Output format (default: text).
+
+Examples
+  mcplense analyze https://api.example.com/mcp
+  mcplense analyze https://api.example.com/mcp --fail-on high          # CI gate
+  mcplense analyze --targets-from fleet.txt --format json
 
 Run 'mcplense help' for targets, auth, config, and the full reference.
 """,
