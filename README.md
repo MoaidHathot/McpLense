@@ -848,6 +848,10 @@ dotnet run --project src/McpLense -- inspect --config mcp.json --server everythi
 - `inspect`, `tools`, `resources`, and `prompts` can run against multiple config servers at once.
 - `call`, `read`, and `prompt` require exactly one selected server.
 - `call` enables live progress output by default; use `--progress false` to disable it.
+- `--timeout <seconds>` (default 30s) bounds connecting and listing. Invocations
+  (`call` / `read` / `prompt`, including in the TUI) get at least a 10-minute window so a
+  legitimately slow tool isn't cut off; a larger `--timeout` still wins, and the interactive
+  TUI lets you cancel a running call with `Esc`.
 - Exit code is non-zero if any requested server fails or if a tool call reports `isError: true`.
 
 ## Project layout

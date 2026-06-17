@@ -838,6 +838,18 @@ internal static class McpExecutor
         return new ExecutionOutcome(new PromptListReport(DateTimeOffset.UtcNow, servers.Zip(results, ToServerItems).ToArray()), results.Any(result => result.Error is not null));
     }
 
+    /// <summary>
+    /// Floor for how long an <em>invocation</em> (tool call / resource read / prompt get) may run.
+    /// These routinely outlast the snappy connect/list timeout: a tool can forward to a slow backend
+    /// (e.g. an AI agent) and legitimately take minutes. We use the larger of the caller's
+    /// <c>--timeout</c> and this floor, so a bigger <c>--timeout</c> still wins while the default no
+    /// longer kills a long call after 30 seconds. Connect and list operations keep the short timeout.
+    /// </summary>
+    private static readonly TimeSpan DefaultInvokeTimeout = TimeSpan.FromMinutes(10);
+
+    internal static TimeSpan InvokeTimeout(TimeSpan commandTimeout)
+        => commandTimeout > DefaultInvokeTimeout ? commandTimeout : DefaultInvokeTimeout;
+
     private static async Task<ExecutionOutcome> CallToolAsync(ResolvedServer server, string toolName, JsonObject arguments, TimeSpan timeout, bool progressEnabled, CancellationToken cancellationToken)
     {
         var progressUpdates = new List<ProgressUpdate>();
@@ -848,7 +860,7 @@ internal static class McpExecutor
             WriteProgress(server, toolName, update);
         }) : null;
 
-        var result = await WithClientAsync(server, timeout, cancellationToken, async (client, ct) =>
+        var result = await WithClientAsync(server, InvokeTimeout(timeout), cancellationToken, async (client, ct) =>
         {
             var response = await client.CallToolAsync(toolName, ToDictionary(arguments), progress: progress, options: null, cancellationToken: ct);
             return new ToolCallReport(DateTimeOffset.UtcNow, ToReference(server), toolName, arguments, progressUpdates.ToArray(), MapCallResult(response));
@@ -859,7 +871,7 @@ internal static class McpExecutor
 
     private static async Task<ExecutionOutcome> ReadResourceAsync(ResolvedServer server, string resource, JsonObject? arguments, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        var result = await WithClientAsync(server, timeout, cancellationToken, async (client, ct) =>
+        var result = await WithClientAsync(server, InvokeTimeout(timeout), cancellationToken, async (client, ct) =>
         {
             object response = arguments is null
                 ? await client.ReadResourceAsync(resource, options: null, cancellationToken: ct)
@@ -873,7 +885,7 @@ internal static class McpExecutor
 
     private static async Task<ExecutionOutcome> GetPromptAsync(ResolvedServer server, string promptName, JsonObject arguments, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        var result = await WithClientAsync(server, timeout, cancellationToken, async (client, ct) =>
+        var result = await WithClientAsync(server, InvokeTimeout(timeout), cancellationToken, async (client, ct) =>
         {
             var response = await client.GetPromptAsync(promptName, ToDictionary(arguments), options: null, cancellationToken: ct);
             return new PromptCallReport(DateTimeOffset.UtcNow, ToReference(server), promptName, arguments, MapPromptResult(response));
@@ -1498,15 +1510,17 @@ internal static class McpExecutor
 
         var server = SingleServer(servers);
         var (client, _) = await ConnectClientAsync(server, command.Timeout, cancellationToken).ConfigureAwait(false);
-        return new McpSession(client, server, command.Timeout);
+        return new McpSession(client, server, command.Timeout, InvokeTimeout(command.Timeout));
     }
 
     /// <summary>
     /// <see cref="IMcpSession"/> over a live <see cref="McpClient"/>. Nested so it can reuse the
-    /// executor's private result-mapping helpers (<see cref="MapCallResult"/> etc.). Each operation
-    /// is bounded by the command's per-server timeout, layered on the caller's cancellation token.
+    /// executor's private result-mapping helpers (<see cref="MapCallResult"/> etc.). List and
+    /// completion operations are bounded by the short per-server <paramref name="timeout"/>;
+    /// invocations (call / read / prompt) use the generous <paramref name="invokeTimeout"/> so a
+    /// legitimately slow tool isn't killed mid-run. The interactive caller can still cancel sooner.
     /// </summary>
-    private sealed class McpSession(McpClient client, ResolvedServer server, TimeSpan timeout) : IMcpSession
+    private sealed class McpSession(McpClient client, ResolvedServer server, TimeSpan timeout, TimeSpan invokeTimeout) : IMcpSession
     {
         public ServerReference Server => ToReference(server);
 
@@ -1527,7 +1541,7 @@ internal static class McpExecutor
         public async Task<ToolCallReport> CallToolAsync(string toolName, JsonObject arguments, IProgress<ProgressNotificationValue>? progress, CancellationToken cancellationToken)
         {
             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutSource.CancelAfter(timeout);
+            timeoutSource.CancelAfter(invokeTimeout);
             try
             {
                 var response = await client.CallToolAsync(toolName, ToDictionary(arguments), progress: progress, options: null, cancellationToken: timeoutSource.Token).ConfigureAwait(false);
@@ -1542,7 +1556,7 @@ internal static class McpExecutor
         public async Task<ReadReport> ReadResourceAsync(string resourceOrTemplate, JsonObject? arguments, CancellationToken cancellationToken)
         {
             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutSource.CancelAfter(timeout);
+            timeoutSource.CancelAfter(invokeTimeout);
             try
             {
                 object response = arguments is null
@@ -1559,7 +1573,7 @@ internal static class McpExecutor
         public async Task<PromptCallReport> GetPromptAsync(string promptName, JsonObject arguments, CancellationToken cancellationToken)
         {
             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutSource.CancelAfter(timeout);
+            timeoutSource.CancelAfter(invokeTimeout);
             try
             {
                 var response = await client.GetPromptAsync(promptName, ToDictionary(arguments), options: null, cancellationToken: timeoutSource.Token).ConfigureAwait(false);
