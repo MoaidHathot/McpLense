@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using McpLense.Diagnostics;
+using McpLense.Mcp;
 using McpLense.Scanning;
 using McpLense.Scanning.TargetResolution;
 using ModelContextProtocol;
@@ -11,163 +12,31 @@ using ModelContextProtocol.Protocol;
 
 namespace McpLense;
 
-internal static class McpExecutor
+internal static partial class McpExecutor
 {
     public static async Task<ExecutionOutcome> ExecuteAsync(ParsedCommand command, JsonSerializerOptions jsonOptions, CancellationToken cancellationToken)
     {
-        // Top-level login/logout commands have their own dispatch path: they don't go through
-        // TargetResolver (no stdio/HTTP target to open), they operate purely on profiles.
-        if (command.Command is AppCommand.Login)
+        if (!Handlers.TryGetValue(command.Command, out var handler))
         {
-            var loginReport = await DispatchProfileLoginAsync(command.Target, cancellationToken).ConfigureAwait(false);
-            return new ExecutionOutcome(loginReport, loginReport.Servers.Any(entry => !entry.Success));
+            throw new UserInputException($"Unsupported command '{command.Command}'.");
         }
 
-        if (command.Command is AppCommand.Logout)
+        // Run exactly as much of the shared resolve -> overlay -> authenticate pipeline as the
+        // handler declares it needs, then dispatch. Tier None commands (login/logout/diff/scan)
+        // own their whole flow; ResolveOnly gets resolved+overlaid servers (auth-scan/observe/
+        // fetch-resource); ResolveAndAuthenticate additionally attaches auth profiles.
+        IReadOnlyList<ResolvedServer>? servers = null;
+        if (handler.Resolution is not ServerResolution.None)
         {
-            var logoutReport = await DispatchProfileLogoutAsync(command.Target, cancellationToken).ConfigureAwait(false);
-            return new ExecutionOutcome(logoutReport, logoutReport.Servers.Any(entry => !entry.Success));
-        }
+            (command, servers) = await ResolveAndOverlayAsync(command, cancellationToken).ConfigureAwait(false);
 
-        if (command.Command is AppCommand.Diff)
-        {
-            // Pure file-to-file diff: no scan, just deserialize two baseline files and emit
-            // the structural diff. The CLI passes the two paths via Subject + DiffBaselinePath.
-            if (string.IsNullOrEmpty(command.Subject) || string.IsNullOrEmpty(command.DiffBaselinePath))
+            if (handler.Resolution is ServerResolution.ResolveAndAuthenticate)
             {
-                throw new UserInputException("'diff' requires two baseline paths: 'mcplense diff <before> <after>'.");
+                servers = await AuthenticateAsync(servers, command, cancellationToken).ConfigureAwait(false);
             }
-
-            var before = await BaselineWriter.ReadAsync(command.Subject, cancellationToken).ConfigureAwait(false);
-            var after = await BaselineWriter.ReadAsync(command.DiffBaselinePath, cancellationToken).ConfigureAwait(false);
-            var diff = ScanDiff.Diff(before, after);
-            return new ExecutionOutcome(diff, false);
         }
 
-        if (command.Command is AppCommand.Scan)
-        {
-            // New scan goes through the IScanCheck pipeline. Baseline / diff knobs are
-            // honoured here.
-            var cliEnables = command.CheckEnables is null ? null : new HashSet<string>(command.CheckEnables, StringComparer.OrdinalIgnoreCase);
-            var cliDisables = command.CheckDisables is null ? null : new HashSet<string>(command.CheckDisables, StringComparer.OrdinalIgnoreCase);
-            var parallel = command.ParallelServers ?? 1;
-
-            // Progress reporting: silent in --quiet mode; basic [n/N] line in default; the
-            // CLI's Verbose toggle is honoured by the dispatcher / pipeline elsewhere via
-            // the same path.
-            Action<int, int, string, TimeSpan>? progressCallback = null;
-            if (!command.Quiet)
-            {
-                progressCallback = (index, total, name, elapsed) =>
-                {
-                    McpLenseLog.Write($"[{index}/{total}] {name}: ok ({elapsed.TotalSeconds:F1}s)");
-                };
-            }
-
-            var scanReport = await Scanning.ScanCommandDispatcher.RunAsync(
-                command.Target,
-                command.Timeout,
-                cliEnables,
-                cliDisables,
-                cancellationToken,
-                maxDegreeOfParallelism: parallel,
-                progress: progressCallback,
-                quiet: command.Quiet,
-                verbose: command.Verbose,
-                scanPluginPaths: command.ScanPlugins).ConfigureAwait(false);
-
-            if (!string.IsNullOrEmpty(command.BaselinePath))
-            {
-                var resolvedPath = BaselineWriter.ResolvePath(command.BaselinePath, null, scanReport);
-                await BaselineWriter.WriteAsync(resolvedPath, scanReport, cancellationToken).ConfigureAwait(false);
-                if (!command.Quiet)
-                {
-                    McpLenseLog.Write($"baseline written: {resolvedPath}");
-                }
-            }
-
-            if (!string.IsNullOrEmpty(command.DiffBaselinePath))
-            {
-                var baseline = await BaselineWriter.ReadAsync(command.DiffBaselinePath, cancellationToken).ConfigureAwait(false);
-                var diff = ScanDiff.Diff(baseline, scanReport);
-                return new ExecutionOutcome(diff, false);
-            }
-
-            return new ExecutionOutcome(scanReport, false);
-        }
-
-        // Load the unified ScanConfig (auto-discovered XDG paths + the legacy
-        // McpLense.Profiles.json file). We need this BEFORE TargetResolver runs so a
-        // @name positional reference can be resolved to a concrete URL, and AFTER
-        // TargetResolver runs so the per-target overlay (headers, scope, transport,
-        // timeout, disabledChecks) can be applied uniformly across inspect / tools /
-        // resources / prompts / call / read / prompt / fetch-resource / auth-scan /
-        // observe. Without this every non-scan command was sending requests bare even
-        // when the config declared per-target headers.
-        var scanConfigPaths = TargetConfigLoading.ResolveScanConfigPaths(command.Target.ProfilePaths);
-        var scanConfig = await ScanConfigLoader.LoadAsync(scanConfigPaths, cancellationToken).ConfigureAwait(false);
-        command = command with { Target = TargetOverlayApplicator.ResolveNamedReference(command.Target, scanConfig) };
-
-        var servers = await TargetResolver.ResolveAsync(command.Target, cancellationToken);
-        servers = TargetOverlayApplicator.Apply(
-            servers,
-            scanConfig,
-            command.Target,
-            cliDisables: null,
-            quiet: command.Quiet,
-            verbose: command.Verbose);
-
-        // auth-scan still uses the original AuthScanner directly (faster path, no full audit).
-        if (command.Command is AppCommand.AuthScan)
-        {
-            var authScanReport = await DispatchAuthScanAsync(servers, command.Target, command.Timeout, cancellationToken).ConfigureAwait(false);
-            var hasErrors = authScanReport.Servers.Any(entry => entry.Error is not null);
-            return new ExecutionOutcome(authScanReport, hasErrors);
-        }
-
-        // observe = long-duration ServerInitiatedObservationCheck only.
-        if (command.Command is AppCommand.Observe)
-        {
-            // DispatchObserveAsync already returns the final ExecutionOutcome (Payload = ScanReport);
-            // returning it directly avoids double-wrapping the payload in another ExecutionOutcome.
-            return await DispatchObserveAsync(command, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (command.Command is AppCommand.FetchResource)
-        {
-            if (string.IsNullOrEmpty(command.Subject))
-            {
-                throw new UserInputException("'fetch-resource' requires a resource URI as the first positional argument.");
-            }
-
-            // Resolve via standard inspect path, then read the named resource.
-            servers = await AttachProfilesAsync(servers, command.Target, cancellationToken, command.Quiet, command.Verbose).ConfigureAwait(false);
-            return await ReadResourceAsync(SingleServer(servers), command.Subject, command.Arguments, command.Timeout, cancellationToken).ConfigureAwait(false);
-        }
-
-        // Resolve auth profiles for HTTP servers that don't already have inline auth (i.e.
-        // anything other than --auth bearer). --no-auth short-circuits this entirely so quick
-        // local debugging works without any profile setup.
-        if (!command.Target.AuthOverrides.NoAuth)
-        {
-            servers = await AttachProfilesAsync(servers, command.Target, cancellationToken, command.Quiet, command.Verbose).ConfigureAwait(false);
-        }
-        else if (!command.Quiet)
-        {
-            McpLenseLog.Write("auth: --no-auth supplied; sending unauthenticated.");
-        }
-
-        return command.Command switch
-        {
-            AppCommand.Inspect => await InspectAsync(servers, command.Timeout, cancellationToken),
-            AppCommand.Tools => await ListToolsAsync(servers, command.Timeout, cancellationToken),
-            AppCommand.Resources => await ListResourcesAsync(servers, command.Timeout, cancellationToken),
-            AppCommand.Prompts => await ListPromptsAsync(servers, command.Timeout, cancellationToken),
-            AppCommand.Call => await CallToolAsync(SingleServer(servers), command.Subject!, command.Arguments!, command.Timeout, command.ProgressEnabled, cancellationToken),
-            AppCommand.Read => await ReadResourceAsync(SingleServer(servers), command.Subject!, command.Arguments, command.Timeout, cancellationToken),
-            AppCommand.Prompt => await GetPromptAsync(SingleServer(servers), command.Subject!, command.Arguments!, command.Timeout, cancellationToken),
-            _ => throw new UserInputException($"Unsupported command '{command.Command}'.")
-        };
+        return await handler.ExecuteAsync(command, servers, jsonOptions, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
