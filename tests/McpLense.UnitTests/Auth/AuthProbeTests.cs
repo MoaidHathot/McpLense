@@ -13,42 +13,47 @@ namespace McpLense.UnitTests.Auth;
 public class AuthProbeTests
 {
     /// <summary>
-    /// Fake <see cref="HttpMessageHandler"/> that returns a queued response for every call. Used
-    /// to simulate the multi-hop probe (HEAD -> GET fallback, then PRM fetch) without a real HTTP
-    /// stack.
+    /// Fake <see cref="HttpMessageHandler"/> that returns queued responses, repeating the last one
+    /// once the queue is exhausted (so a single <c>Enqueue</c> covers a multi-attempt fall-through
+    /// like POST -> GET). Captures each request's method / Accept / body up front because the probe
+    /// disposes the request as soon as <c>SendAsync</c> returns.
     /// </summary>
     private sealed class QueuedHandler : HttpMessageHandler
     {
-        private readonly Queue<HttpResponseMessage> _responses = new();
+        private readonly List<(HttpStatusCode Status, string? Body, string? Www)> _specs = new();
+        private int _index;
 
-        public List<HttpRequestMessage> Requests { get; } = new();
+        public List<CapturedRequest> Requests { get; } = new();
 
         public void Enqueue(HttpStatusCode status, string? body = null, string? wwwAuthenticate = null)
+            => _specs.Add((status, body, wwwAuthenticate));
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            var response = new HttpResponseMessage(status);
-            if (wwwAuthenticate is not null)
+            string? body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+            var accept = string.Join(", ", request.Headers.Accept.Select(a => a.MediaType));
+            Requests.Add(new CapturedRequest(request.Method, accept, body, request.RequestUri!));
+
+            if (_specs.Count == 0)
             {
-                response.Headers.TryAddWithoutValidation("WWW-Authenticate", wwwAuthenticate);
+                throw new InvalidOperationException("QueuedHandler has no responses.");
             }
 
-            if (body is not null)
+            var spec = _index < _specs.Count ? _specs[_index++] : _specs[^1];
+            var response = new HttpResponseMessage(spec.Status);
+            if (spec.Www is not null)
             {
-                response.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                response.Headers.TryAddWithoutValidation("WWW-Authenticate", spec.Www);
             }
-            _responses.Enqueue(response);
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            Requests.Add(request);
-            if (_responses.Count == 0)
+            if (spec.Body is not null)
             {
-                throw new InvalidOperationException("QueuedHandler ran out of responses.");
+                response.Content = new StringContent(spec.Body, Encoding.UTF8, "application/json");
             }
-
-            return Task.FromResult(_responses.Dequeue());
+            return response;
         }
     }
+
+    private sealed record CapturedRequest(HttpMethod Method, string Accept, string? Body, Uri Url);
 
     private static (AuthProbe Probe, QueuedHandler Handler, List<string> StderrSink) Build()
     {
@@ -134,18 +139,58 @@ public class AuthProbeTests
     }
 
     [Fact]
-    public async Task ProbeAsync_UsesGet_NotHead()
+    public async Task ProbeAsync_PostsInitialize_WithDualAcceptAndJsonBody()
     {
-        // Some MCP servers (Agent365 in particular) hang on HEAD requests, taking 30+ seconds
-        // to time out. The probe must use GET to stay responsive. We only read response headers
-        // (HttpCompletionOption.ResponseHeadersRead) so the body-download cost is irrelevant.
+        // The probe must mirror a real MCP client: a POST `initialize` carrying both
+        // `application/json` and `text/event-stream` in Accept. A bare GET (the old behaviour)
+        // is rejected by spec-compliant servers with 405/406 and learns nothing.
         var (probe, handler, _) = Build();
-        handler.Enqueue(HttpStatusCode.OK);
+        handler.Enqueue(HttpStatusCode.OK, body: """{"jsonrpc":"2.0","id":"mcplense-auth-probe","result":{}}""");
 
-        await probe.ProbeAsync(new Uri("https://example.com/"), CancellationToken.None);
+        await probe.ProbeAsync(new Uri("https://example.com/mcp"), CancellationToken.None);
 
         handler.Requests.Count.ShouldBe(1);
-        handler.Requests[0].Method.ShouldBe(HttpMethod.Get);
+        var first = handler.Requests[0];
+        first.Method.ShouldBe(HttpMethod.Post);
+        first.Accept.ShouldContain("application/json");
+        first.Accept.ShouldContain("text/event-stream");
+        first.Body.ShouldNotBeNull().ShouldContain("\"method\":\"initialize\"");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_PostRejectedWith406_FallsBackToSseGet()
+    {
+        // FastMCP/Starlette answer 406 to the wrong Accept; the probe must fall back to a legacy
+        // SSE GET (Accept: text/event-stream) before giving up, and classify its 200 as anonymous.
+        var (probe, handler, _) = Build();
+        handler.Enqueue(HttpStatusCode.NotAcceptable);        // POST initialize -> 406
+        handler.Enqueue(HttpStatusCode.OK);                   // GET text/event-stream -> 200
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/mcp/"), CancellationToken.None);
+
+        result.RequiresAuth.ShouldBeFalse();
+        result.Inconclusive.ShouldBeFalse();
+        result.IsEmpty.ShouldBeTrue();
+
+        handler.Requests.Count.ShouldBe(2);
+        handler.Requests[0].Method.ShouldBe(HttpMethod.Post);
+        handler.Requests[1].Method.ShouldBe(HttpMethod.Get);
+        handler.Requests[1].Accept.ShouldContain("text/event-stream");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_PostOnlyServer405ThenGet405_IsInconclusive_NotTerminalOn405()
+    {
+        // A POST-only endpoint that 405s the SSE GET too: every shape fails the same way, so the
+        // verdict is Inconclusive (never a confident "anonymous"/"auth").
+        var (probe, handler, _) = Build();
+        handler.Enqueue(HttpStatusCode.MethodNotAllowed); // repeated for every attempt
+
+        var result = await probe.ProbeAsync(new Uri("https://example.com/mcp/"), CancellationToken.None);
+
+        result.Inconclusive.ShouldBeTrue();
+        result.RequiresAuth.ShouldBeFalse();
+        handler.Requests.Count.ShouldBeGreaterThan(1); // POST then a GET fallback at least
     }
 
     [Fact]

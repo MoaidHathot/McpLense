@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using McpLense.Scanning.TargetResolution;
 
@@ -9,8 +10,10 @@ namespace McpLense;
 /// All fields may be null when the server doesn't speak RFC 9728 / OAuth discovery.
 /// </summary>
 /// <param name="RequiresAuth">
-/// True when the probe saw concrete evidence that authentication is required (HTTP 401, a
-/// <c>WWW-Authenticate</c> header, or any non-2xx response from the unauthenticated probe).
+/// True when the probe saw concrete evidence that authentication is required: the unauthenticated
+/// MCP <c>initialize</c> (or legacy SSE GET) came back <c>401</c>/<c>403</c> or carried a
+/// <c>WWW-Authenticate</c> header. A non-2xx without an auth challenge is reported as
+/// <see cref="Inconclusive"/> instead, never as <c>RequiresAuth</c>.
 /// </param>
 /// <param name="Inconclusive">
 /// True when the probe could not reach a definitive answer (network error, timeout, malformed
@@ -114,6 +117,15 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// Minimal MCP <c>initialize</c> request body. The probe POSTs this (rather than a bare GET)
+    /// so a spec-compliant Streamable HTTP server replies with its true posture - a 2xx
+    /// <c>initialize</c> result for anonymous servers, or a 401 + RFC 9728 <c>WWW-Authenticate</c>
+    /// for OAuth servers - instead of rejecting the wrong-shaped request with 405/406.
+    /// </summary>
+    private const string InitializeRequestBody =
+        """{"jsonrpc":"2.0","id":"mcplense-auth-probe","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"mcplense","version":"auth-probe"}}}""";
+
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
     private readonly Action<string> _writeStderr;
@@ -183,101 +195,151 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         TargetScope scope,
         CancellationToken cancellationToken)
     {
-        // Step 1: probe the server for a 401 + WWW-Authenticate header. We use GET (not HEAD)
-        // because some MCP servers (Agent365 most notably) HANG on HEAD requests for >30s
-        // before timing out, while responding to GET in well under a second with the same auth
-        // metadata. HttpCompletionOption.ResponseHeadersRead means we read the response headers
-        // and dispose without downloading the body, so the cost is comparable to HEAD anyway.
-        HttpResponseMessage? response = null;
-        try
-        {
-            response = await SendUnauthenticatedAsync(serverUrl, HttpMethod.Get, additionalHeaders, scope, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Real user-driven cancellation - propagate.
-            response?.Dispose();
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Network failure, DNS error, HttpClient timeout (manifests as TaskCanceledException
-            // even when the caller's token wasn't cancelled). Inconclusive: callers with loaded
-            // profiles should still attach one rather than connecting plain.
-            _writeStderr($"AuthProbe: probing {serverUrl} failed ({ex.GetType().Name}: {ex.Message}); attaching the configured profile so the runtime hits the server with credentials.");
-            response?.Dispose();
-            return new AuthProbeResult(Inconclusive: true);
-        }
+        // Mirror a real MCP client instead of a hand-rolled GET. A spec-compliant Streamable HTTP
+        // server only reveals its posture to a POST `initialize` carrying
+        // `Accept: application/json, text/event-stream`; a bare GET (or the wrong Accept) is
+        // rejected with 405/406 and tells us nothing. We walk a short list of request shapes and
+        // stop at the first authoritative answer:
+        //   1. POST initialize to the URL (Streamable HTTP).
+        //   2. POST initialize to the trailing-slash variant (Starlette mounts 404/405 without it).
+        //   3. GET with `Accept: text/event-stream` (legacy HTTP+SSE transport).
+        //   4. GET to the trailing-slash variant.
+        // 401/403/WWW-Authenticate => auth required; 2xx => anonymous. 400/404/405/406 just mean
+        // "wrong method/path for this transport" so we fall through; anything else is inconclusive.
+        int? lastStatus = null;
+        string? lastReason = null;
+        string? lastWww = null;
+        IReadOnlyDictionary<string, string>? lastDiag = null;
 
-        try
+        foreach (var (method, url) in BuildProbeAttempts(serverUrl))
         {
-            var statusCode = (int)response.StatusCode;
-            var wwwAuthenticate = JoinWwwAuthenticate(response);
-            var reasonPhrase = string.IsNullOrEmpty(response.ReasonPhrase) ? null : response.ReasonPhrase;
-            var diagnosticHeaders = CaptureDiagnosticHeaders(response);
-            var hasAuthChallenge = response.StatusCode == System.Net.HttpStatusCode.Unauthorized
-                                   || response.Headers.WwwAuthenticate.Count > 0;
-            var isSuccessStatus = response.IsSuccessStatusCode;
-            var resourceMetadataUrl = TryExtractResourceMetadataUrl(response);
-
-            if (string.IsNullOrEmpty(resourceMetadataUrl))
+            HttpResponseMessage response;
+            try
             {
+                response = await SendProbeAsync(method, url, additionalHeaders, scope, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Network failure, DNS error, HttpClient timeout (manifests as TaskCanceledException
+                // even when the caller's token wasn't cancelled). Inconclusive: callers with loaded
+                // profiles should still attach one rather than connecting plain.
+                _writeStderr($"AuthProbe: probing {url} failed ({ex.GetType().Name}: {ex.Message}); attaching the configured profile so the runtime hits the server with credentials.");
+                return new AuthProbeResult(Inconclusive: true);
+            }
+
+            try
+            {
+                var statusCode = (int)response.StatusCode;
+                lastStatus = statusCode;
+                lastReason = string.IsNullOrEmpty(response.ReasonPhrase) ? null : response.ReasonPhrase;
+                lastWww = JoinWwwAuthenticate(response);
+                lastDiag = CaptureDiagnosticHeaders(response);
+
+                var isSuccess = response.IsSuccessStatusCode;
+                var hasAuthChallenge = !isSuccess
+                    && (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden
+                        || response.Headers.WwwAuthenticate.Count > 0);
+
                 if (hasAuthChallenge)
                 {
+                    var resourceMetadataUrl = TryExtractResourceMetadataUrl(response);
+                    if (!string.IsNullOrEmpty(resourceMetadataUrl))
+                    {
+                        // RFC 9728 metadata URL: same-origin fetches honour the per-target overlay,
+                        // cross-origin fetches strictly do not (per the security rule).
+                        var metadata = await FetchProtectedResourceMetadataAsync(
+                            resourceMetadataUrl!, serverUrl, additionalHeaders, scope, cancellationToken).ConfigureAwait(false);
+                        return metadata with
+                        {
+                            RequiresAuth = true,
+                            StatusCode = statusCode,
+                            WwwAuthenticate = lastWww,
+                            ReasonPhrase = lastReason,
+                            DiagnosticHeaders = lastDiag
+                        };
+                    }
+
                     // Server explicitly told us auth is needed but didn't point us at metadata.
-                    _writeStderr($"AuthProbe: {serverUrl} returned no RFC 9728 'resource_metadata' header; falling back to cache-only auto-pick.");
+                    _writeStderr($"AuthProbe: {url} returned no RFC 9728 'resource_metadata' header; falling back to cache-only auto-pick.");
                     return new AuthProbeResult(
                         RequiresAuth: true,
                         StatusCode: statusCode,
-                        WwwAuthenticate: wwwAuthenticate,
-                        ReasonPhrase: reasonPhrase,
-                        DiagnosticHeaders: diagnosticHeaders);
+                        WwwAuthenticate: lastWww,
+                        ReasonPhrase: lastReason,
+                        DiagnosticHeaders: lastDiag);
                 }
 
-                if (isSuccessStatus)
+                if (isSuccess)
                 {
-                    // Clean 2xx with no auth headers - server genuinely doesn't need auth.
+                    // A clean MCP `initialize` (or open SSE stream) with no auth headers - the
+                    // server genuinely accepts anonymous access.
                     return new AuthProbeResult(
                         StatusCode: statusCode,
-                        ReasonPhrase: reasonPhrase,
-                        DiagnosticHeaders: diagnosticHeaders);
+                        ReasonPhrase: lastReason,
+                        DiagnosticHeaders: lastDiag);
                 }
 
-                // Non-2xx without an auth challenge. Could be a flake (Agent365 sometimes returns
-                // 503 to unauthenticated HEAD), a wrong endpoint, or auth-required behind a
-                // generic error. Mark as Inconclusive so callers with loaded profiles attach one
-                // and the runtime gets an authoritative answer, but DON'T claim auth is required
-                // (we don't know that).
-                _writeStderr($"AuthProbe: {serverUrl} returned {(int)response.StatusCode} on the unauthenticated probe; result is inconclusive.");
-                return new AuthProbeResult(
-                    Inconclusive: true,
-                    StatusCode: statusCode,
-                    WwwAuthenticate: wwwAuthenticate,
-                    ReasonPhrase: reasonPhrase,
-                    DiagnosticHeaders: diagnosticHeaders);
-            }
+                // 400/404/405/406: wrong method / path / Accept for this transport. Never terminal -
+                // fall through to the next request shape (trailing slash, legacy SSE GET).
+                if (statusCode is 400 or 404 or 405 or 406)
+                {
+                    continue;
+                }
 
-            // RFC 9728 metadata URL: same-origin fetches honour the per-target overlay,
-            // cross-origin fetches strictly do not (per the security rule).
-            var metadata = await FetchProtectedResourceMetadataAsync(
-                resourceMetadataUrl!,
-                serverUrl,
-                additionalHeaders,
-                scope,
-                cancellationToken).ConfigureAwait(false);
-            return metadata with
+                // Any other non-2xx (5xx, redirects we didn't follow, ...): inconclusive, stop.
+                break;
+            }
+            finally
             {
-                RequiresAuth = true,
-                StatusCode = statusCode,
-                WwwAuthenticate = wwwAuthenticate,
-                ReasonPhrase = reasonPhrase,
-                DiagnosticHeaders = diagnosticHeaders
-            };
+                response.Dispose();
+            }
         }
-        finally
+
+        _writeStderr($"AuthProbe: {serverUrl} did not accept an unauthenticated MCP initialize (last status {(lastStatus?.ToString() ?? "n/a")}); result is inconclusive.");
+        return new AuthProbeResult(
+            Inconclusive: true,
+            StatusCode: lastStatus,
+            WwwAuthenticate: lastWww,
+            ReasonPhrase: lastReason,
+            DiagnosticHeaders: lastDiag);
+    }
+
+    /// <summary>
+    /// The ordered request shapes the probe tries, stopping at the first authoritative answer.
+    /// POST <c>initialize</c> first (the modern Streamable HTTP transport), then the trailing-slash
+    /// variant, then a legacy HTTP+SSE GET, then its trailing-slash variant.
+    /// </summary>
+    private static IReadOnlyList<(HttpMethod Method, Uri Url)> BuildProbeAttempts(Uri serverUrl)
+    {
+        var attempts = new List<(HttpMethod, Uri)> { (HttpMethod.Post, serverUrl) };
+
+        var slashVariant = WithTrailingSlash(serverUrl);
+        if (slashVariant is not null)
         {
-            response.Dispose();
+            attempts.Add((HttpMethod.Post, slashVariant));
         }
+
+        attempts.Add((HttpMethod.Get, serverUrl));
+        if (slashVariant is not null)
+        {
+            attempts.Add((HttpMethod.Get, slashVariant));
+        }
+
+        return attempts;
+    }
+
+    private static Uri? WithTrailingSlash(Uri serverUrl)
+    {
+        if (serverUrl.AbsolutePath.EndsWith('/'))
+        {
+            return null;
+        }
+
+        return new UriBuilder(serverUrl) { Path = serverUrl.AbsolutePath + "/" }.Uri;
     }
 
     /// <summary>
@@ -357,17 +419,30 @@ internal sealed class AuthProbe : IAuthProbe, IDisposable
         return captured;
     }
 
-    private async Task<HttpResponseMessage> SendUnauthenticatedAsync(
-        Uri url,
+    private async Task<HttpResponseMessage> SendProbeAsync(
         HttpMethod method,
+        Uri url,
         IReadOnlyDictionary<string, string>? additionalHeaders,
         TargetScope scope,
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(method, url);
         // Make sure no inherited Authorization header sneaks in (HttpClient default is to keep
-        // none, but be explicit).
+        // none, but be explicit) - this is the UNauthenticated probe.
         request.Headers.Authorization = null;
+
+        if (method == HttpMethod.Post)
+        {
+            // Modern Streamable HTTP: a real `initialize` with the dual Accept the spec requires.
+            request.Content = new StringContent(InitializeRequestBody, Encoding.UTF8, "application/json");
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        }
+        else
+        {
+            // Legacy HTTP+SSE: open the server->client stream with the SSE Accept.
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        }
 
         // Per-target headers (scope=all) ride along with the unauthenticated probe so that
         // a server which gates everything behind, say, x-mcp-ec-organization can still reply

@@ -101,18 +101,23 @@ internal sealed class McpHandshakeProbe : IMcpHandshakeProbe
             SetProperty(options, server.Headers.ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase), "AdditionalHeaders");
         }
 
-        if (server.Auth is { Kind: not AuthKind.None })
+        // Wrap with StandaloneStreamSuppressingHandler for parity with the runtime client: some
+        // Streamable HTTP servers commit the session only after `initialize` completes, and the
+        // SDK's early standalone GET event-stream otherwise races ahead and the server drops the
+        // session, breaking the handshake with -32001 "Session not found".
+        DelegatingHandler outer = new StandaloneStreamSuppressingHandler();
+        DelegatingHandler tail = outer;
+
+        if (server.Auth is { Kind: not AuthKind.None }
+            && AuthHandlerFactory.Create(server.Auth, server.Url) is { } authHandler)
         {
-            var authHandler = AuthHandlerFactory.Create(server.Auth, server.Url);
-            if (authHandler is not null)
-            {
-                authHandler.InnerHandler = new SocketsHttpHandler();
-                var http = new HttpClient(authHandler, disposeHandler: true);
-                return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken).ConfigureAwait(false);
-            }
+            tail.InnerHandler = authHandler;
+            tail = authHandler;
         }
 
-        return await McpClient.CreateAsync(new HttpClientTransport(options), cancellationToken: cancellationToken).ConfigureAwait(false);
+        tail.InnerHandler = new SocketsHttpHandler();
+        var http = new HttpClient(outer, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
+        return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
