@@ -73,7 +73,12 @@ internal static class TuiApp
         {
             console.Clear();
             var serverOptions = servers
-                .Select((server, index) => new { Label = Markup.Escape($"{index + 1}. {server.Name} [{server.Transport}] {server.Target}"), Server = server })
+                .Select((server, index) => new
+                {
+                    Label = Markup.Escape($"{index + 1}. {server.Name} [{server.Transport}] {server.Target}")
+                        + (server.Error is not null ? "  [red](unreachable)[/]" : string.Empty),
+                    Server = server
+                })
                 .ToArray();
 
             var selectedServerLabel = console.Prompt(
@@ -185,7 +190,7 @@ internal static class TuiApp
             var filter = filters["Tools"];
             RenderTools(console, server, filter);
 
-            if (server.Tools.Error is not null)
+            if (server.Tools.Error is not null || server.Error is not null)
             {
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
                 await session.WaitForKey();
@@ -262,7 +267,7 @@ internal static class TuiApp
             var filter = filters["Resources"];
             RenderResources(console, server, filter);
 
-            if (server.Resources.Error is not null)
+            if (server.Resources.Error is not null || server.Error is not null)
             {
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
                 await session.WaitForKey();
@@ -335,7 +340,7 @@ internal static class TuiApp
             var filter = filters["Resource Templates"];
             RenderResourceTemplates(console, server, filter);
 
-            if (server.ResourceTemplates.Error is not null)
+            if (server.ResourceTemplates.Error is not null || server.Error is not null)
             {
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
                 await session.WaitForKey();
@@ -408,7 +413,7 @@ internal static class TuiApp
             var filter = filters["Prompts"];
             RenderPrompts(console, server, filter);
 
-            if (server.Prompts.Error is not null)
+            if (server.Prompts.Error is not null || server.Error is not null)
             {
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
                 await session.WaitForKey();
@@ -746,15 +751,31 @@ internal static class TuiApp
 
     internal static void RenderServerSummary(IAnsiConsole console, ServerInspection server)
     {
-        var panel = new Panel($"[bold]{Markup.Escape(server.Name)}[/]\n[grey]{Markup.Escape(server.Target)}[/]")
+        var body = $"[bold]{Markup.Escape(server.Name)}[/]\n[grey]{Markup.Escape(server.Target)}[/]";
+        if (server.Error is not null)
+        {
+            body += $"\n[red]connection failed: {Markup.Escape(server.Error)}[/]";
+        }
+
+        var panel = new Panel(body)
         {
             Header = new PanelHeader($"{server.Transport} server")
         };
+        if (server.Error is not null)
+        {
+            panel.BorderStyle = new Style(foreground: Color.Red);
+        }
+
         console.Write(panel);
     }
 
     internal static void RenderOverview(IAnsiConsole console, ServerInspection server)
     {
+        if (TryRenderConnectionError(console, server))
+        {
+            return;
+        }
+
         var table = new Table().RoundedBorder();
         table.AddColumn("Section");
         table.AddColumn("Status");
@@ -767,6 +788,26 @@ internal static class TuiApp
         console.Write(table);
     }
 
+    /// <summary>
+    /// When the whole inspection failed (the connection/handshake never succeeded), the
+    /// per-section <see cref="SectionResult{T}.Error"/> fields stay null and the items lists are
+    /// empty - which on its own reads as "this server exposes nothing". That is misleading: we
+    /// never actually learned what the server exposes. This surfaces the server-level
+    /// <see cref="ServerInspection.Error"/> so a failed connect is never silently shown as an
+    /// empty-but-healthy server. Returns true when an error was rendered (caller should stop).
+    /// </summary>
+    private static bool TryRenderConnectionError(IAnsiConsole console, ServerInspection server)
+    {
+        if (server.Error is null)
+        {
+            return false;
+        }
+
+        console.MarkupLine($"[red]Connection failed: {Markup.Escape(server.Error)}[/]");
+        console.MarkupLine("[grey]The server could not be inspected, so nothing it exposes is available.[/]");
+        return true;
+    }
+
     internal static void RenderTools(IAnsiConsole console, ServerInspection server)
         => RenderTools(console, server, filter: string.Empty);
 
@@ -775,6 +816,11 @@ internal static class TuiApp
         if (server.Tools.Error is not null)
         {
             console.MarkupLine($"[red]{Markup.Escape(server.Tools.Error)}[/]");
+            return;
+        }
+
+        if (TryRenderConnectionError(console, server))
+        {
             return;
         }
 
@@ -800,6 +846,11 @@ internal static class TuiApp
         if (server.Resources.Error is not null)
         {
             console.MarkupLine($"[red]{Markup.Escape(server.Resources.Error)}[/]");
+            return;
+        }
+
+        if (TryRenderConnectionError(console, server))
+        {
             return;
         }
 
@@ -829,6 +880,11 @@ internal static class TuiApp
             return;
         }
 
+        if (TryRenderConnectionError(console, server))
+        {
+            return;
+        }
+
         var items = FilterResourceTemplates(server.ResourceTemplates.Items, filter);
         RenderFilterHeader(console, filter, items.Count, server.ResourceTemplates.Items.Count);
 
@@ -852,6 +908,11 @@ internal static class TuiApp
         if (server.Prompts.Error is not null)
         {
             console.MarkupLine($"[red]{Markup.Escape(server.Prompts.Error)}[/]");
+            return;
+        }
+
+        if (TryRenderConnectionError(console, server))
+        {
             return;
         }
 

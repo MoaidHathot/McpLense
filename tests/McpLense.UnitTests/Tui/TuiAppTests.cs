@@ -26,7 +26,8 @@ public class TuiAppTests
         SectionResult<ToolInfo>? tools = null,
         SectionResult<ResourceInfo>? resources = null,
         SectionResult<ResourceTemplateInfo>? resourceTemplates = null,
-        SectionResult<PromptInfo>? prompts = null)
+        SectionResult<PromptInfo>? prompts = null,
+        string? error = null)
         => new(
             Name: name,
             Transport: transport,
@@ -52,7 +53,8 @@ public class TuiAppTests
                     new PromptArgumentInfo("language", null, true),
                     new PromptArgumentInfo("code", null, false)
                 ])
-            ]));
+            ]),
+            Error: error);
 
     // --- Pure render ---------------------------------------------------
 
@@ -68,6 +70,68 @@ public class TuiAppTests
         output.ShouldContain("alpha");
         output.ShouldContain("stdio server");
         output.ShouldContain("dotnet exec foo.dll");
+    }
+
+    [Fact]
+    public void RenderServerSummary_WithError_SurfacesConnectionError()
+    {
+        var console = NewConsole();
+        var server = BuildServer(
+            "alpha",
+            "http",
+            "https://example.test/mcp",
+            error: "HttpRequestException: Response status code does not indicate success: 401 (Unauthorized).");
+
+        TuiApp.RenderServerSummary(console, server);
+
+        var output = console.Output;
+        output.ShouldContain("connection failed");
+        output.ShouldContain("Unauthorized");
+    }
+
+    [Fact]
+    public void RenderOverview_WithError_ShowsConnectionFailureAndSkipsTable()
+    {
+        var console = NewConsole();
+        var server = BuildServer(error: "401 (Unauthorized)");
+
+        TuiApp.RenderOverview(console, server);
+
+        var output = console.Output;
+        output.ShouldContain("Connection failed");
+        output.ShouldContain("Unauthorized");
+        // The capabilities/section table must NOT be shown for a failed connection -
+        // a server we never reached has no known capabilities to report.
+        output.ShouldNotContain("Capabilities");
+    }
+
+    [Fact]
+    public void RenderTools_WithServerError_SurfacesConnectionErrorInsteadOfEmptyTable()
+    {
+        var console = NewConsole();
+        // No section-level error, no items - exactly the shape a failed connect produces.
+        var server = BuildServer(
+            tools: new SectionResult<ToolInfo>(false, []),
+            error: "401 (Unauthorized)");
+
+        TuiApp.RenderTools(console, server);
+
+        var output = console.Output;
+        output.ShouldContain("Connection failed");
+        output.ShouldContain("Unauthorized");
+    }
+
+    [Fact]
+    public void RenderPrompts_WithServerError_SurfacesConnectionError()
+    {
+        var console = NewConsole();
+        var server = BuildServer(
+            prompts: new SectionResult<PromptInfo>(false, []),
+            error: "401 (Unauthorized)");
+
+        TuiApp.RenderPrompts(console, server);
+
+        console.Output.ShouldContain("Connection failed");
     }
 
     [Fact]
@@ -299,5 +363,48 @@ public class TuiAppTests
         var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
 
         exit.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task RenderAsync_FailedServer_SurfacesConnectionErrorWhenDrilledInto()
+    {
+        var console = NewConsole();
+        // A failed connect: server-level Error set, every section empty + unsupported.
+        var server = BuildServer(
+            name: "broken",
+            transport: "http",
+            target: "https://example.test/mcp",
+            capabilities: new CapabilitySnapshot(false, false, false, false, false),
+            tools: new SectionResult<ToolInfo>(false, []),
+            resources: new SectionResult<ResourceInfo>(false, []),
+            resourceTemplates: new SectionResult<ResourceTemplateInfo>(false, []),
+            prompts: new SectionResult<PromptInfo>(false, []),
+            error: "HttpRequestException: Response status code does not indicate success: 401 (Unauthorized).");
+        var report = new InspectReport(DateTimeOffset.UtcNow, [server]);
+
+        // 1. Server prompt: select the (only) failed server.
+        console.Input.PushKey(ConsoleKey.Enter);
+        // 2. Section prompt: Overview is index 0 -> Enter. Overview surfaces the connection error.
+        console.Input.PushKey(ConsoleKey.Enter);
+        // 3. Back to section menu: pick Back (index 6) -> Down x6, Enter.
+        for (var i = 0; i < 6; i++)
+        {
+            console.Input.PushKey(ConsoleKey.DownArrow);
+        }
+        console.Input.PushKey(ConsoleKey.Enter);
+        // 4. Server prompt: Down -> Exit, Enter.
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
+
+        exit.ShouldBe(0);
+        var output = console.Output;
+        // The failure must be visible - both as the persistent panel header and the overview body.
+        output.ShouldContain("connection failed");
+        output.ShouldContain("Connection failed");
+        output.ShouldContain("Unauthorized");
+        // And the server list flags it as unreachable.
+        output.ShouldContain("unreachable");
     }
 }

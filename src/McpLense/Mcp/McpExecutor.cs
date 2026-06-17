@@ -955,18 +955,8 @@ internal static class McpExecutor
                 SetProperty(options, server.Headers.ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase), "AdditionalHeaders");
             }
 
-            if (server.Auth is { Kind: not AuthKind.None })
-            {
-                var authHandler = AuthHandlerFactory.Create(server.Auth, server.Url);
-                if (authHandler is not null)
-                {
-                    authHandler.InnerHandler = new SocketsHttpHandler();
-                    var http = new HttpClient(authHandler, disposeHandler: true);
-                    return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken);
-                }
-            }
-
-            return await McpClient.CreateAsync(new HttpClientTransport(options), cancellationToken: cancellationToken);
+            var http = CreateHttpMcpClient(server);
+            return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken);
         }
 
         var stdioOptions = new StdioClientTransportOptions
@@ -988,6 +978,37 @@ internal static class McpExecutor
         }
 
         return await McpClient.CreateAsync(new StdioClientTransport(stdioOptions), cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Builds the <see cref="HttpClient"/> backing an HTTP MCP transport.
+    /// <list type="bullet">
+    ///   <item><description>Installs <see cref="StandaloneStreamSuppressingHandler"/> so the SDK's
+    ///   optional standalone GET event-stream is declined locally. Some Streamable HTTP servers commit
+    ///   their session asynchronously after <c>initialize</c>; the early standalone stream otherwise
+    ///   races ahead of that and the server discards the session, breaking every later request with
+    ///   <c>-32001 "Session not found"</c>. McpLense is request/response oriented, so it does not need
+    ///   the push channel for inspect / list / call / read / prompt.</description></item>
+    ///   <item><description><b>No client-level timeout.</b> MCP rides long-lived SSE streams, so the
+    ///   per-operation deadline is enforced by the caller's cancellation token (and
+    ///   <see cref="HttpClientTransportOptions.ConnectionTimeout"/>) rather than
+    ///   <see cref="HttpClient.Timeout"/>, which would otherwise abort a streaming response.</description></item>
+    /// </list>
+    /// </summary>
+    private static HttpClient CreateHttpMcpClient(ResolvedServer server)
+    {
+        DelegatingHandler outer = new StandaloneStreamSuppressingHandler();
+        DelegatingHandler tail = outer;
+
+        if (server.Auth is { Kind: not AuthKind.None }
+            && AuthHandlerFactory.Create(server.Auth, server.Url) is { } authHandler)
+        {
+            tail.InnerHandler = authHandler;
+            tail = authHandler;
+        }
+
+        tail.InnerHandler = new SocketsHttpHandler();
+        return new HttpClient(outer, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
 
     private static CapabilitySnapshot GetCapabilities(McpClient client)
