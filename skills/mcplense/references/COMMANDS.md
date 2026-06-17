@@ -105,6 +105,15 @@ standard notifications). Output is the `behavior.serverInitiated` check entry.
 - `--timeout <seconds>` — observation window (default 30).
 - `--enable` / `--disable` — same toggles as `scan`.
 
+Note: every live connection (not just `observe`) now RECEIVES this traffic.
+One-shot `inspect` / `call` / `read` / `prompt` log what the server tried and
+answer with safe defaults (refuse sampling, decline elicitation, no roots); the
+`tui` shows it in a `server-initiated` table after each invocation. Pass
+`--server-stream` (on `tui`, or interactive `call` / `read` / `prompt`) to also
+keep the standalone GET event-stream open so idle server traffic surfaces - off
+by default because some Streamable-HTTP servers drop the POST session when a
+parallel GET stream is opened.
+
 ### `mcplense diff <baseline-before> <baseline-after>`
 
 Pure file-to-file structural diff: takes two baseline JSON files written by

@@ -851,7 +851,17 @@ dotnet run --project src/McpLense -- inspect --config mcp.json --server everythi
 - `--timeout <seconds>` (default 30s) bounds connecting and listing. Invocations
   (`call` / `read` / `prompt`, including in the TUI) get at least a 10-minute window so a
   legitimately slow tool isn't cut off; a larger `--timeout` still wins, and the interactive
-  TUI lets you cancel a running call with `Esc`.
+  TUI lets you cancel a running call with `Esc`. A call that runs past the deadline (or whose
+  connection keeps dropping) fails with a hint to raise `--timeout`; SSE reconnection is
+  capped so a flapping server can't overrun the deadline by minutes.
+- Every live connection receives the server-initiated half of the protocol
+  (`sampling/createMessage`, `elicitation/create`, `roots/list`, notifications). One-shot
+  `inspect` / `call` log what the server tried (and answer with safe defaults: refuse
+  sampling, decline elicitation, no roots); the TUI shows it in a `server-initiated` table
+  after each invocation. Pass `--server-stream` (tui, or interactive `call` / `read` /
+  `prompt`) to also keep the standalone GET event-stream open so idle server traffic
+  surfaces; it's suppressed by default because some Streamable-HTTP servers drop the POST
+  session when a parallel GET stream is opened.
 - Exit code is non-zero if any requested server fails or if a tool call reports `isError: true`.
 
 ## Project layout

@@ -2,7 +2,48 @@
 
 Living roadmap.
 
-## Delivered in 0.6.0 (current session)
+## Delivered in 0.11.0 (current session)
+
+- **T1.1 Shared HTTP client factory.** New `src/McpLense/Mcp/McpHttpClientFactory.cs`
+  is the single source of truth for the `HttpClient` behind every live MCP
+  connection (standalone-stream suppression, auth attachment, timeout). Wired into
+  the four creation sites - `McpExecutor.ConnectHttpAsync`, `McpHandshakeProbe`,
+  `ScanPipeline.OpenSessionForAsync`, and `ServerInitiatedObservationCheck`. Folding
+  scan-session creation onto the factory fixed a session loss (`-32001`) on POST-only
+  Streamable-HTTP servers during enumeration (the CVM triage bridge now enumerates
+  `triage_icm_incident`). New `McpHttpClientFactoryTests`.
+- **T1.2 Connection auth status surfaced.** `tools` / `resources` / `prompts` /
+  `inspect` / `call` / `read` / `prompt` now report how the connection authenticated
+  (`auth: anonymous (no credentials sent)` or `authenticated (profile ...)`), threaded
+  as `ConnectionAuthInfo` through the reports and rendered by `TextFormatter`.
+- **T2.3 Bounded reconnection + clearer errors.** SSE reconnection is capped at 2
+  attempts so a server that keeps dropping a long call can't overrun the invoke
+  deadline by minutes. Cancellations now suggest raising `--timeout`, connection-drop
+  failures get a distinct hint, and status-bearing 401/404s are left untouched. New
+  `FormatExceptionTests`.
+- **T2.4 Receive the server-initiated half of the protocol.** Every live client now
+  advertises sampling / elicitation / roots and wires handlers via a new
+  `IServerInteraction`. The default `LoggingServerInteraction` logs each request /
+  notification and answers with safe defaults (refuse sampling, decline elicitation,
+  no roots) so one-shot `inspect` / `call` SEE what the server tried. The TUI's
+  `TuiServerInteraction` captures the traffic and renders a `server-initiated` table
+  after each invocation. New `--server-stream` flag (tui + interactive
+  call/read/prompt) keeps the standalone GET event-stream open so idle server traffic
+  surfaces; suppressed by default for session safety.
+- **T3.6 Opt-in cross-style smoke tests.** `MCPLENSE_PUBLIC_SMOKE`-gated E2E smokes
+  drive the CLI against a POST-only Streamable-HTTP server (CVM triage bridge) and a
+  FastMCP server (compute-insights lens), guarding the shared client factory
+  end-to-end. `CliRunner` gained an environment overload so they pin
+  `MCPLENSE_NO_PROFILE_AUTO_DISCOVERY=1`.
+
+Build + test state: Debug clean.
+709 unit + 63 integration + 35 E2E + 6 skipped (gated remote smokes) = 807 total, all green.
+
+Still carried forward (the T4 refactors): A1 McpExecutor per-command handler split,
+A3 AuthScanner split, A4 CommandLine split - see "Carried forward to a follow-up
+session" below.
+
+## Delivered in 0.6.0
 
 - **D4 ILogger bridge complete**. New `McpLense.Diagnostics.McpLenseLog` static façade
   is the single sink for every diagnostic line. Default writes verbatim to
