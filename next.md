@@ -2,7 +2,45 @@
 
 Living roadmap.
 
-## Delivered in 0.11.0 (current session)
+## T4: internal refactors + latent bug fixes (this session, pending release)
+
+Pure-internal refactors (no user-visible behavior change) plus three latent bugs
+found while adding the characterization tests that made the refactors safe. Each
+refactor was preceded by gap-filling characterization tests and verified
+behavior-preserving (746 unit + 69 integration + 35 E2E + 6 gated, all green;
+Release `-warnaserror` clean).
+
+- **A4 - CommandLine option registry.** Replaced the ~15 scattered "X is only valid
+  for Y" guards plus a separately-maintained known-options allowlist with one
+  declarative `RestrictedOptions` registry (option -> allowed commands + message);
+  the known set is now DERIVED from the union so the two can't drift. Adding a
+  verb-restricted option is a single registry entry.
+- **A3 - AuthScanner split.** `AuthScanner` (521 lines) split into `AuthClassifier`
+  (pure decision ladder + derivations + heuristics, fully unit-testable), `AuthDiscovery`
+  (owns the `IAuthProbe`: RFC 9728 probe + scope substitution), and a slim `AuthScanner`
+  orchestrator. The `(IAuthProbe, IMcpHandshakeProbe)` ctor + static derivations are
+  preserved so all existing tests stay green.
+- **A1 - McpExecutor dictionary dispatch.** The ~155-line if-chain + switch in
+  `ExecuteAsync` became a registry of per-command `ICommandHandler`s, each declaring a
+  3-state `ServerResolution` (None / ResolveOnly / ResolveAndAuthenticate). The executor
+  runs exactly that much shared pipeline then dispatches. Handlers are nested in a
+  partial `McpExecutor` so they reuse the existing private helpers with no visibility
+  changes. Adding a command is register-a-handler.
+
+Latent bugs caught by the new characterization tests and fixed:
+
+- **`mcplense diff <a> <b>` was unreachable** - threw "Specify a target" because
+  `ParseTarget` only relaxed the target requirement for `--targets-from`, not `diff`.
+- **`--scan-plugin` was rejected as "Unknown option"** - registered as repeatable with a
+  scan-only guard but missing from the `ValidateOptions` allowlist (the drift the A4
+  registry now prevents structurally).
+- **`observe` double-wrapped its payload** - `DispatchObserveAsync` already returns an
+  `ExecutionOutcome`, but `ExecuteAsync` wrapped it again, so its payload was an
+  `ExecutionOutcome` instead of a `ScanReport` (inconsistent with `scan`).
+
+When released, the bug fixes warrant a version bump (likely 0.12.0).
+
+## Delivered in 0.11.0
 
 - **T1.1 Shared HTTP client factory.** New `src/McpLense/Mcp/McpHttpClientFactory.cs`
   is the single source of truth for the `HttpClient` behind every live MCP
@@ -37,11 +75,10 @@ Living roadmap.
   `MCPLENSE_NO_PROFILE_AUTO_DISCOVERY=1`.
 
 Build + test state: Debug clean.
-709 unit + 63 integration + 35 E2E + 6 skipped (gated remote smokes) = 807 total, all green.
+ 709 unit + 63 integration + 35 E2E + 6 skipped (gated remote smokes) = 807 total, all green.
 
-Still carried forward (the T4 refactors): A1 McpExecutor per-command handler split,
-A3 AuthScanner split, A4 CommandLine split - see "Carried forward to a follow-up
-session" below.
+The T4 refactors (A1 / A3 / A4) that were carried forward here are now done - see "T4:
+internal refactors + latent bug fixes" at the top.
 
 ## Delivered in 0.6.0
 
@@ -131,22 +168,9 @@ implemented; we documented + verified rather than re-implementing:
 
 ## Carried forward to a follow-up session
 
-- **A1 Full McpExecutor migration**. The dispatch switch in `McpExecutor.cs`
-  (~61 KB / ~1300 lines) still selects per-command static methods. The
-  `ICommandHandler` interface is in place (`src/McpLense/Mcp/ICommandHandler.cs`);
-  the remaining work is extracting one handler class per command
-  (Inspect/Tools/Resources/Prompts/Call/Read/Prompt/FetchResource/Observe)
-  and registering them in a dispatcher dictionary. Pure refactor, no
-  behavioural change, large blast radius across the integration tests.
-- **A3 Split AuthScanner**. `src/McpLense/Mcp/AuthScanner.cs` is ~20 KB and
-  mixes RFC 9728 probing, ASM discovery, profile auto-pick, and tiebreak.
-  Suggested split: `AuthDiscovery` (probes + ASM), `AuthClassifier`
-  (categorisation), `AuthScanner` (orchestrator that consumes the two).
-- **A4 Split CommandLine.cs**. `src/McpLense.Cli/Cli/CommandLine.cs` is ~32 KB
-  and adding a verb means touching `ParseCommand`, `ValidateOptions`, the
-  long-option handler, the help text, and the `ParsedCommand` factory.
-  Suggested split: per-verb `IVerbParser` types registered in a dictionary
-  mirroring the planned executor split.
+- **A1 / A3 / A4 refactors: DONE.** Delivered in the T4 refactor pass - see "T4:
+  internal refactors + latent bug fixes" at the top of this file. (A1 McpExecutor
+  dictionary dispatch, A3 AuthScanner split, A4 CommandLine option registry.)
 
 ## Delivered in 0.4.0
 
