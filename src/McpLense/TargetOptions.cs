@@ -87,7 +87,14 @@ internal sealed record ParsedCommand(
     /// and accepted with Enter. CLI-only flag; ignored by library hosts that build arguments
     /// directly.
     /// </summary>
-    bool Interactive = false);
+    bool Interactive = false,
+    /// <summary>
+    /// When true, the live MCP client keeps the standalone server-&gt;client GET event-stream open so
+    /// server-initiated traffic (sampling / elicitation / roots / notifications) can arrive outside a
+    /// request. Suppressed by default because some Streamable-HTTP servers drop the POST session when
+    /// a parallel GET stream is opened; the <c>--server-stream</c> flag opts back in. CLI-only knob.
+    /// </summary>
+    bool ServerStream = false);
 
 /// <summary>
 /// Resolved target description used to drive scans and other read-only operations. Public so

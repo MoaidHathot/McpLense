@@ -983,14 +983,14 @@ internal static class McpExecutor
         return prompts.Cast<object>().Select(MapPrompt).ToArray();
     }
 
-    private static async Task<OperationResult<T>> WithClientAsync<T>(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken, Func<McpClient, CancellationToken, Task<T>> operation)
+    private static async Task<OperationResult<T>> WithClientAsync<T>(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken, Func<McpClient, CancellationToken, Task<T>> operation, McpConnectOptions? connect = null)
     {
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(timeout);
 
         try
         {
-            var (client, authInfo) = await ConnectClientAsync(server, timeout, timeoutSource.Token);
+            var (client, authInfo) = await ConnectClientAsync(server, timeout, timeoutSource.Token, connect ?? McpConnectOptions.Default);
             await using var owned = client;
             return new OperationResult<T>(await operation(client, timeoutSource.Token), null, authInfo);
         }
@@ -1005,19 +1005,20 @@ internal static class McpExecutor
     /// "anonymous first": an explicit profile / inline token is used directly, but an auto-picked
     /// profile is held back as a fallback and only presented when the server actually refuses the
     /// unauthenticated attempt (HTTP 401/403). That way a server that allows anonymous access is
-    /// never handed credentials it never asked for.
+    /// never handed credentials it never asked for. <paramref name="connect"/> carries the
+    /// server-initiated interaction + standalone-stream preference.
     /// </summary>
-    private static async Task<(McpClient Client, ConnectionAuthInfo Auth)> ConnectClientAsync(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken)
+    private static async Task<(McpClient Client, ConnectionAuthInfo Auth)> ConnectClientAsync(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken, McpConnectOptions connect)
     {
         if (server.Kind is not ConnectionKind.Http)
         {
-            return (await ConnectStdioAsync(server, timeout, cancellationToken).ConfigureAwait(false), ConnectionAuthInfo.None);
+            return (await ConnectStdioAsync(server, timeout, connect, cancellationToken).ConfigureAwait(false), ConnectionAuthInfo.None);
         }
 
         // Definite credentials (inline --auth bearer, or an explicit --profile): use them directly.
         if (server.Auth is { Kind: not AuthKind.None } definite)
         {
-            var client = await ConnectHttpAsync(server, definite, timeout, cancellationToken).ConfigureAwait(false);
+            var client = await ConnectHttpAsync(server, definite, timeout, connect, cancellationToken).ConfigureAwait(false);
             var source = server.AuthProfileName is null ? "inline" : "profile";
             return (client, ConnectionAuthInfo.Authenticated(server.AuthProfileName, definite.Kind, source));
         }
@@ -1027,22 +1028,54 @@ internal static class McpExecutor
         {
             try
             {
-                var anonymous = await ConnectHttpAsync(server, auth: null, timeout, cancellationToken).ConfigureAwait(false);
+                var anonymous = await ConnectHttpAsync(server, auth: null, timeout, connect, cancellationToken).ConfigureAwait(false);
                 return (anonymous, ConnectionAuthInfo.Anonymous);
             }
             catch (Exception ex) when (IsAuthChallenge(ex))
             {
-                var client = await ConnectHttpAsync(server, candidate, timeout, cancellationToken).ConfigureAwait(false);
+                var client = await ConnectHttpAsync(server, candidate, timeout, connect, cancellationToken).ConfigureAwait(false);
                 return (client, ConnectionAuthInfo.Authenticated(server.AuthProfileName, candidate.Kind, "auto-pick"));
             }
         }
 
         // No credentials available at all: plain anonymous connection.
-        var plain = await ConnectHttpAsync(server, auth: null, timeout, cancellationToken).ConfigureAwait(false);
+        var plain = await ConnectHttpAsync(server, auth: null, timeout, connect, cancellationToken).ConfigureAwait(false);
         return (plain, ConnectionAuthInfo.Anonymous);
     }
 
-    private static async Task<McpClient> ConnectHttpAsync(ResolvedServer server, ResolvedAuth? auth, TimeSpan timeout, CancellationToken cancellationToken)
+    /// <summary>
+    /// Builds the <see cref="McpClientOptions"/> that advertise the client's server-initiated
+    /// capabilities and wire the handler delegates (sampling/elicitation/roots + surfaced
+    /// notifications) to the supplied <see cref="IServerInteraction"/>.
+    /// </summary>
+    private static McpClientOptions BuildClientOptions(IServerInteraction interaction)
+        => new()
+        {
+            ClientInfo = new Implementation { Name = "mcplense", Version = "mcplense" },
+            Capabilities = interaction.Capabilities,
+            Handlers = new McpClientHandlers
+            {
+                SamplingHandler = interaction.CreateMessageAsync,
+                ElicitationHandler = interaction.ElicitAsync,
+                RootsHandler = interaction.ListRootsAsync,
+                NotificationHandlers = SurfacedNotificationMethods.Select(method =>
+                    new KeyValuePair<string, Func<JsonRpcNotification, CancellationToken, ValueTask>>(
+                        method,
+                        (notification, ct) => interaction.OnNotificationAsync(method, notification.Params, ct)))
+            }
+        };
+
+    /// <summary>Server notifications we surface to the interaction (progress is handled per-call instead).</summary>
+    private static readonly string[] SurfacedNotificationMethods =
+    [
+        NotificationMethods.LoggingMessageNotification,
+        NotificationMethods.ResourceUpdatedNotification,
+        NotificationMethods.ToolListChangedNotification,
+        NotificationMethods.PromptListChangedNotification,
+        NotificationMethods.ResourceListChangedNotification
+    ];
+
+    private static async Task<McpClient> ConnectHttpAsync(ResolvedServer server, ResolvedAuth? auth, TimeSpan timeout, McpConnectOptions connect, CancellationToken cancellationToken)
     {
         var options = new HttpClientTransportOptions
         {
@@ -1062,11 +1095,11 @@ internal static class McpExecutor
             SetProperty(options, server.Headers.ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase), "AdditionalHeaders");
         }
 
-        var http = McpHttpClientFactory.Create(server, auth);
-        return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken);
+        var http = McpHttpClientFactory.Create(server, auth, connect.SuppressStandaloneStream);
+        return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), BuildClientOptions(connect.Interaction), cancellationToken: cancellationToken);
     }
 
-    private static async Task<McpClient> ConnectStdioAsync(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken)
+    private static async Task<McpClient> ConnectStdioAsync(ResolvedServer server, TimeSpan timeout, McpConnectOptions connect, CancellationToken cancellationToken)
     {
         var stdioOptions = new StdioClientTransportOptions
         {
@@ -1086,7 +1119,7 @@ internal static class McpExecutor
             SetProperty(stdioOptions, server.Environment.ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase), "EnvironmentVariables");
         }
 
-        return await McpClient.CreateAsync(new StdioClientTransport(stdioOptions), cancellationToken: cancellationToken);
+        return await McpClient.CreateAsync(new StdioClientTransport(stdioOptions), BuildClientOptions(connect.Interaction), cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -1526,7 +1559,7 @@ internal static class McpExecutor
     /// owns the returned session and must dispose it. For multi-server <c>--config</c> targets,
     /// scope to one server first via <see cref="TargetOptions.ServerNames"/>.
     /// </summary>
-    public static async Task<IMcpSession> ConnectAsync(ParsedCommand command, CancellationToken cancellationToken)
+    public static async Task<IMcpSession> ConnectAsync(ParsedCommand command, CancellationToken cancellationToken, IServerInteraction? interaction = null)
     {
         var scanConfigPaths = TargetConfigLoading.ResolveScanConfigPaths(command.Target.ProfilePaths);
         var scanConfig = await ScanConfigLoader.LoadAsync(scanConfigPaths, cancellationToken).ConfigureAwait(false);
@@ -1541,7 +1574,8 @@ internal static class McpExecutor
         }
 
         var server = SingleServer(servers);
-        var (client, _) = await ConnectClientAsync(server, command.Timeout, cancellationToken).ConfigureAwait(false);
+        var connect = McpConnectOptions.Default.With(interaction, suppressStandaloneStream: !command.ServerStream);
+        var (client, _) = await ConnectClientAsync(server, command.Timeout, cancellationToken, connect).ConfigureAwait(false);
         return new McpSession(client, server, command.Timeout, InvokeTimeout(command.Timeout));
     }
 
