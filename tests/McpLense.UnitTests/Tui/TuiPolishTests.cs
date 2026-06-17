@@ -110,32 +110,27 @@ public class TuiPolishTests
         TuiApp.FilterPrompts(items, "review").Count.ShouldBe(1);
     }
 
-    // ---------- Filter-aware rendering ----------
+    // ---------- Filter header rendering ----------
 
     [Fact]
-    public void RenderTools_WithFilter_OnlyMatchingRows()
+    public void RenderFilterHeader_WithFilter_ShowsTermAndMatchRatio()
     {
         var console = NewConsole();
-        var server = BuildServerWithTools(
-            new ToolInfo("Echo", "echo it", null),
-            new ToolInfo("Add", "add ints", null));
 
-        TuiApp.RenderTools(console, server, "add");
+        TuiApp.RenderFilterHeader(console, "add", shown: 1, total: 2);
 
         var output = console.Output;
-        output.ShouldContain("Add");
-        output.ShouldNotContain("Echo");
         output.ShouldContain("filter:");
+        output.ShouldContain("add");
         output.ShouldContain("1/2");
     }
 
     [Fact]
-    public void RenderTools_NoFilter_ShowsTotalCount()
+    public void RenderFilterHeader_NoFilter_ShowsTotalCount()
     {
         var console = NewConsole();
-        var server = BuildServerWithTools(new ToolInfo("Echo", null, null));
 
-        TuiApp.RenderTools(console, server, string.Empty);
+        TuiApp.RenderFilterHeader(console, string.Empty, shown: 1, total: 1);
 
         console.Output.ShouldContain("1 item(s)");
     }
@@ -266,17 +261,4 @@ public class TuiPolishTests
         path.ShouldNotBeNullOrEmpty();
         path.ShouldEndWith("tui-bookmarks.json");
     }
-
-    // ---------- Helpers ----------
-
-    private static ServerInspection BuildServerWithTools(params ToolInfo[] tools)
-        => new(
-            Name: "alpha",
-            Transport: "stdio",
-            Target: "dotnet exec foo.dll",
-            Capabilities: new CapabilitySnapshot(true, false, false, false, false),
-            Tools: new SectionResult<ToolInfo>(true, tools),
-            Resources: new SectionResult<ResourceInfo>(false, []),
-            ResourceTemplates: new SectionResult<ResourceTemplateInfo>(false, []),
-            Prompts: new SectionResult<PromptInfo>(false, []));
 }

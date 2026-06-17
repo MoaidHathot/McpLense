@@ -106,35 +106,6 @@ public class TuiAppTests
     }
 
     [Fact]
-    public void RenderTools_WithServerError_SurfacesConnectionErrorInsteadOfEmptyTable()
-    {
-        var console = NewConsole();
-        // No section-level error, no items - exactly the shape a failed connect produces.
-        var server = BuildServer(
-            tools: new SectionResult<ToolInfo>(false, []),
-            error: "401 (Unauthorized)");
-
-        TuiApp.RenderTools(console, server);
-
-        var output = console.Output;
-        output.ShouldContain("Connection failed");
-        output.ShouldContain("Unauthorized");
-    }
-
-    [Fact]
-    public void RenderPrompts_WithServerError_SurfacesConnectionError()
-    {
-        var console = NewConsole();
-        var server = BuildServer(
-            prompts: new SectionResult<PromptInfo>(false, []),
-            error: "401 (Unauthorized)");
-
-        TuiApp.RenderPrompts(console, server);
-
-        console.Output.ShouldContain("Connection failed");
-    }
-
-    [Fact]
     public void RenderOverview_AllSupported_ShowsOkAndCapabilityList()
     {
         var console = NewConsole();
@@ -161,107 +132,6 @@ public class TuiAppTests
         TuiApp.RenderOverview(console, server);
 
         console.Output.ShouldContain("not supported");
-    }
-
-    [Fact]
-    public void RenderTools_WritesNameAndDescription()
-    {
-        var console = NewConsole();
-        var server = BuildServer();
-
-        TuiApp.RenderTools(console, server);
-
-        var output = console.Output;
-        output.ShouldContain("Echo");
-        output.ShouldContain("Echoes back");
-        output.ShouldContain("Add");
-    }
-
-    [Fact]
-    public void RenderTools_WithError_WritesErrorMessageAndSkipsTable()
-    {
-        var console = NewConsole();
-        var server = BuildServer(tools: new SectionResult<ToolInfo>(true, [], "tools-listing-failed"));
-
-        TuiApp.RenderTools(console, server);
-
-        var output = console.Output;
-        output.ShouldContain("tools-listing-failed");
-        output.ShouldNotContain("Description");
-    }
-
-    [Fact]
-    public void RenderResources_WritesNameUriAndMime()
-    {
-        var console = NewConsole();
-        var server = BuildServer();
-
-        TuiApp.RenderResources(console, server);
-
-        var output = console.Output;
-        output.ShouldContain("README");
-        output.ShouldContain("file://README.md");
-        output.ShouldContain("text/markdown");
-    }
-
-    [Fact]
-    public void RenderResources_WithError_WritesErrorMessage()
-    {
-        var console = NewConsole();
-        var server = BuildServer(resources: new SectionResult<ResourceInfo>(true, [], "resources-failed"));
-
-        TuiApp.RenderResources(console, server);
-
-        console.Output.ShouldContain("resources-failed");
-    }
-
-    [Fact]
-    public void RenderResourceTemplates_WritesTemplate()
-    {
-        var console = NewConsole();
-        var server = BuildServer();
-
-        TuiApp.RenderResourceTemplates(console, server);
-
-        var output = console.Output;
-        output.ShouldContain("Articles");
-        output.ShouldContain("docs://articles/{id}");
-    }
-
-    [Fact]
-    public void RenderResourceTemplates_WithError_WritesErrorMessage()
-    {
-        var console = NewConsole();
-        var server = BuildServer(resourceTemplates: new SectionResult<ResourceTemplateInfo>(true, [], "rt-failed"));
-
-        TuiApp.RenderResourceTemplates(console, server);
-
-        console.Output.ShouldContain("rt-failed");
-    }
-
-    [Fact]
-    public void RenderPrompts_WritesArgumentsWithRequiredMarker()
-    {
-        var console = NewConsole();
-        var server = BuildServer();
-
-        TuiApp.RenderPrompts(console, server);
-
-        var output = console.Output;
-        output.ShouldContain("CodeReview");
-        output.ShouldContain("language*");
-        output.ShouldContain("code");
-    }
-
-    [Fact]
-    public void RenderPrompts_WithError_WritesErrorMessage()
-    {
-        var console = NewConsole();
-        var server = BuildServer(prompts: new SectionResult<PromptInfo>(true, [], "prompts-failed"));
-
-        TuiApp.RenderPrompts(console, server);
-
-        console.Output.ShouldContain("prompts-failed");
     }
 
     // --- Helpers -------------------------------------------------------
@@ -309,6 +179,9 @@ public class TuiAppTests
     }
 
     // --- Interactive flow ---------------------------------------------
+    //
+    // Selection screens are driven by TuiMenu: a number jumps to a row, Enter selects the
+    // highlighted row (index 0 by default), Esc backs out, and 'q' exits the top-level list.
 
     [Fact]
     public async Task RenderAsync_NoServers_Returns1AndShowsRedMessage()
@@ -323,15 +196,28 @@ public class TuiAppTests
     }
 
     [Fact]
-    public async Task RenderAsync_ExitImmediately_Returns0()
+    public async Task RenderAsync_QuitsImmediately_Returns0()
     {
         var console = NewConsole();
-        var server = BuildServer();
-        var report = new InspectReport(DateTimeOffset.UtcNow, [server]);
+        var report = new InspectReport(DateTimeOffset.UtcNow, [BuildServer()]);
 
-        // Server prompt: cursor at index 0 (the server). Down -> Exit, Enter.
-        console.Input.PushKey(ConsoleKey.DownArrow);
-        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushCharacter('q'); // server list -> exit
+
+        var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
+
+        exit.ShouldBe(0);
+        console.Output.ShouldContain("Select an MCP server");
+    }
+
+    [Fact]
+    public async Task RenderAsync_EnterSelectsServer_EscBacks_ThenQuits_Returns0()
+    {
+        var console = NewConsole();
+        var report = new InspectReport(DateTimeOffset.UtcNow, [BuildServer()]);
+
+        console.Input.PushKey(ConsoleKey.Enter);   // server list: select highlighted (the server)
+        console.Input.PushKey(ConsoleKey.Escape);  // section menu: back to servers
+        console.Input.PushCharacter('q');          // server list: exit
 
         var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
 
@@ -339,37 +225,50 @@ public class TuiAppTests
     }
 
     [Fact]
-    public async Task RenderAsync_NavigateBackThenExit_Returns0()
+    public async Task RenderAsync_NumberSelectsSecondServer()
     {
         var console = NewConsole();
-        var server = BuildServer();
-        var report = new InspectReport(DateTimeOffset.UtcNow, [server]);
+        var report = new InspectReport(DateTimeOffset.UtcNow,
+        [
+            BuildServer("alpha"),
+            BuildServer("bravo")
+        ]);
 
-        // 1. Server prompt: select first server (Enter at index 0).
-        console.Input.PushKey(ConsoleKey.Enter);
-
-        // 2. Section prompt items: Overview, Tools, Resources, Resource Templates, Prompts,
-        //    Bookmarks, Back. Down x6 -> Back, Enter.
-        for (var i = 0; i < 6; i++)
-        {
-            console.Input.PushKey(ConsoleKey.DownArrow);
-        }
-        console.Input.PushKey(ConsoleKey.Enter);
-
-        // 3. Back at server prompt: Down -> Exit, Enter.
-        console.Input.PushKey(ConsoleKey.DownArrow);
-        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushCharacter('2');          // server list: jump to + select the 2nd server
+        console.Input.PushKey(ConsoleKey.Escape);  // section menu: back to servers
+        console.Input.PushCharacter('q');          // exit
 
         var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
 
         exit.ShouldBe(0);
+        // The summary panel for the selected server proves the number jumped to "bravo".
+        console.Output.ShouldContain("bravo");
     }
 
     [Fact]
-    public async Task RenderAsync_FailedServer_SurfacesConnectionErrorWhenDrilledInto()
+    public async Task RenderAsync_DrillIntoTools_ShowsNameAndDescription()
     {
         var console = NewConsole();
-        // A failed connect: server-level Error set, every section empty + unsupported.
+        var report = new InspectReport(DateTimeOffset.UtcNow, [BuildServer()]);
+
+        console.Input.PushKey(ConsoleKey.Enter);   // select the server
+        console.Input.PushCharacter('2');          // sections: Overview=1, Tools=2 -> Tools
+        console.Input.PushKey(ConsoleKey.Escape);  // tools list -> back to sections
+        console.Input.PushKey(ConsoleKey.Escape);  // sections -> back to servers
+        console.Input.PushCharacter('q');          // exit
+
+        var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
+
+        exit.ShouldBe(0);
+        var output = console.Output;
+        output.ShouldContain("Echo");
+        output.ShouldContain("Echoes back"); // the inline description from ToolDisplay
+    }
+
+    [Fact]
+    public async Task RenderAsync_FailedServer_SurfacesConnectionErrorInSectionAndList()
+    {
+        var console = NewConsole();
         var server = BuildServer(
             name: "broken",
             transport: "http",
@@ -382,29 +281,18 @@ public class TuiAppTests
             error: "HttpRequestException: Response status code does not indicate success: 401 (Unauthorized).");
         var report = new InspectReport(DateTimeOffset.UtcNow, [server]);
 
-        // 1. Server prompt: select the (only) failed server.
-        console.Input.PushKey(ConsoleKey.Enter);
-        // 2. Section prompt: Overview is index 0 -> Enter. Overview surfaces the connection error.
-        console.Input.PushKey(ConsoleKey.Enter);
-        // 3. Back to section menu: pick Back (index 6) -> Down x6, Enter.
-        for (var i = 0; i < 6; i++)
-        {
-            console.Input.PushKey(ConsoleKey.DownArrow);
-        }
-        console.Input.PushKey(ConsoleKey.Enter);
-        // 4. Server prompt: Down -> Exit, Enter.
-        console.Input.PushKey(ConsoleKey.DownArrow);
-        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.Enter);   // select the failed server
+        console.Input.PushCharacter('2');          // sections: Tools -> short-circuits to the error notice
+        console.Input.PushKey(ConsoleKey.Escape);  // sections -> back to servers
+        console.Input.PushCharacter('q');          // exit
 
         var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
 
         exit.ShouldBe(0);
         var output = console.Output;
-        // The failure must be visible - both as the persistent panel header and the overview body.
-        output.ShouldContain("connection failed");
-        output.ShouldContain("Connection failed");
+        output.ShouldContain("connection failed");  // persistent summary panel
+        output.ShouldContain("Connection failed");  // the section's unavailable notice
         output.ShouldContain("Unauthorized");
-        // And the server list flags it as unreachable.
-        output.ShouldContain("unreachable");
+        output.ShouldContain("unreachable");        // flagged in the server list
     }
 }

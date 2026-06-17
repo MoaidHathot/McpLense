@@ -71,30 +71,27 @@ internal static class TuiApp
 
         while (true)
         {
-            console.Clear();
-            var serverOptions = servers
-                .Select((server, index) => new
+            var serverItems = servers
+                .Select(server =>
                 {
-                    Label = Markup.Escape($"{index + 1}. {server.Name} [{server.Transport}] {server.Target}")
-                        + (server.Error is not null ? "  [red](unreachable)[/]" : string.Empty),
-                    Server = server
+                    var label = $"{server.Name}   [{server.Transport}]   {server.Target}";
+                    return server.Error is not null ? $"{label}   (unreachable)" : label;
                 })
                 .ToArray();
 
-            var selectedServerLabel = console.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("Select an MCP server")
-                    .PageSize(10)
-                    .AddChoices(serverOptions.Select(option => option.Label).Append("Exit")));
+            var result = TuiMenu.Select(
+                console,
+                renderHeader: null,
+                title: "Select an MCP server",
+                items: serverItems,
+                options: new TuiMenuOptions { ExitLabel = "Exit" });
 
-            if (selectedServerLabel == "Exit")
+            if (result.Action is not TuiMenuAction.Item)
             {
                 return 0;
             }
 
-            var selectedServer = serverOptions.First(option => option.Label == selectedServerLabel).Server;
-
-            await ShowServerAsync(session, selectedServer);
+            await ShowServerAsync(session, servers[result.Index]);
         }
     }
 
@@ -129,35 +126,37 @@ internal static class TuiApp
 
         while (true)
         {
-            console.Clear();
-            RenderServerSummary(console, server);
-
             var bookmarksForServer = session.Bookmarks.ForServer(server.Name);
             var bookmarksLabel = bookmarksForServer.Count == 0
                 ? "Bookmarks"
                 : $"Bookmarks ({bookmarksForServer.Count})";
 
-            var choice = console.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("Choose a section")
-                    .AddChoices("Overview", "Tools", "Resources", "Resource Templates", "Prompts", bookmarksLabel, "Back"));
+            var sections = new[] { "Overview", "Tools", "Resources", "Resource Templates", "Prompts", bookmarksLabel };
 
-            if (choice == "Back")
+            var result = TuiMenu.Select(
+                console,
+                renderHeader: () => RenderServerSummary(console, server),
+                title: "Choose a section",
+                items: sections,
+                options: new TuiMenuOptions { BackLabel = "Back to servers" });
+
+            if (result.Action is not TuiMenuAction.Item)
             {
                 return;
             }
 
+            var choice = sections[result.Index];
             if (choice == bookmarksLabel)
             {
                 await ShowBookmarksAsync(console, server, session.Bookmarks, session.WaitForKey);
                 continue;
             }
 
-            console.Clear();
-            RenderServerSummary(console, server);
             switch (choice)
             {
                 case "Overview":
+                    console.Clear();
+                    RenderServerSummary(console, server);
                     RenderOverview(console, server);
                     console.MarkupLine("\n[grey]Press any key to continue...[/]");
                     await session.WaitForKey();
@@ -180,295 +179,182 @@ internal static class TuiApp
 
     // --- Sections with search + bookmarks + drilldown ---------------
 
-    private static async Task ShowToolsAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+    private static Task ShowToolsAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+        => RunListAsync(
+            session, server, filters, "Tools", server.Tools.Error, server.Tools.Items.Count,
+            filter => FilterTools(server.Tools.Items, filter),
+            ToolDisplay,
+            tool => ShowToolDetailAsync(session, server, tool));
+
+    private static Task ShowToolDetailAsync(TuiSession session, ServerInspection server, ToolInfo tool)
+        => RunDetailAsync(
+            session, server,
+            () => RenderToolDetail(session.Console, tool),
+            new TuiBookmark(server.Name, TuiBookmarkKind.Tool, tool.Name),
+            session.Connector is not null ? CallChoice : null,
+            () => InvokeToolAsync(session, server, tool));
+
+    private static Task ShowResourcesAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+        => RunListAsync(
+            session, server, filters, "Resources", server.Resources.Error, server.Resources.Items.Count,
+            filter => FilterResources(server.Resources.Items, filter),
+            ResourceDisplay,
+            resource => ShowResourceDetailAsync(session, server, resource));
+
+    private static Task ShowResourceDetailAsync(TuiSession session, ServerInspection server, ResourceInfo resource)
+        => RunDetailAsync(
+            session, server,
+            () => RenderResourceDetail(session.Console, resource),
+            new TuiBookmark(server.Name, TuiBookmarkKind.Resource, resource.Uri ?? resource.Name ?? "(unnamed)"),
+            session.Connector is not null && !string.IsNullOrEmpty(resource.Uri) ? ReadChoice : null,
+            () => InvokeResourceAsync(session, server, resource.Uri!));
+
+    private static Task ShowResourceTemplatesAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+        => RunListAsync(
+            session, server, filters, "Resource Templates", server.ResourceTemplates.Error, server.ResourceTemplates.Items.Count,
+            filter => FilterResourceTemplates(server.ResourceTemplates.Items, filter),
+            ResourceTemplateDisplay,
+            template => ShowResourceTemplateDetailAsync(session, server, template));
+
+    private static Task ShowResourceTemplateDetailAsync(TuiSession session, ServerInspection server, ResourceTemplateInfo template)
+        => RunDetailAsync(
+            session, server,
+            () => RenderResourceTemplateDetail(session.Console, template),
+            new TuiBookmark(server.Name, TuiBookmarkKind.ResourceTemplate, template.UriTemplate ?? template.Name ?? "(unnamed)"),
+            session.Connector is not null && !string.IsNullOrEmpty(template.UriTemplate) ? ReadChoice : null,
+            () => InvokeTemplateAsync(session, server, template));
+
+    private static Task ShowPromptsAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+        => RunListAsync(
+            session, server, filters, "Prompts", server.Prompts.Error, server.Prompts.Items.Count,
+            filter => FilterPrompts(server.Prompts.Items, filter),
+            PromptDisplay,
+            prompt => ShowPromptDetailAsync(session, server, prompt));
+
+    private static Task ShowPromptDetailAsync(TuiSession session, ServerInspection server, PromptInfo prompt)
+        => RunDetailAsync(
+            session, server,
+            () => RenderPromptDetail(session.Console, prompt),
+            new TuiBookmark(server.Name, TuiBookmarkKind.Prompt, prompt.Name),
+            session.Connector is not null ? GetPromptChoice : null,
+            () => InvokePromptAsync(session, server, prompt));
+
+    /// <summary>
+    /// Drives one searchable section list: renders the (filtered) items as a numbered
+    /// <see cref="TuiMenu"/>, handles search / clear-filter / back, and drills into the chosen item.
+    /// Section- or connection-level errors short-circuit to a "press a key" notice.
+    /// </summary>
+    private static async Task RunListAsync<T>(
+        TuiSession session,
+        ServerInspection server,
+        IDictionary<string, string> filters,
+        string sectionKey,
+        string? sectionError,
+        int totalCount,
+        Func<string, IReadOnlyList<T>> matchesFor,
+        Func<T, string> display,
+        Func<T, Task> drill)
     {
         var console = session.Console;
         while (true)
         {
-            console.Clear();
-            RenderServerSummary(console, server);
-            var filter = filters["Tools"];
-            RenderTools(console, server, filter);
-
-            if (server.Tools.Error is not null || server.Error is not null)
+            if (sectionError is not null || server.Error is not null)
             {
+                console.Clear();
+                RenderServerSummary(console, server);
+                if (sectionError is not null)
+                {
+                    console.MarkupLine($"[red]{Markup.Escape(sectionError)}[/]");
+                }
+                else
+                {
+                    TryRenderConnectionError(console, server);
+                }
+
                 console.MarkupLine("\n[grey]Press any key to continue...[/]");
                 await session.WaitForKey();
                 return;
             }
 
-            var matches = FilterTools(server.Tools.Items, filter);
-            var choices = BuildItemChoices(matches.Select(t => t.Name), filter);
-            var action = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title("Tools").PageSize(15).AddChoices(choices));
+            var filter = filters[sectionKey];
+            var matches = matchesFor(filter);
+            var items = matches.Select(display).ToArray();
 
-            if (action == BackChoice) return;
-            if (action == SearchChoice)
-            {
-                filters["Tools"] = console.Prompt(new TextPrompt<string>("Filter (substring, case-insensitive):").AllowEmpty());
-                continue;
-            }
-            if (action == ClearFilterChoice)
-            {
-                filters["Tools"] = string.Empty;
-                continue;
-            }
+            var result = TuiMenu.Select(
+                console,
+                renderHeader: () =>
+                {
+                    RenderServerSummary(console, server);
+                    RenderFilterHeader(console, filter, matches.Count, totalCount);
+                },
+                title: sectionKey,
+                items: items,
+                options: new TuiMenuOptions
+                {
+                    ShowSearch = true,
+                    ShowClearFilter = filter.Length > 0,
+                    BackLabel = "Back"
+                });
 
-            // Drilldown: selected tool name -> render schema preview + actions.
-            var name = StripPrefix(action);
-            var tool = matches.FirstOrDefault(t => t.Name == name);
-            if (tool is null)
+            switch (result.Action)
             {
-                continue;
+                case TuiMenuAction.Search:
+                    filters[sectionKey] = PromptFilter(console);
+                    break;
+                case TuiMenuAction.ClearFilter:
+                    filters[sectionKey] = string.Empty;
+                    break;
+                case TuiMenuAction.Item:
+                    await drill(matches[result.Index]);
+                    break;
+                default:
+                    return;
             }
-
-            await ShowToolDetailAsync(session, server, tool);
         }
     }
 
-    private static async Task ShowToolDetailAsync(TuiSession session, ServerInspection server, ToolInfo tool)
+    /// <summary>
+    /// Drives a drilled-in item's action screen (Call/Read/Get + Bookmark) as a numbered
+    /// <see cref="TuiMenu"/>, re-rendering the item detail above it each frame.
+    /// </summary>
+    private static async Task RunDetailAsync(
+        TuiSession session,
+        ServerInspection server,
+        Action renderDetail,
+        TuiBookmark bookmark,
+        string? primaryAction,
+        Func<Task> invokePrimary)
     {
         var console = session.Console;
         while (true)
         {
-            console.Clear();
-            RenderServerSummary(console, server);
-            RenderToolDetail(console, tool);
-
-            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.Tool, tool.Name);
             var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
-
-            var choices = new List<string>();
-            if (session.Connector is not null)
+            var actions = new List<string>();
+            if (primaryAction is not null)
             {
-                choices.Add(CallChoice);
+                actions.Add(primaryAction);
             }
-            choices.Add(toggle);
-            choices.Add("Back");
+            actions.Add(toggle);
 
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Tool actions").AddChoices(choices));
-            if (action == "Back") return;
-            if (action == CallChoice)
+            var result = TuiMenu.Select(
+                console,
+                renderHeader: () =>
+                {
+                    RenderServerSummary(console, server);
+                    renderDetail();
+                },
+                title: "Actions",
+                items: actions,
+                options: new TuiMenuOptions { BackLabel = "Back" });
+
+            if (result.Action is not TuiMenuAction.Item)
             {
-                await InvokeToolAsync(session, server, tool);
-                continue;
-            }
-
-            await ToggleBookmarkAsync(session, bookmark);
-        }
-    }
-
-    private static async Task ShowResourcesAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
-    {
-        var console = session.Console;
-        while (true)
-        {
-            console.Clear();
-            RenderServerSummary(console, server);
-            var filter = filters["Resources"];
-            RenderResources(console, server, filter);
-
-            if (server.Resources.Error is not null || server.Error is not null)
-            {
-                console.MarkupLine("\n[grey]Press any key to continue...[/]");
-                await session.WaitForKey();
                 return;
             }
 
-            var matches = FilterResources(server.Resources.Items, filter);
-            var choices = BuildItemChoices(matches.Select(r => r.Name ?? r.Uri ?? "(unnamed)"), filter);
-            var action = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title("Resources").PageSize(15).AddChoices(choices));
-
-            if (action == BackChoice) return;
-            if (action == SearchChoice)
+            if (primaryAction is not null && result.Index == 0)
             {
-                filters["Resources"] = console.Prompt(new TextPrompt<string>("Filter (substring, case-insensitive):").AllowEmpty());
-                continue;
-            }
-            if (action == ClearFilterChoice)
-            {
-                filters["Resources"] = string.Empty;
-                continue;
-            }
-
-            var name = StripPrefix(action);
-            var resource = matches.FirstOrDefault(r => (r.Name ?? r.Uri ?? "(unnamed)") == name);
-            if (resource is null) continue;
-
-            await ShowResourceDetailAsync(session, server, resource);
-        }
-    }
-
-    private static async Task ShowResourceDetailAsync(TuiSession session, ServerInspection server, ResourceInfo resource)
-    {
-        var console = session.Console;
-        while (true)
-        {
-            console.Clear();
-            RenderServerSummary(console, server);
-            RenderResourceDetail(console, resource);
-
-            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.Resource, resource.Uri ?? resource.Name ?? "(unnamed)");
-            var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
-
-            var choices = new List<string>();
-            if (session.Connector is not null && !string.IsNullOrEmpty(resource.Uri))
-            {
-                choices.Add(ReadChoice);
-            }
-            choices.Add(toggle);
-            choices.Add("Back");
-
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Resource actions").AddChoices(choices));
-            if (action == "Back") return;
-            if (action == ReadChoice)
-            {
-                await InvokeResourceAsync(session, server, resource.Uri!);
-                continue;
-            }
-
-            await ToggleBookmarkAsync(session, bookmark);
-        }
-    }
-
-    private static async Task ShowResourceTemplatesAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
-    {
-        var console = session.Console;
-        while (true)
-        {
-            console.Clear();
-            RenderServerSummary(console, server);
-            var filter = filters["Resource Templates"];
-            RenderResourceTemplates(console, server, filter);
-
-            if (server.ResourceTemplates.Error is not null || server.Error is not null)
-            {
-                console.MarkupLine("\n[grey]Press any key to continue...[/]");
-                await session.WaitForKey();
-                return;
-            }
-
-            var matches = FilterResourceTemplates(server.ResourceTemplates.Items, filter);
-            var choices = BuildItemChoices(matches.Select(t => t.Name ?? t.UriTemplate ?? "(unnamed)"), filter);
-            var action = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title("Resource Templates").PageSize(15).AddChoices(choices));
-
-            if (action == BackChoice) return;
-            if (action == SearchChoice)
-            {
-                filters["Resource Templates"] = console.Prompt(new TextPrompt<string>("Filter (substring, case-insensitive):").AllowEmpty());
-                continue;
-            }
-            if (action == ClearFilterChoice)
-            {
-                filters["Resource Templates"] = string.Empty;
-                continue;
-            }
-
-            var name = StripPrefix(action);
-            var template = matches.FirstOrDefault(t => (t.Name ?? t.UriTemplate ?? "(unnamed)") == name);
-            if (template is null) continue;
-
-            await ShowResourceTemplateDetailAsync(session, server, template);
-        }
-    }
-
-    private static async Task ShowResourceTemplateDetailAsync(TuiSession session, ServerInspection server, ResourceTemplateInfo template)
-    {
-        var console = session.Console;
-        while (true)
-        {
-            console.Clear();
-            RenderServerSummary(console, server);
-            RenderResourceTemplateDetail(console, template);
-
-            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.ResourceTemplate, template.UriTemplate ?? template.Name ?? "(unnamed)");
-            var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
-
-            var choices = new List<string>();
-            if (session.Connector is not null && !string.IsNullOrEmpty(template.UriTemplate))
-            {
-                choices.Add(ReadChoice);
-            }
-            choices.Add(toggle);
-            choices.Add("Back");
-
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Resource template actions").AddChoices(choices));
-            if (action == "Back") return;
-            if (action == ReadChoice)
-            {
-                await InvokeTemplateAsync(session, server, template);
-                continue;
-            }
-
-            await ToggleBookmarkAsync(session, bookmark);
-        }
-    }
-
-    private static async Task ShowPromptsAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
-    {
-        var console = session.Console;
-        while (true)
-        {
-            console.Clear();
-            RenderServerSummary(console, server);
-            var filter = filters["Prompts"];
-            RenderPrompts(console, server, filter);
-
-            if (server.Prompts.Error is not null || server.Error is not null)
-            {
-                console.MarkupLine("\n[grey]Press any key to continue...[/]");
-                await session.WaitForKey();
-                return;
-            }
-
-            var matches = FilterPrompts(server.Prompts.Items, filter);
-            var choices = BuildItemChoices(matches.Select(p => p.Name), filter);
-            var action = console.Prompt(new SelectionPrompt<string>().UseConverter(Markup.Escape).Title("Prompts").PageSize(15).AddChoices(choices));
-
-            if (action == BackChoice) return;
-            if (action == SearchChoice)
-            {
-                filters["Prompts"] = console.Prompt(new TextPrompt<string>("Filter (substring, case-insensitive):").AllowEmpty());
-                continue;
-            }
-            if (action == ClearFilterChoice)
-            {
-                filters["Prompts"] = string.Empty;
-                continue;
-            }
-
-            var name = StripPrefix(action);
-            var prompt = matches.FirstOrDefault(p => p.Name == name);
-            if (prompt is null) continue;
-
-            await ShowPromptDetailAsync(session, server, prompt);
-        }
-    }
-
-    private static async Task ShowPromptDetailAsync(TuiSession session, ServerInspection server, PromptInfo prompt)
-    {
-        var console = session.Console;
-        while (true)
-        {
-            console.Clear();
-            RenderServerSummary(console, server);
-            RenderPromptDetail(console, prompt);
-
-            var bookmark = new TuiBookmark(server.Name, TuiBookmarkKind.Prompt, prompt.Name);
-            var toggle = session.Bookmarks.Contains(bookmark) ? "Unbookmark" : "Bookmark";
-
-            var choices = new List<string>();
-            if (session.Connector is not null)
-            {
-                choices.Add(GetPromptChoice);
-            }
-            choices.Add(toggle);
-            choices.Add("Back");
-
-            var action = console.Prompt(new SelectionPrompt<string>().Title("Prompt actions").AddChoices(choices));
-            if (action == "Back") return;
-            if (action == GetPromptChoice)
-            {
-                await InvokePromptAsync(session, server, prompt);
+                await invokePrimary();
                 continue;
             }
 
@@ -688,32 +574,74 @@ internal static class TuiApp
 
     // --- Choice helpers --------------------------------------------------
 
-    private const string SearchChoice = "[Search…]";
-    private const string ClearFilterChoice = "[Clear filter]";
-    private const string BackChoice = "[Back]";
     private const string CallChoice = "Call tool";
     private const string ReadChoice = "Read";
     private const string GetPromptChoice = "Get prompt";
 
-    private static IEnumerable<string> BuildItemChoices(IEnumerable<string> names, string filter)
-    {
-        // Three control rows always show: Search, optional Clear-filter, Back.
-        yield return SearchChoice;
-        if (!string.IsNullOrEmpty(filter))
-        {
-            yield return ClearFilterChoice;
-        }
-        yield return BackChoice;
+    private static string PromptFilter(IAnsiConsole console)
+        => console.Prompt(new TextPrompt<string>("Filter (substring, case-insensitive):").AllowEmpty());
 
-        foreach (var name in names)
+    // --- Item display formatters (one line per row in the selection menu) -
+
+    private static string ToolDisplay(ToolInfo tool)
+        => string.IsNullOrWhiteSpace(tool.Description)
+            ? tool.Name
+            : $"{tool.Name}   —   {Collapse(tool.Description!)}";
+
+    private static string ResourceDisplay(ResourceInfo resource)
+    {
+        var name = resource.Name ?? resource.Uri ?? "(unnamed)";
+        var parts = new List<string> { name };
+        if (!string.IsNullOrWhiteSpace(resource.Uri) && resource.Uri != name)
         {
-            yield return name;
+            parts.Add(resource.Uri!);
         }
+        if (!string.IsNullOrWhiteSpace(resource.MimeType))
+        {
+            parts.Add($"[{resource.MimeType}]");
+        }
+        return string.Join("   ", parts);
     }
 
-    // Item choices are presented verbatim today; if we ever prefix them
-    // (e.g. "[*] foo"), StripPrefix keeps the lookup logic in one place.
-    private static string StripPrefix(string choice) => choice;
+    private static string ResourceTemplateDisplay(ResourceTemplateInfo template)
+    {
+        var name = template.Name ?? template.UriTemplate ?? "(unnamed)";
+        var parts = new List<string> { name };
+        if (!string.IsNullOrWhiteSpace(template.UriTemplate) && template.UriTemplate != name)
+        {
+            parts.Add(template.UriTemplate!);
+        }
+        if (!string.IsNullOrWhiteSpace(template.MimeType))
+        {
+            parts.Add($"[{template.MimeType}]");
+        }
+        return string.Join("   ", parts);
+    }
+
+    private static string PromptDisplay(PromptInfo prompt)
+    {
+        var line = prompt.Name;
+        if (!string.IsNullOrWhiteSpace(prompt.Description))
+        {
+            line += $"   —   {Collapse(prompt.Description!)}";
+        }
+
+        var arguments = string.Join(", ", prompt.Arguments
+            .Select(argument => argument.Required ? $"{argument.Name}*" : argument.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name)));
+        if (arguments.Length > 0)
+        {
+            line += $"   ({arguments})";
+        }
+        return line;
+    }
+
+    /// <summary>Flattens a (possibly multi-line) description to a single trimmed, length-capped line.</summary>
+    private static string Collapse(string text)
+    {
+        var oneLine = text.ReplaceLineEndings(" ").Trim();
+        return oneLine.Length <= 80 ? oneLine : $"{oneLine[..79]}…";
+    }
 
     // --- Filters ---------------------------------------------------------
 
@@ -808,135 +736,6 @@ internal static class TuiApp
         return true;
     }
 
-    internal static void RenderTools(IAnsiConsole console, ServerInspection server)
-        => RenderTools(console, server, filter: string.Empty);
-
-    internal static void RenderTools(IAnsiConsole console, ServerInspection server, string filter)
-    {
-        if (server.Tools.Error is not null)
-        {
-            console.MarkupLine($"[red]{Markup.Escape(server.Tools.Error)}[/]");
-            return;
-        }
-
-        if (TryRenderConnectionError(console, server))
-        {
-            return;
-        }
-
-        var items = FilterTools(server.Tools.Items, filter);
-        RenderFilterHeader(console, filter, items.Count, server.Tools.Items.Count);
-
-        var table = new Table().RoundedBorder();
-        table.AddColumn("Tool");
-        table.AddColumn("Description");
-        foreach (var item in items)
-        {
-            table.AddRow(Markup.Escape(item.Name), Markup.Escape(item.Description ?? string.Empty));
-        }
-
-        console.Write(table);
-    }
-
-    internal static void RenderResources(IAnsiConsole console, ServerInspection server)
-        => RenderResources(console, server, filter: string.Empty);
-
-    internal static void RenderResources(IAnsiConsole console, ServerInspection server, string filter)
-    {
-        if (server.Resources.Error is not null)
-        {
-            console.MarkupLine($"[red]{Markup.Escape(server.Resources.Error)}[/]");
-            return;
-        }
-
-        if (TryRenderConnectionError(console, server))
-        {
-            return;
-        }
-
-        var items = FilterResources(server.Resources.Items, filter);
-        RenderFilterHeader(console, filter, items.Count, server.Resources.Items.Count);
-
-        var table = new Table().RoundedBorder();
-        table.AddColumn("Name");
-        table.AddColumn("Uri");
-        table.AddColumn("Mime");
-        foreach (var item in items)
-        {
-            table.AddRow(Markup.Escape(item.Name ?? string.Empty), Markup.Escape(item.Uri ?? string.Empty), Markup.Escape(item.MimeType ?? string.Empty));
-        }
-
-        console.Write(table);
-    }
-
-    internal static void RenderResourceTemplates(IAnsiConsole console, ServerInspection server)
-        => RenderResourceTemplates(console, server, filter: string.Empty);
-
-    internal static void RenderResourceTemplates(IAnsiConsole console, ServerInspection server, string filter)
-    {
-        if (server.ResourceTemplates.Error is not null)
-        {
-            console.MarkupLine($"[red]{Markup.Escape(server.ResourceTemplates.Error)}[/]");
-            return;
-        }
-
-        if (TryRenderConnectionError(console, server))
-        {
-            return;
-        }
-
-        var items = FilterResourceTemplates(server.ResourceTemplates.Items, filter);
-        RenderFilterHeader(console, filter, items.Count, server.ResourceTemplates.Items.Count);
-
-        var table = new Table().RoundedBorder();
-        table.AddColumn("Name");
-        table.AddColumn("Template");
-        table.AddColumn("Mime");
-        foreach (var item in items)
-        {
-            table.AddRow(Markup.Escape(item.Name ?? string.Empty), Markup.Escape(item.UriTemplate ?? string.Empty), Markup.Escape(item.MimeType ?? string.Empty));
-        }
-
-        console.Write(table);
-    }
-
-    internal static void RenderPrompts(IAnsiConsole console, ServerInspection server)
-        => RenderPrompts(console, server, filter: string.Empty);
-
-    internal static void RenderPrompts(IAnsiConsole console, ServerInspection server, string filter)
-    {
-        if (server.Prompts.Error is not null)
-        {
-            console.MarkupLine($"[red]{Markup.Escape(server.Prompts.Error)}[/]");
-            return;
-        }
-
-        if (TryRenderConnectionError(console, server))
-        {
-            return;
-        }
-
-        var items = FilterPrompts(server.Prompts.Items, filter);
-        RenderFilterHeader(console, filter, items.Count, server.Prompts.Items.Count);
-
-        var table = new Table().RoundedBorder();
-        table.AddColumn("Prompt");
-        table.AddColumn("Arguments");
-        foreach (var item in items)
-        {
-            var arguments = string.Join(", ", item.Arguments.Select(argument => argument.Required ? $"{argument.Name}*" : argument.Name).Where(name => !string.IsNullOrWhiteSpace(name)));
-            table.AddRow(Markup.Escape(item.Name), Markup.Escape(arguments));
-        }
-
-        console.Write(table);
-    }
-
-    /// <summary>
-    /// Renders a tool's name + description + a tree preview of its <c>inputSchema</c>.
-    /// The tree summarises top-level properties (name, type, required, description). It is
-    /// not a JSON Schema validator - the goal is fast visual orientation, not exhaustive
-    /// schema rendering.
-    /// </summary>
     internal static void RenderToolDetail(IAnsiConsole console, ToolInfo tool)
     {
         console.Write(new Panel($"[bold]{Markup.Escape(tool.Name)}[/]\n[grey]{Markup.Escape(tool.Description ?? string.Empty)}[/]")
@@ -1082,7 +881,7 @@ internal static class TuiApp
         _ => node.ToJsonString()
     };
 
-    private static void RenderFilterHeader(IAnsiConsole console, string filter, int shown, int total)
+    internal static void RenderFilterHeader(IAnsiConsole console, string filter, int shown, int total)
     {
         if (string.IsNullOrEmpty(filter))
         {
