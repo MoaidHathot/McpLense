@@ -1049,7 +1049,12 @@ internal static class McpExecutor
             Endpoint = server.Url!,
             Name = server.Name,
             TransportMode = ToHttpTransportMode(server.Transport),
-            ConnectionTimeout = timeout
+            ConnectionTimeout = timeout,
+            // Cap SSE reconnection (SDK default is 5): on a server/proxy that keeps dropping a
+            // long-running call (e.g. an infra request-timeout), aggressive reconnection lets the
+            // operation overrun the invoke deadline by minutes. Two attempts keeps resilience to a
+            // genuine transient blip while bounding the overshoot.
+            MaxReconnectionAttempts = 2
         };
 
         if (server.Headers.Count > 0)
@@ -1251,8 +1256,53 @@ internal static class McpExecutor
         _ => HttpTransportMode.AutoDetect
     };
 
-    private static string FormatException(Exception exception)
-        => exception is OperationCanceledException ? "Timed out." : $"{exception.GetType().Name}: {exception.Message}";
+    internal static string FormatException(Exception exception)
+    {
+        if (exception is OperationCanceledException)
+        {
+            return "Timed out (raise --timeout if the operation legitimately needs longer).";
+        }
+
+        var message = $"{exception.GetType().Name}: {exception.Message}";
+
+        // A mid-flight connection drop (often a reverse proxy / cloud host enforcing its OWN
+        // request timeout - e.g. Azure App Service ~230s - on a long-running call) surfaces as a
+        // generic transport error. Add an actionable hint so it isn't mistaken for an McpLense
+        // timeout or an auth problem.
+        if (LooksLikeConnectionDrop(exception))
+        {
+            message += " - the connection was dropped mid-request; this is usually a proxy/host request-timeout on a long-running call, not McpLense (the server should stream progress or return faster rather than hold one request open).";
+        }
+
+        return message;
+    }
+
+    /// <summary>
+    /// True when the exception looks like a transport-level connection drop (no HTTP status, an IO /
+    /// socket failure, or a "request ended prematurely" message) rather than an HTTP status error.
+    /// A status-bearing <see cref="HttpRequestException"/> (e.g. 401/404) is NOT a drop.
+    /// </summary>
+    private static bool LooksLikeConnectionDrop(Exception exception)
+    {
+        for (Exception? ex = exception; ex is not null; ex = ex.InnerException)
+        {
+            if (ex is HttpRequestException { StatusCode: null } or IOException or System.Net.Sockets.SocketException)
+            {
+                return true;
+            }
+
+            var m = ex.Message;
+            if (m.Contains("error occurred while sending the request", StringComparison.OrdinalIgnoreCase)
+                || m.Contains("response ended prematurely", StringComparison.OrdinalIgnoreCase)
+                || m.Contains("connection was closed", StringComparison.OrdinalIgnoreCase)
+                || m.Contains("connection reset", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static void WriteProgress(ResolvedServer server, string toolName, ProgressUpdate update)
     {
