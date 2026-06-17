@@ -27,7 +27,8 @@ public class TuiAppTests
         SectionResult<ResourceInfo>? resources = null,
         SectionResult<ResourceTemplateInfo>? resourceTemplates = null,
         SectionResult<PromptInfo>? prompts = null,
-        string? error = null)
+        string? error = null,
+        ConnectionAuthInfo? authStatus = null)
         => new(
             Name: name,
             Transport: transport,
@@ -54,7 +55,8 @@ public class TuiAppTests
                     new PromptArgumentInfo("code", null, false)
                 ])
             ]),
-            Error: error);
+            Error: error,
+            AuthStatus: authStatus);
 
     // --- Pure render ---------------------------------------------------
 
@@ -87,6 +89,31 @@ public class TuiAppTests
         var output = console.Output;
         output.ShouldContain("connection failed");
         output.ShouldContain("Unauthorized");
+    }
+
+    [Fact]
+    public void RenderServerSummary_AnonymousConnection_ShowsAuthLine()
+    {
+        var console = NewConsole();
+        var server = BuildServer("alpha", "http", "https://example.test/mcp", authStatus: ConnectionAuthInfo.Anonymous);
+
+        TuiApp.RenderServerSummary(console, server);
+
+        console.Output.ShouldContain("auth: anonymous");
+    }
+
+    [Fact]
+    public void RenderServerSummary_AuthenticatedConnection_ShowsProfile()
+    {
+        var console = NewConsole();
+        var server = BuildServer("alpha", "http", "https://example.test/mcp",
+            authStatus: ConnectionAuthInfo.Authenticated("agent365", AuthKind.AzureCli, "auto-pick"));
+
+        TuiApp.RenderServerSummary(console, server);
+
+        var output = console.Output;
+        output.ShouldContain("auth: authenticated");
+        output.ShouldContain("agent365");
     }
 
     [Fact]

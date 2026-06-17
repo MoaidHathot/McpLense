@@ -531,14 +531,33 @@ internal static class McpExecutor
             Action<string>? trace = verbose
                 ? message => McpLenseLog.Write($"auth: {server.Url} - {message}")
                 : null;
-            var profile = await resolver.ResolveAsync(
-                server.Url!,
-                profiles,
-                explicitProfile,
-                cancellationToken,
-                probeHeaders,
-                server.HeaderScope,
-                trace).ConfigureAwait(false);
+
+            var isExplicit = !string.IsNullOrEmpty(explicitProfile);
+            AuthProfile? profile;
+            try
+            {
+                profile = await resolver.ResolveAsync(
+                    server.Url!,
+                    profiles,
+                    explicitProfile,
+                    cancellationToken,
+                    probeHeaders,
+                    server.HeaderScope,
+                    trace).ConfigureAwait(false);
+            }
+            catch (UserInputException) when (!isExplicit)
+            {
+                // Auto-pick couldn't disambiguate (multiple candidates tied). Don't block: connect
+                // anonymously and let the server itself tell us whether it needs credentials. The
+                // user can re-run with --profile to choose if the anonymous attempt is refused.
+                if (!quiet)
+                {
+                    McpLenseLog.Write($"auth: {server.Url} -> multiple profiles match; trying anonymous first (re-run with --profile if the server requires auth).");
+                }
+                result[index] = server;
+                continue;
+            }
+
             if (profile is null)
             {
                 if (!quiet)
@@ -558,17 +577,31 @@ internal static class McpExecutor
                 server.HeaderScope,
                 defaultScopeFallback: target.AuthOverrides.DefaultScope).ConfigureAwait(false);
 
-            if (!quiet)
-            {
-                var via = string.IsNullOrEmpty(explicitProfile) ? "auto-picked" : "via --profile";
-                var scopeBit = (auth.Scopes is { Count: > 0 })
-                    ? $", scopes=[{string.Join(", ", auth.Scopes)}]"
-                    : string.Empty;
-                McpLenseLog.Write(
-                    $"auth: {server.Url} -> profile='{profile.Name}' kind={auth.Kind} ({via}){scopeBit}");
-            }
+            var scopeBit = (auth.Scopes is { Count: > 0 })
+                ? $", scopes=[{string.Join(", ", auth.Scopes)}]"
+                : string.Empty;
 
-            result[index] = server with { Auth = auth };
+            if (isExplicit)
+            {
+                // The user explicitly named a profile: attach it directly - they asked to authenticate.
+                if (!quiet)
+                {
+                    McpLenseLog.Write($"auth: {server.Url} -> profile='{profile.Name}' kind={auth.Kind} (via --profile){scopeBit}");
+                }
+                result[index] = server with { Auth = auth, AuthProfileName = profile.Name };
+            }
+            else
+            {
+                // Auto-pick: keep the resolved profile as a *fallback* only. The connection tries
+                // anonymously first and presents these credentials solely if the server refuses the
+                // anonymous attempt, so a server that allows anonymous access is never handed a token
+                // it never asked for.
+                if (!quiet)
+                {
+                    McpLenseLog.Write($"auth: {server.Url} -> trying anonymous first; will fall back to profile='{profile.Name}' kind={auth.Kind} if refused{scopeBit}");
+                }
+                result[index] = server with { CandidateAuth = auth, AuthProfileName = profile.Name };
+            }
         }
 
         return result;
@@ -862,7 +895,12 @@ internal static class McpExecutor
             return new ServerInspection(server.Name, FormatTransport(server.Kind), server.Target, capabilities, tools, resources, templates, prompts);
         });
 
-        return result.Value ?? new ServerInspection(
+        if (result.Value is not null)
+        {
+            return result.Value with { AuthStatus = result.Auth };
+        }
+
+        return new ServerInspection(
             server.Name,
             FormatTransport(server.Kind),
             server.Target,
@@ -929,8 +967,9 @@ internal static class McpExecutor
 
         try
         {
-            await using var client = await CreateClientAsync(server, timeout, timeoutSource.Token);
-            return new OperationResult<T>(await operation(client, timeoutSource.Token), null);
+            var (client, authInfo) = await ConnectClientAsync(server, timeout, timeoutSource.Token);
+            await using var owned = client;
+            return new OperationResult<T>(await operation(client, timeoutSource.Token), null, authInfo);
         }
         catch (Exception ex)
         {
@@ -938,27 +977,69 @@ internal static class McpExecutor
         }
     }
 
-    private static async Task<McpClient> CreateClientAsync(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken)
+    /// <summary>
+    /// Opens the MCP connection and reports how it authenticated. For HTTP targets the policy is
+    /// "anonymous first": an explicit profile / inline token is used directly, but an auto-picked
+    /// profile is held back as a fallback and only presented when the server actually refuses the
+    /// unauthenticated attempt (HTTP 401/403). That way a server that allows anonymous access is
+    /// never handed credentials it never asked for.
+    /// </summary>
+    private static async Task<(McpClient Client, ConnectionAuthInfo Auth)> ConnectClientAsync(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        if (server.Kind is ConnectionKind.Http)
+        if (server.Kind is not ConnectionKind.Http)
         {
-            var options = new HttpClientTransportOptions
-            {
-                Endpoint = server.Url!,
-                Name = server.Name,
-                TransportMode = ToHttpTransportMode(server.Transport),
-                ConnectionTimeout = timeout
-            };
-
-            if (server.Headers.Count > 0)
-            {
-                SetProperty(options, server.Headers.ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase), "AdditionalHeaders");
-            }
-
-            var http = CreateHttpMcpClient(server);
-            return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken);
+            return (await ConnectStdioAsync(server, timeout, cancellationToken).ConfigureAwait(false), ConnectionAuthInfo.None);
         }
 
+        // Definite credentials (inline --auth bearer, or an explicit --profile): use them directly.
+        if (server.Auth is { Kind: not AuthKind.None } definite)
+        {
+            var client = await ConnectHttpAsync(server, definite, timeout, cancellationToken).ConfigureAwait(false);
+            var source = server.AuthProfileName is null ? "inline" : "profile";
+            return (client, ConnectionAuthInfo.Authenticated(server.AuthProfileName, definite.Kind, source));
+        }
+
+        // Auto-picked profile is a fallback only: try anonymous first, authenticate only if refused.
+        if (server.CandidateAuth is { Kind: not AuthKind.None } candidate)
+        {
+            try
+            {
+                var anonymous = await ConnectHttpAsync(server, auth: null, timeout, cancellationToken).ConfigureAwait(false);
+                return (anonymous, ConnectionAuthInfo.Anonymous);
+            }
+            catch (Exception ex) when (IsAuthChallenge(ex))
+            {
+                var client = await ConnectHttpAsync(server, candidate, timeout, cancellationToken).ConfigureAwait(false);
+                return (client, ConnectionAuthInfo.Authenticated(server.AuthProfileName, candidate.Kind, "auto-pick"));
+            }
+        }
+
+        // No credentials available at all: plain anonymous connection.
+        var plain = await ConnectHttpAsync(server, auth: null, timeout, cancellationToken).ConfigureAwait(false);
+        return (plain, ConnectionAuthInfo.Anonymous);
+    }
+
+    private static async Task<McpClient> ConnectHttpAsync(ResolvedServer server, ResolvedAuth? auth, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var options = new HttpClientTransportOptions
+        {
+            Endpoint = server.Url!,
+            Name = server.Name,
+            TransportMode = ToHttpTransportMode(server.Transport),
+            ConnectionTimeout = timeout
+        };
+
+        if (server.Headers.Count > 0)
+        {
+            SetProperty(options, server.Headers.ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase), "AdditionalHeaders");
+        }
+
+        var http = CreateHttpMcpClient(server, auth);
+        return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken);
+    }
+
+    private static async Task<McpClient> ConnectStdioAsync(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken)
+    {
         var stdioOptions = new StdioClientTransportOptions
         {
             Command = server.Command!,
@@ -981,6 +1062,33 @@ internal static class McpExecutor
     }
 
     /// <summary>
+    /// True when an exception from a connection attempt looks like an authentication challenge
+    /// (HTTP 401/403) - the signal to retry with credentials. Other failures (404, 5xx, transport,
+    /// the Streamable HTTP session quirk) are NOT auth problems and must surface as-is.
+    /// </summary>
+    private static bool IsAuthChallenge(Exception exception)
+    {
+        for (Exception? ex = exception; ex is not null; ex = ex.InnerException)
+        {
+            if (ex is HttpRequestException http
+                && http.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            {
+                return true;
+            }
+
+            var message = ex.Message;
+            if (message.Contains("401") || message.Contains("403")
+                || message.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Forbidden", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Builds the <see cref="HttpClient"/> backing an HTTP MCP transport.
     /// <list type="bullet">
     ///   <item><description>Installs <see cref="StandaloneStreamSuppressingHandler"/> so the SDK's
@@ -995,13 +1103,13 @@ internal static class McpExecutor
     ///   <see cref="HttpClient.Timeout"/>, which would otherwise abort a streaming response.</description></item>
     /// </list>
     /// </summary>
-    private static HttpClient CreateHttpMcpClient(ResolvedServer server)
+    private static HttpClient CreateHttpMcpClient(ResolvedServer server, ResolvedAuth? auth)
     {
         DelegatingHandler outer = new StandaloneStreamSuppressingHandler();
         DelegatingHandler tail = outer;
 
-        if (server.Auth is { Kind: not AuthKind.None }
-            && AuthHandlerFactory.Create(server.Auth, server.Url) is { } authHandler)
+        if (auth is { Kind: not AuthKind.None }
+            && AuthHandlerFactory.Create(auth, server.Url) is { } authHandler)
         {
             tail.InnerHandler = authHandler;
             tail = authHandler;
@@ -1366,7 +1474,7 @@ internal static class McpExecutor
         return Convert.ChangeType(value, targetType);
     }
 
-    private sealed record OperationResult<T>(T? Value, string? Error);
+    private sealed record OperationResult<T>(T? Value, string? Error, ConnectionAuthInfo? Auth = null);
 
     /// <summary>
     /// Opens a persistent connection to the single server the command resolves to, reusing the
@@ -1389,7 +1497,7 @@ internal static class McpExecutor
         }
 
         var server = SingleServer(servers);
-        var client = await CreateClientAsync(server, command.Timeout, cancellationToken).ConfigureAwait(false);
+        var (client, _) = await ConnectClientAsync(server, command.Timeout, cancellationToken).ConfigureAwait(false);
         return new McpSession(client, server, command.Timeout);
     }
 

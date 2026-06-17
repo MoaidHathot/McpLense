@@ -10,6 +10,41 @@ public enum ConnectionKind
     Http
 }
 
+/// <summary>Stable wire identifiers for <see cref="ConnectionAuthInfo.Mode"/>.</summary>
+internal static class ConnectionAuthModes
+{
+    /// <summary>Authentication does not apply (stdio target).</summary>
+    public const string None = "none";
+
+    /// <summary>The server was reached without sending any credentials.</summary>
+    public const string Anonymous = "anonymous";
+
+    /// <summary>The connection carried credentials (inline token or a profile).</summary>
+    public const string Authenticated = "authenticated";
+}
+
+/// <summary>
+/// How the live connection to a server actually authenticated. Captured at connect time so callers
+/// can show whether we got in anonymously or with a profile, and which one. String-typed
+/// <see cref="Mode"/> (see <see cref="ConnectionAuthModes"/>) keeps the JSON wire shape stable.
+/// </summary>
+/// <param name="Mode">One of <see cref="ConnectionAuthModes"/>.</param>
+/// <param name="Profile">Profile name used, when authenticated via a profile (null for inline/anonymous).</param>
+/// <param name="Kind">Auth scheme used (e.g. <c>Bearer</c>, <c>AzureCli</c>), when authenticated.</param>
+/// <param name="Source">How the credentials were chosen: <c>inline</c>, <c>profile</c>, or <c>auto-pick</c>.</param>
+internal sealed record ConnectionAuthInfo(
+    string Mode,
+    string? Profile = null,
+    string? Kind = null,
+    string? Source = null)
+{
+    public static readonly ConnectionAuthInfo None = new(ConnectionAuthModes.None);
+    public static readonly ConnectionAuthInfo Anonymous = new(ConnectionAuthModes.Anonymous);
+
+    public static ConnectionAuthInfo Authenticated(string? profile, AuthKind kind, string source)
+        => new(ConnectionAuthModes.Authenticated, profile, kind.ToString(), source);
+}
+
 public sealed record ResolvedServer(
     string Name,
     ConnectionKind Kind,
@@ -25,7 +60,9 @@ public sealed record ResolvedServer(
     ResolvedAuth? Auth = null,
     TargetScope HeaderScope = TargetScope.All,
     IReadOnlyList<string>? DisabledChecks = null,
-    TimeSpan? HandshakeTimeout = null);
+    TimeSpan? HandshakeTimeout = null,
+    ResolvedAuth? CandidateAuth = null,
+    string? AuthProfileName = null);
 
 internal sealed record ExecutionOutcome(object Payload, bool HasErrors);
 
@@ -40,7 +77,8 @@ internal sealed record ServerInspection(
     SectionResult<ResourceInfo> Resources,
     SectionResult<ResourceTemplateInfo> ResourceTemplates,
     SectionResult<PromptInfo> Prompts,
-    string? Error = null);
+    string? Error = null,
+    ConnectionAuthInfo? AuthStatus = null);
 
 internal sealed record CapabilitySnapshot(bool Tools, bool Resources, bool Prompts, bool Logging, bool Completions);
 

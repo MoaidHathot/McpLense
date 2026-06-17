@@ -418,13 +418,23 @@ This matters in two scenarios:
 
 ### Profile auto-pick
 
-When you run `mcplense inspect <url>` (no `--profile`), McpLense:
+When you run `mcplense inspect <url>` (no `--profile`), McpLense connects
+**anonymously first** and only authenticates if the server refuses that attempt
+(HTTP 401/403). A server that allows anonymous access is never handed credentials
+it didn't ask for; the output records how it actually connected:
 
-1. Probes the URL for an RFC 9728 `WWW-Authenticate` header. If absent, connects
-   plain (the server doesn't appear to need auth).
-2. Filters loaded profiles by advertised scopes (when the probe surfaced any).
-3. Picks the unique profile that already has a cached account.
-4. **Tiebreaker** — when multiple candidates remain (or none has cached creds
+```text
+auth: anonymous (no credentials sent)
+auth: authenticated (profile=agent365-cli, kind=AzureCli)
+```
+
+When the anonymous attempt is refused, McpLense falls back to the auto-picked
+profile, chosen as follows:
+
+1. Filters loaded profiles by advertised scopes (when the server's RFC 9728
+   metadata surfaced any).
+2. Picks the unique profile that already has a cached account.
+3. **Tiebreaker** — when multiple candidates remain (or none has cached creds
    but multiple plausibly fit), prefer the higher-priority kind:
 
    | Default rank | Auth kind            | Rationale                                                  |
@@ -444,10 +454,10 @@ When you run `mcplense inspect <url>` (no `--profile`), McpLense:
    }
    ```
 
-5. If profiles tie at the same effective priority, McpLense errors and asks
-   for `--profile <name>`. Within-kind ambiguity (two `interactive-browser`
-   profiles for different tenants, both cached) always falls into this path
-   because the user genuinely needs to choose.
+4. If profiles tie at the same effective priority, McpLense still tries
+   anonymously; only when the server then demands auth does it ask you to pick
+   one with `--profile <name>`. Passing `--profile <name>` explicitly skips the
+   anonymous attempt and authenticates directly (you asked to).
 
 ### Scope substitution from PRM (Agent365 et al.)
 

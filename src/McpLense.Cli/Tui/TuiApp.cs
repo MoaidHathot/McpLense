@@ -684,6 +684,11 @@ internal static class TuiApp
         {
             body += $"\n[red]connection failed: {Markup.Escape(server.Error)}[/]";
         }
+        else if (TextFormatter.DescribeConnectionAuth(server.AuthStatus) is { } authLine)
+        {
+            var colour = server.AuthStatus!.Mode == ConnectionAuthModes.Authenticated ? "green" : "grey";
+            body += $"\n[{colour}]auth: {Markup.Escape(authLine)}[/]";
+        }
 
         var panel = new Panel(body)
         {

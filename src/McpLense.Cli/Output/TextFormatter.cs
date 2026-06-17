@@ -713,6 +713,11 @@ internal static class TextFormatter
             }
             else
             {
+                if (DescribeConnectionAuth(server.AuthStatus) is { } authLine)
+                {
+                    AppendLine(builder, 1, $"auth: {authLine}");
+                }
+
                 AppendLine(builder, 1, $"capabilities: {FormatCapabilities(server.Capabilities)}");
                 AppendSection(builder, "tools", server.Tools, FormatTool, jsonOptions);
                 AppendSection(builder, "resources", server.Resources, FormatResource, jsonOptions);
@@ -727,6 +732,27 @@ internal static class TextFormatter
         }
 
         return builder.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// One-line summary of how the connection authenticated, or null when it doesn't apply
+    /// (stdio, or no status captured) so the caller can omit the line entirely.
+    /// </summary>
+    internal static string? DescribeConnectionAuth(ConnectionAuthInfo? auth)
+    {
+        if (auth is null || auth.Mode == ConnectionAuthModes.None)
+        {
+            return null;
+        }
+
+        if (auth.Mode == ConnectionAuthModes.Anonymous)
+        {
+            return "anonymous (no credentials sent)";
+        }
+
+        return auth.Profile is not null
+            ? $"authenticated (profile={auth.Profile}, kind={auth.Kind})"
+            : $"authenticated (kind={auth.Kind})";
     }
 
     private static string FormatServerItems<T>(string label, IReadOnlyList<ServerItems<T>> servers, Func<T, JsonSerializerOptions, IEnumerable<string>> formatter, JsonSerializerOptions jsonOptions)

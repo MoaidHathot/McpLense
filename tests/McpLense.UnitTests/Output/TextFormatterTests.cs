@@ -74,6 +74,62 @@ public class TextFormatterTests
     }
 
     [Fact]
+    public void Format_InspectReport_AnonymousConnection_RendersAuthLine()
+    {
+        var report = new InspectReport(DateTimeOffset.UnixEpoch, [
+            new ServerInspection(
+                Name: "demo",
+                Transport: "http",
+                Target: "https://example.com/mcp",
+                Capabilities: new CapabilitySnapshot(true, false, false, false, false),
+                Tools: new SectionResult<ToolInfo>(true, []),
+                Resources: new SectionResult<ResourceInfo>(false, []),
+                ResourceTemplates: new SectionResult<ResourceTemplateInfo>(false, []),
+                Prompts: new SectionResult<PromptInfo>(false, []),
+                AuthStatus: ConnectionAuthInfo.Anonymous)
+        ]);
+
+        var output = TextFormatter.Format(report, JsonOptions);
+
+        output.ShouldContain("auth: anonymous (no credentials sent)");
+    }
+
+    [Fact]
+    public void Format_InspectReport_AuthenticatedViaProfile_RendersProfileAndKind()
+    {
+        var report = new InspectReport(DateTimeOffset.UnixEpoch, [
+            new ServerInspection(
+                Name: "demo",
+                Transport: "http",
+                Target: "https://example.com/mcp",
+                Capabilities: new CapabilitySnapshot(true, false, false, false, false),
+                Tools: new SectionResult<ToolInfo>(true, []),
+                Resources: new SectionResult<ResourceInfo>(false, []),
+                ResourceTemplates: new SectionResult<ResourceTemplateInfo>(false, []),
+                Prompts: new SectionResult<PromptInfo>(false, []),
+                AuthStatus: ConnectionAuthInfo.Authenticated("agent365-cli", AuthKind.AzureCli, "auto-pick"))
+        ]);
+
+        var output = TextFormatter.Format(report, JsonOptions);
+
+        output.ShouldContain("auth: authenticated (profile=agent365-cli, kind=AzureCli)");
+    }
+
+    [Fact]
+    public void DescribeConnectionAuth_StdioOrNull_ReturnsNull()
+    {
+        TextFormatter.DescribeConnectionAuth(null).ShouldBeNull();
+        TextFormatter.DescribeConnectionAuth(ConnectionAuthInfo.None).ShouldBeNull();
+    }
+
+    [Fact]
+    public void DescribeConnectionAuth_InlineBearer_OmitsProfile()
+    {
+        var inline = ConnectionAuthInfo.Authenticated(profile: null, AuthKind.Bearer, "inline");
+        TextFormatter.DescribeConnectionAuth(inline).ShouldBe("authenticated (kind=Bearer)");
+    }
+
+    [Fact]
     public void Format_ToolListReport_RendersTools()
     {
         var report = new ToolListReport(DateTimeOffset.UnixEpoch, [
