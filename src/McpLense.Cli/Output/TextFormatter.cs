@@ -770,6 +770,11 @@ internal static class TextFormatter
             }
             else
             {
+                if (DescribeConnectionAuth(server.AuthStatus) is { } authLine)
+                {
+                    AppendLine(builder, 1, $"auth: {authLine}");
+                }
+
                 AppendLine(builder, 1, $"{label}: {server.Items.Count}");
                 foreach (var item in server.Items)
                 {
@@ -804,6 +809,11 @@ internal static class TextFormatter
             }
             else
             {
+                if (DescribeConnectionAuth(server.AuthStatus) is { } authLine)
+                {
+                    AppendLine(builder, 1, $"auth: {authLine}");
+                }
+
                 AppendLine(builder, 1, $"resources: {server.Items.Count}");
                 foreach (var item in server.Items)
                 {
@@ -845,6 +855,11 @@ internal static class TextFormatter
             return builder.ToString().TrimEnd();
         }
 
+        if (DescribeConnectionAuth(report.AuthStatus) is { } toolAuthLine)
+        {
+            AppendLine(builder, 1, $"auth: {toolAuthLine}");
+        }
+
         AppendLine(builder, 1, $"progress events: {report.Progress.Count}");
         foreach (var progress in report.Progress)
         {
@@ -871,6 +886,11 @@ internal static class TextFormatter
             return builder.ToString().TrimEnd();
         }
 
+        if (DescribeConnectionAuth(report.AuthStatus) is { } readAuthLine)
+        {
+            AppendLine(builder, 1, $"auth: {readAuthLine}");
+        }
+
         AppendLine(builder, 1, $"contents: {report.Result?.Contents.Count ?? 0}");
         foreach (var content in report.Result?.Contents ?? [])
         {
@@ -894,6 +914,11 @@ internal static class TextFormatter
         {
             AppendLine(builder, 1, $"error: {report.Error}");
             return builder.ToString().TrimEnd();
+        }
+
+        if (DescribeConnectionAuth(report.AuthStatus) is { } promptAuthLine)
+        {
+            AppendLine(builder, 1, $"auth: {promptAuthLine}");
         }
 
         if (!string.IsNullOrWhiteSpace(report.Result?.Description))

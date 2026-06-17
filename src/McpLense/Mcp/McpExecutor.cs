@@ -825,7 +825,9 @@ internal static class McpExecutor
     }
 
     private static ServerResources ToServerResources(ResolvedServer server, OperationResult<ServerResources> result)
-        => result.Value ?? new ServerResources(server.Name, FormatTransport(server.Kind), server.Target, [], [], result.Error);
+        => result.Value is { } value
+            ? value with { AuthStatus = result.Auth }
+            : new ServerResources(server.Name, FormatTransport(server.Kind), server.Target, [], [], result.Error);
 
     private static async Task<ExecutionOutcome> ListPromptsAsync(IReadOnlyList<ResolvedServer> servers, TimeSpan timeout, CancellationToken cancellationToken)
     {
@@ -866,7 +868,10 @@ internal static class McpExecutor
             return new ToolCallReport(DateTimeOffset.UtcNow, ToReference(server), toolName, arguments, progressUpdates.ToArray(), MapCallResult(response));
         });
 
-        return new ExecutionOutcome(result.Value ?? new ToolCallReport(DateTimeOffset.UtcNow, ToReference(server), toolName, arguments, progressUpdates.ToArray(), null, result.Error), result.Error is not null || result.Value?.Result?.IsError == true);
+        var report = result.Value is { } value
+            ? value with { AuthStatus = result.Auth }
+            : new ToolCallReport(DateTimeOffset.UtcNow, ToReference(server), toolName, arguments, progressUpdates.ToArray(), null, result.Error);
+        return new ExecutionOutcome(report, result.Error is not null || report.Result?.IsError == true);
     }
 
     private static async Task<ExecutionOutcome> ReadResourceAsync(ResolvedServer server, string resource, JsonObject? arguments, TimeSpan timeout, CancellationToken cancellationToken)
@@ -880,7 +885,10 @@ internal static class McpExecutor
             return new ReadReport(DateTimeOffset.UtcNow, ToReference(server), resource, arguments, MapReadResult(response));
         });
 
-        return new ExecutionOutcome(result.Value ?? new ReadReport(DateTimeOffset.UtcNow, ToReference(server), resource, arguments, null, result.Error), result.Error is not null);
+        var report = result.Value is { } value
+            ? value with { AuthStatus = result.Auth }
+            : new ReadReport(DateTimeOffset.UtcNow, ToReference(server), resource, arguments, null, result.Error);
+        return new ExecutionOutcome(report, result.Error is not null);
     }
 
     private static async Task<ExecutionOutcome> GetPromptAsync(ResolvedServer server, string promptName, JsonObject arguments, TimeSpan timeout, CancellationToken cancellationToken)
@@ -891,7 +899,10 @@ internal static class McpExecutor
             return new PromptCallReport(DateTimeOffset.UtcNow, ToReference(server), promptName, arguments, MapPromptResult(response));
         });
 
-        return new ExecutionOutcome(result.Value ?? new PromptCallReport(DateTimeOffset.UtcNow, ToReference(server), promptName, arguments, null, result.Error), result.Error is not null);
+        var report = result.Value is { } value
+            ? value with { AuthStatus = result.Auth }
+            : new PromptCallReport(DateTimeOffset.UtcNow, ToReference(server), promptName, arguments, null, result.Error);
+        return new ExecutionOutcome(report, result.Error is not null);
     }
 
     private static async Task<ServerInspection> InspectServerAsync(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken)
@@ -1225,7 +1236,9 @@ internal static class McpExecutor
         => new(server.Name, FormatTransport(server.Kind), server.Target);
 
     private static ServerItems<T> ToServerItems<T>(ResolvedServer server, OperationResult<ServerItems<T>> result)
-        => result.Value ?? new ServerItems<T>(server.Name, FormatTransport(server.Kind), server.Target, [], result.Error);
+        => result.Value is { } value
+            ? value with { AuthStatus = result.Auth }
+            : new ServerItems<T>(server.Name, FormatTransport(server.Kind), server.Target, [], result.Error);
 
     private static string FormatTransport(ConnectionKind kind)
         => kind is ConnectionKind.Http ? "http" : "stdio";

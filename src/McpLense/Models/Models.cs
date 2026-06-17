@@ -90,7 +90,7 @@ internal sealed record ResourceListReport(DateTimeOffset GeneratedAt, IReadOnlyL
 
 internal sealed record PromptListReport(DateTimeOffset GeneratedAt, IReadOnlyList<ServerItems<PromptInfo>> Servers);
 
-internal sealed record ServerItems<T>(string Name, string Transport, string Target, IReadOnlyList<T> Items, string? Error = null);
+internal sealed record ServerItems<T>(string Name, string Transport, string Target, IReadOnlyList<T> Items, string? Error = null, ConnectionAuthInfo? AuthStatus = null);
 
 /// <summary>
 /// Result of <c>mcplense resources</c> for one server: concrete resources (serialised as
@@ -102,7 +102,8 @@ internal sealed record ServerResources(
     string Target,
     IReadOnlyList<ResourceInfo> Items,
     IReadOnlyList<ResourceTemplateInfo> Templates,
-    string? Error = null);
+    string? Error = null,
+    ConnectionAuthInfo? AuthStatus = null);
 
 internal sealed record ToolCallReport(
     DateTimeOffset GeneratedAt,
@@ -111,7 +112,8 @@ internal sealed record ToolCallReport(
     JsonObject? Arguments,
     IReadOnlyList<ProgressUpdate> Progress,
     CallResultView? Result,
-    string? Error = null);
+    string? Error = null,
+    ConnectionAuthInfo? AuthStatus = null);
 
 internal sealed record ReadReport(
     DateTimeOffset GeneratedAt,
@@ -119,7 +121,8 @@ internal sealed record ReadReport(
     string Resource,
     JsonObject? Arguments,
     ReadResourceView? Result,
-    string? Error = null);
+    string? Error = null,
+    ConnectionAuthInfo? AuthStatus = null);
 
 internal sealed record PromptCallReport(
     DateTimeOffset GeneratedAt,
@@ -127,7 +130,8 @@ internal sealed record PromptCallReport(
     string PromptName,
     JsonObject? Arguments,
     PromptResultView? Result,
-    string? Error = null);
+    string? Error = null,
+    ConnectionAuthInfo? AuthStatus = null);
 
 internal sealed record ServerReference(string Name, string Transport, string Target);
 

@@ -147,6 +147,35 @@ public class TextFormatterTests
     }
 
     [Fact]
+    public void Format_ToolListReport_WithAuthStatus_RendersAuthLine()
+    {
+        var report = new ToolListReport(DateTimeOffset.UnixEpoch, [
+            new ServerItems<ToolInfo>("demo", "http", "https://x/mcp",
+                [new ToolInfo("echo", null, null)],
+                Error: null,
+                AuthStatus: ConnectionAuthInfo.Anonymous)
+        ]);
+
+        TextFormatter.Format(report, JsonOptions).ShouldContain("auth: anonymous (no credentials sent)");
+    }
+
+    [Fact]
+    public void Format_ToolCall_WithAuthStatus_RendersAuthLine()
+    {
+        var report = new ToolCallReport(
+            DateTimeOffset.UnixEpoch,
+            new ServerReference("demo", "http", "https://x/mcp"),
+            ToolName: "echo",
+            Arguments: null,
+            Progress: [],
+            Result: new CallResultView(false, null, null, []),
+            Error: null,
+            AuthStatus: ConnectionAuthInfo.Authenticated("agent365", AuthKind.AzureCli, "auto-pick"));
+
+        TextFormatter.Format(report, JsonOptions).ShouldContain("auth: authenticated (profile=agent365, kind=AzureCli)");
+    }
+
+    [Fact]
     public void Format_ResourceListReport_RendersResources()
     {
         var report = new ResourceListReport(DateTimeOffset.UnixEpoch, [
