@@ -13,6 +13,9 @@ internal sealed record CliResult(int ExitCode, string StandardOutput, string Sta
 internal static class CliRunner
 {
     public static async Task<CliResult> RunAsync(IReadOnlyList<string> mcplenseArgs, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+        => await RunAsync(mcplenseArgs, environment: null, timeout, cancellationToken);
+
+    public static async Task<CliResult> RunAsync(IReadOnlyList<string> mcplenseArgs, IReadOnlyDictionary<string, string>? environment, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
     {
         timeout ??= TimeSpan.FromSeconds(120);
 
@@ -28,6 +31,14 @@ internal static class CliRunner
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment)
+            {
+                psi.Environment[key] = value;
+            }
+        }
 
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add(BuildArtifacts.MainAppDll);
