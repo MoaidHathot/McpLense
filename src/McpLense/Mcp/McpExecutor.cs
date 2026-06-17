@@ -128,8 +128,9 @@ internal static class McpExecutor
         // observe = long-duration ServerInitiatedObservationCheck only.
         if (command.Command is AppCommand.Observe)
         {
-            var observe = await DispatchObserveAsync(command, cancellationToken).ConfigureAwait(false);
-            return new ExecutionOutcome(observe, false);
+            // DispatchObserveAsync already returns the final ExecutionOutcome (Payload = ScanReport);
+            // returning it directly avoids double-wrapping the payload in another ExecutionOutcome.
+            return await DispatchObserveAsync(command, cancellationToken).ConfigureAwait(false);
         }
 
         if (command.Command is AppCommand.FetchResource)

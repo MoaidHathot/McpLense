@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using McpLense;
+using McpLense.Scanning;
 using Shouldly;
 using Xunit;
 
@@ -280,5 +281,85 @@ public class McpExecutorTests
         outcome.HasErrors.ShouldBeTrue();
         var report = outcome.Payload.ShouldBeOfType<InspectReport>();
         report.Servers[0].Error.ShouldNotBeNull();
+    }
+
+    // --- Own-flow command dispatch (characterization before the ICommandHandler split) -------
+    // The 7 list/invoke commands above are well covered; these pin the commands that own their
+    // own resolve/auth flow, which the dictionary-dispatch refactor moves into handlers.
+
+    [Fact]
+    public async Task AuthScan_StdioTarget_ClassifiesAsStdio()
+    {
+        var outcome = await McpExecutor.ExecuteAsync(BuildCommand(AppCommand.AuthScan), JsonOptions, CancellationToken.None);
+
+        outcome.HasErrors.ShouldBeFalse();
+        var report = outcome.Payload.ShouldBeOfType<AuthScanReport>();
+        report.Servers.Count.ShouldBe(1);
+        report.Servers[0].Classification.ShouldBe(AuthClassifications.Stdio);
+    }
+
+    [Fact]
+    public async Task FetchResource_StaticResource_ReturnsContents()
+    {
+        var command = BuildCommand(AppCommand.FetchResource, subject: "config://app/settings");
+
+        var outcome = await McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None);
+
+        outcome.HasErrors.ShouldBeFalse();
+        var report = outcome.Payload.ShouldBeOfType<ReadReport>();
+        report.Result!.Contents.Count.ShouldBeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task FetchResource_NoSubject_Throws()
+    {
+        var command = BuildCommand(AppCommand.FetchResource, subject: null);
+
+        await Should.ThrowAsync<UserInputException>(
+            () => McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Scan_StdioTarget_ProducesReport()
+    {
+        var outcome = await McpExecutor.ExecuteAsync(BuildCommand(AppCommand.Scan), JsonOptions, CancellationToken.None);
+
+        var report = outcome.Payload.ShouldBeOfType<ScanReport>();
+        report.Servers.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task Observe_StdioTarget_ProducesReport()
+    {
+        // Observe holds the session open for command.Timeout; keep the window short.
+        var target = new TargetOptions(
+            ConfigPaths: [], ServerNames: [], ProfilePaths: [], DisplayName: "test-server", Url: null,
+            Transport: TransportPreference.Auto, Headers: new Dictionary<string, string>(),
+            Command: "dotnet", CommandArguments: ["exec", TestServerLocator.TestServerDll],
+            WorkingDirectory: null, Environment: new Dictionary<string, string>(), AuthOverrides: AuthOverrides.Empty);
+        var command = new ParsedCommand(
+            AppCommand.Observe, null, null, OutputFormat.Json, TimeSpan.FromSeconds(3), target, false);
+
+        var outcome = await McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None);
+
+        outcome.Payload.ShouldBeOfType<ScanReport>();
+    }
+
+    [Fact]
+    public async Task Login_AllWithNoProfiles_Throws()
+    {
+        // Tier-None command: short-circuits before any target resolution. With auto-discovery
+        // disabled (TestModuleInitializer) and no --profiles, --all has nothing to act on.
+        var target = new TargetOptions(
+            ConfigPaths: [], ServerNames: [], ProfilePaths: [], DisplayName: null, Url: null,
+            Transport: TransportPreference.Auto, Headers: new Dictionary<string, string>(),
+            Command: null, CommandArguments: [], WorkingDirectory: null,
+            Environment: new Dictionary<string, string>(), AuthOverrides: new AuthOverrides(All: true));
+        var command = new ParsedCommand(
+            AppCommand.Login, null, null, OutputFormat.Json, TimeSpan.FromSeconds(5), target, false);
+
+        var ex = await Should.ThrowAsync<UserInputException>(
+            () => McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None));
+        ex.Message.ShouldContain("profile");
     }
 }
