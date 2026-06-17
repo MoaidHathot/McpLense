@@ -50,4 +50,44 @@ public class CommandLineParserInteractiveTests
     [Fact]
     public void Interactive_OnInspect_Throws()
         => Should.Throw<UserInputException>(() => CommandLineParser.Parse(["inspect", "https://x/mcp", "-i"]));
+
+    [Fact]
+    public void ServerStream_OnTui_SetsServerStream()
+    {
+        var parsed = CommandLineParser.Parse(["tui", "https://x/mcp", "--server-stream"]);
+
+        parsed.Command.ShouldBe(AppCommand.Tui);
+        parsed.ServerStream.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ServerStream_OnInteractiveCall_SetsServerStream()
+    {
+        var parsed = CommandLineParser.Parse(["call", "Echo", "https://x/mcp", "--interactive", "--server-stream"]);
+
+        parsed.ServerStream.ShouldBeTrue();
+        parsed.Interactive.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ServerStream_NotSpecified_DefaultsFalse()
+    {
+        var parsed = CommandLineParser.Parse(["tui", "https://x/mcp"]);
+
+        parsed.ServerStream.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void ServerStream_OnScan_Throws()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse(["scan", "https://x/mcp", "--server-stream"]));
+        ex.Message.ShouldContain("--server-stream is only valid for tui");
+    }
+
+    [Fact]
+    public void ServerStream_OnCallWithoutInteractive_Throws()
+    {
+        var ex = Should.Throw<UserInputException>(() => CommandLineParser.Parse(["call", "Echo", "https://x/mcp", "--server-stream"]));
+        ex.Message.ShouldContain("--server-stream needs --interactive");
+    }
 }

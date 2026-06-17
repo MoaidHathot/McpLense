@@ -111,6 +111,8 @@ Options
   --args <json>        Tool arguments as a JSON object, e.g. '{"message":"hi"}'.
   -i, --interactive    Prompt for each argument from the tool's input schema; required
                        args are marked *, declared defaults are pre-filled (Enter accepts).
+  --server-stream      Keep the server->client event-stream open so sampling / elicitation /
+                       roots / notifications surface during the call (needs --interactive).
   --progress [bool]    Show live tool-call progress (default: true).
   --format <...>       Output format (default: text).
   --timeout <seconds>  Per-server timeout (default: 30).
@@ -131,6 +133,7 @@ Usage
 Options
   --args <json>        Template variables as a JSON object, e.g. '{"id":"42"}'.
   -i, --interactive    Prompt for each {variable} in the URI template.
+  --server-stream      Keep the server->client event-stream open (needs --interactive).
   --format <...>       Output format (default: text).
   --timeout <seconds>  Per-server timeout (default: 30).
 
@@ -150,6 +153,7 @@ Usage
 Options
   --args <json>        Prompt arguments as a JSON object.
   -i, --interactive    Prompt for each declared argument.
+  --server-stream      Keep the server->client event-stream open (needs --interactive).
   --format <...>       Output format (default: text).
   --timeout <seconds>  Per-server timeout (default: 30).
 
@@ -172,6 +176,10 @@ Browse tools / resources / resource templates / prompts (per-section search + pe
 bookmarks) and invoke them: pick a tool and "Call tool" to be prompted for each argument
 (required marked *, declared defaults pre-filled), then see the result. Reading resources
 / templates and getting prompts work the same way. Requires an interactive terminal.
+
+Options
+  --server-stream      Keep the server->client event-stream open so server-initiated
+                       traffic (sampling / elicitation / roots / notifications) is shown.
 
 Examples
   mcplense tui https://localhost:3000/mcp

@@ -16,7 +16,8 @@ internal static class CommandLineParser
         "quiet",
         "verbose",
         "http-only",
-        "interactive"
+        "interactive",
+        "server-stream"
     };
 
     /// <summary>Long options that can appear multiple times (repeatable).</summary>
@@ -189,6 +190,7 @@ internal static class CommandLineParser
         var quiet = string.Equals(GetSingle(options, "quiet"), "true", StringComparison.OrdinalIgnoreCase);
         var verbose = string.Equals(GetSingle(options, "verbose"), "true", StringComparison.OrdinalIgnoreCase);
         var interactive = string.Equals(GetSingle(options, "interactive"), "true", StringComparison.OrdinalIgnoreCase);
+        var serverStream = string.Equals(GetSingle(options, "server-stream"), "true", StringComparison.OrdinalIgnoreCase);
         var scanPlugins = GetMany(options, "scan-plugin");
 
         var targetsFromPaths = GetMany(options, "targets-from");
@@ -239,7 +241,8 @@ internal static class CommandLineParser
             TargetsFromPaths: targetsFromPaths.Count > 0 ? targetsFromPaths : null,
             HttpOnly: httpOnly,
             DefaultScope: defaultScope,
-            Interactive: interactive);
+            Interactive: interactive,
+            ServerStream: serverStream);
     }
 
     /// <summary>
@@ -477,7 +480,8 @@ internal static class CommandLineParser
             "targets-from",
             "http-only",
             "default-scope",
-            "interactive"
+            "interactive",
+            "server-stream"
         };
 
         foreach (var option in options.Keys)
@@ -556,6 +560,17 @@ internal static class CommandLineParser
         if (command is not (AppCommand.Call or AppCommand.Read or AppCommand.Prompt) && options.ContainsKey("interactive"))
         {
             throw new UserInputException("--interactive is only valid for call, read, and prompt.");
+        }
+
+        if (command is not (AppCommand.Tui or AppCommand.Call or AppCommand.Read or AppCommand.Prompt) && options.ContainsKey("server-stream"))
+        {
+            throw new UserInputException("--server-stream is only valid for tui and for interactive call, read, and prompt.");
+        }
+
+        if (command is AppCommand.Call or AppCommand.Read or AppCommand.Prompt
+            && options.ContainsKey("server-stream") && !options.ContainsKey("interactive"))
+        {
+            throw new UserInputException("--server-stream needs --interactive for call, read, and prompt (the one-shot path doesn't keep a live session open).");
         }
     }
 
