@@ -156,8 +156,8 @@ internal static class TuiMenu
                 var hotkey = positionInPage < 9 ? (positionInPage + 1).ToString() : " ";
                 var text = Markup.Escape(items[i]);
                 console.MarkupLine(i == index
-                    ? $"[green]\u203a[/] [bold]{hotkey}.[/] [bold]{text}[/]"
-                    : $"  [grey]{hotkey}.[/] {text}");
+                    ? $"[bold green]\u203a[/] [black on green] {hotkey}.  {text} [/]"
+                    : $"  [aqua]{hotkey}.[/] {text}");
             }
 
             if (top > 0 || end < items.Count)
