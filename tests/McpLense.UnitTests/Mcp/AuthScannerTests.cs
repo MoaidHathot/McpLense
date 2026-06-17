@@ -581,4 +581,206 @@ public class AuthScannerTests
 
         report.Servers[0].ProfileAttempts[0].Scopes.ShouldBe(new[] { "https://api.example.com/User.Read.All" });
     }
+
+    // --- Characterization tests added before the AuthDiscovery/AuthClassifier split. ----
+    // These pin the summary branches, derivations, heuristics and multi-server aggregation that
+    // move into the new collaborators, so the split is provably behavior-preserving.
+
+    private sealed class ThrowingProbe : IAuthProbe
+    {
+        public Task<AuthProbeResult> ProbeAsync(Uri serverUrl, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("probe boom");
+    }
+
+    [Fact]
+    public async Task ScanOne_ProbeThrows_ReportsUnknownWithProbeError()
+    {
+        var scanner = new AuthScanner(new ThrowingProbe(), new StubHandshake());
+
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() },
+            Array.Empty<AuthProfile>(),
+            AuthOverrides.Empty,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        var entry = report.Servers[0];
+        entry.Classification.ShouldBe(AuthClassifications.Unknown);
+        entry.Details.ProbeError.ShouldNotBeNull();
+        entry.Details.ProbeError!.ShouldContain("InvalidOperationException");
+    }
+
+    [Fact]
+    public async Task ScanOne_Rfc9728_NoScopes_UsesNoScopesSummary()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(
+            RequiresAuth: true,
+            ResourceMetadataUrl: "https://example.com/prm",
+            StatusCode: 401));
+
+        var scanner = new AuthScanner(probe, new StubHandshake());
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() }, Array.Empty<AuthProfile>(), AuthOverrides.Empty, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        var entry = report.Servers[0];
+        entry.Classification.ShouldBe(AuthClassifications.OAuthRfc9728);
+        entry.Summary.ShouldContain("no scopes_supported");
+    }
+
+    [Fact]
+    public async Task ScanOne_RequiresAuth_EmptyWwwAuthenticate_UsesNoHeaderSummary()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(RequiresAuth: true, StatusCode: 401));
+
+        var scanner = new AuthScanner(probe, new StubHandshake());
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() }, Array.Empty<AuthProfile>(), AuthOverrides.Empty, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        var entry = report.Servers[0];
+        entry.Classification.ShouldBe(AuthClassifications.AuthRequiredUnspecified);
+        entry.Summary.ShouldContain("no WWW-Authenticate header");
+    }
+
+    [Fact]
+    public async Task ScanOne_RequiresAuth_NonBearerScheme_SummaryNamesScheme()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(RequiresAuth: true, StatusCode: 401, WwwAuthenticate: "Basic realm=\"api\""));
+
+        var scanner = new AuthScanner(probe, new StubHandshake());
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() }, Array.Empty<AuthProfile>(), AuthOverrides.Empty, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        report.Servers[0].Summary.ShouldContain("scheme 'Basic");
+    }
+
+    [Fact]
+    public async Task ScanOne_InconclusiveNullStatus_HandshakeFails_UsesUnreachableSummary()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(Inconclusive: true));
+        var handshake = new StubHandshake();
+        handshake.OnNoAuth(_ => new HandshakeResult(Success: false, Error: "ConnectionRefused"));
+
+        var scanner = new AuthScanner(probe, handshake);
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() }, Array.Empty<AuthProfile>(), AuthOverrides.Empty, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        var entry = report.Servers[0];
+        entry.Classification.ShouldBe(AuthClassifications.Unknown);
+        entry.Summary.ShouldContain("could not reach the server");
+    }
+
+    [Fact]
+    public async Task ScanOne_Anonymous_SummaryStated()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(StatusCode: 200));
+        var handshake = new StubHandshake();
+        handshake.OnNoAuth(_ => new HandshakeResult(Success: true, ToolCount: 1));
+
+        var scanner = new AuthScanner(probe, handshake);
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() }, Array.Empty<AuthProfile>(), AuthOverrides.Empty, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        report.Servers[0].Summary.ShouldBe("Server accepts unauthenticated MCP sessions.");
+    }
+
+    [Fact]
+    public async Task ScanOne_Rfc9728_WiresServerStatusAndRfcs()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(
+            RequiresAuth: true,
+            ResourceMetadataUrl: "https://example.com/prm",
+            Scopes: new[] { "https://example.com/.default" },
+            StatusCode: 401));
+
+        var scanner = new AuthScanner(probe, new StubHandshake());
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() }, Array.Empty<AuthProfile>(), AuthOverrides.Empty, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        var entry = report.Servers[0];
+        entry.ServerStatus.ShouldBe(ServerAccessibility.RequiresAuth);
+        entry.Rfcs.ShouldBe(new[] { "RFC 9728", "RFC 6750", "RFC 8414" });
+    }
+
+    [Fact]
+    public async Task ScanCore_MultipleServers_ClassifiesEachIndependently()
+    {
+        var probe = new StubProbe();
+        probe.SetForUrl(new Uri("https://anon.test/mcp"), new AuthProbeResult(StatusCode: 200));
+        probe.SetForUrl(new Uri("https://oauth.test/mcp"), new AuthProbeResult(
+            RequiresAuth: true, ResourceMetadataUrl: "https://oauth.test/prm", Scopes: new[] { "s/.default" }, StatusCode: 401));
+
+        var handshake = new StubHandshake();
+        handshake.OnNoAuth(_ => new HandshakeResult(Success: true, ToolCount: 1));
+
+        var scanner = new AuthScanner(probe, handshake);
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer("anon", "https://anon.test/mcp"), HttpServer("oauth", "https://oauth.test/mcp") },
+            Array.Empty<AuthProfile>(),
+            AuthOverrides.Empty,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        report.Servers.Count.ShouldBe(2);
+        report.Servers[0].Name.ShouldBe("anon");
+        report.Servers[0].Classification.ShouldBe(AuthClassifications.Anonymous);
+        report.Servers[1].Name.ShouldBe("oauth");
+        report.Servers[1].Classification.ShouldBe(AuthClassifications.OAuthRfc9728);
+    }
+
+    [Fact]
+    public async Task ScanOne_BearerInCommaSeparatedChallenge_ReportsUnannounced()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(RequiresAuth: true, StatusCode: 401, WwwAuthenticate: "Basic realm=\"x\", Bearer"));
+
+        var scanner = new AuthScanner(probe, new StubHandshake());
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() }, Array.Empty<AuthProfile>(), AuthOverrides.Empty, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        report.Servers[0].Classification.ShouldBe(AuthClassifications.OAuthBearerUnannounced);
+    }
+
+    [Fact]
+    public async Task ScanOne_HandshakeForbidden_DowngradesToAuthRequired()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(StatusCode: 200));
+        var handshake = new StubHandshake();
+        handshake.OnNoAuth(_ => new HandshakeResult(Success: false, Error: "HttpRequestException: 403 Forbidden"));
+
+        var scanner = new AuthScanner(probe, handshake);
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() }, Array.Empty<AuthProfile>(), AuthOverrides.Empty, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        report.Servers[0].Classification.ShouldBe(AuthClassifications.AuthRequiredUnspecified);
+    }
+
+    [Fact]
+    public async Task ScanOne_SuccessfulProfileAttempt_ReportsAuthKindAndCapabilityDetail()
+    {
+        var probe = new StubProbe();
+        probe.SetDefault(new AuthProbeResult(RequiresAuth: true, ResourceMetadataUrl: "https://example.com/prm"));
+        var handshake = new StubHandshake();
+        handshake.OnAuthKind(AuthKind.Bearer, _ => new HandshakeResult(Success: true, ToolCount: 3, ResourceCount: 2));
+
+        var scanner = new AuthScanner(probe, handshake);
+        var report = await scanner.ScanCoreAsync(
+            new[] { HttpServer() },
+            new[] { Profile("p", AuthKind.Bearer) },
+            AuthOverrides.Empty,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        var attempt = report.Servers[0].ProfileAttempts[0];
+        attempt.Success.ShouldBeTrue();
+        attempt.AuthKind.ShouldBe("bearer");
+        attempt.Detail!.ShouldContain("3 tool(s)");
+        attempt.Detail!.ShouldContain("2 resource(s)");
+    }
 }
