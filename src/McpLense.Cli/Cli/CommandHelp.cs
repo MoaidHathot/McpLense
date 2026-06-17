@@ -230,17 +230,24 @@ under the top-level "analysis" block; nothing about the underlying scan facts ch
 Options
   --fail-on <severity>            Exit non-zero if any finding >= severity (info/low/medium/
                                   high/critical). Overrides analysis.failOn from config.
+  --approve <file>                Snapshot the current tool/prompt/resource hashes as the
+                                  approved baseline (the trust anchor for rug-pull detection).
+  --since <file>                  Flag any tool/prompt/resource that changed since the approved
+                                  baseline as a 'rug-pull' finding.
+  --format sarif                  Emit SARIF 2.1.0 (for GitHub code scanning / CI security).
   --enable / --disable <id>       Toggle scan checks (findings depend on the facts they emit).
   --check-authorization-servers   Fetch advertised authorization-server metadata.
   --scan-plugin <path>            Load external IScanCheck assemblies (repeatable).
   --targets-from <path>           Analyze a fleet (one URL/@name per line) (repeatable).
   --parallel-servers <n>          Scan up to n servers concurrently.
-  --format <text|json|...>        Output format (default: text).
+  --format <text|json|sarif|...>  Output format (default: text).
 
 Examples
   mcplense analyze https://api.example.com/mcp
   mcplense analyze https://api.example.com/mcp --fail-on high          # CI gate
-  mcplense analyze --targets-from fleet.txt --format json
+  mcplense analyze https://api.example.com/mcp --format sarif > out.sarif
+  mcplense analyze https://api.example.com/mcp --approve approved.json # trust it now
+  mcplense analyze https://api.example.com/mcp --since approved.json --fail-on high  # detect rug-pull
 
 Run 'mcplense help' for targets, auth, config, and the full reference.
 """,

@@ -2,6 +2,25 @@
 
 Living roadmap.
 
+## Delivered in 0.14.0 - SARIF + rug-pull (Phase 2)
+
+Builds on the 0.13.0 findings layer for CI-grade security gating.
+
+- **SARIF 2.1.0 output**: `--format sarif` (for `analyze` / `scan --findings`) maps findings to a
+  SARIF run (severity -> error/warning/note, target as artifact location, evidence path as logical
+  location) so they flow into GitHub code scanning. `SarifRenderer` + `OutputFormat.Sarif`.
+- **Rug-pull detection**: `analyze --approve <file>` snapshots the current per-item `hashing` output
+  as a trust anchor; `analyze --since <file>` re-scans and emits `rug-pull` findings for any
+  tool/prompt/resource that changed (high), was added (medium), or removed (info) since approval.
+  `RugPullAnalyzer` (pure) + the `rug-pull` rule severity is config-overridable like any other.
+  With `--fail-on high` this fails CI the moment a trusted tool's definition changes.
+- Docs: `docs/analysis-rules.md` (rug-pull + SARIF + a GitHub Actions snippet), help, COMMANDS.md.
+
+Build + test state: Release `-warnaserror` clean. 796 unit + 70 integration + 37 E2E + 6 gated.
+
+Remaining phases: 3 learning (explain + markdown/HTML + sample calls); 4 debugging (trace + doctor
++ stdio stderr + watch); 5 Section-2 checks + serve.
+
 ## Delivered in 0.13.0 - findings/analysis layer (Phase 1)
 
 The first of a 5-phase push to make exploring MCPs easy for learning, debugging, and security.

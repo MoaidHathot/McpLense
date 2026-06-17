@@ -98,6 +98,10 @@ fact-only — `analyze` is a separate opt-in consumer. Output is a `FindingsRepo
 
 - `--fail-on <severity>` — CI gate: exit non-zero if any finding ≥ severity
   (info/low/medium/high/critical). Overrides `analysis.failOn` from config.
+- `--approve <file>` / `--since <file>` — rug-pull detection: `--approve` snapshots the
+  current tool/prompt/resource hashes; `--since` flags anything that changed since as a
+  `rug-pull` finding.
+- `--format sarif` — emit SARIF 2.1.0 for GitHub code scanning / CI security tooling.
 - Accepts the scan-shaping flags (`--enable`/`--disable`, `--scan-plugin`,
   `--check-authorization-servers`, `--targets-from`, `--parallel-servers`).
 

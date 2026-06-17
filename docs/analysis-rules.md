@@ -36,10 +36,41 @@ report it was derived from), the quoted `evidence`, and a `remediation`.
 | `description-url` | low | URL(s) embedded in a tool/prompt description (host-rendered links/images are an exfiltration vector) | `metrics.fields[]` |
 | `missing-destructive-hint` | low | Tool does not declare a `destructiveHint` annotation | `tools.items[].missingAnnotations` |
 | `unannounced-bearer` | low | Server demands Bearer auth but advertises no RFC 9728 metadata | `auth.classification` |
+| `rug-pull` | high / medium / info | A tool/prompt/resource **changed** (high), was **added** (medium), or was **removed** (info) since an approved baseline | `hashing` (vs `--since` snapshot) |
 
 Some rules depend on a check that is not default-on (`error-info-leak` needs
 `behavior.callNonExistentTool`, which is on by default; `tls-chain-invalid` needs `tlsChain`). If a
 required check did not run the rule simply yields nothing.
+
+## Rug-pull detection (`--approve` / `--since`)
+
+A "rug pull" is when a server changes a tool *after* you trusted it. McpLense detects this with the
+fact-only `hashing` check + an approved snapshot:
+
+```bash
+mcplense analyze https://server/mcp --approve approved.json     # snapshot: "I trust it as it is now"
+# ... later, in CI ...
+mcplense analyze https://server/mcp --since approved.json --fail-on high
+```
+
+`--approve` writes the current per-item hashes to a file. `--since` re-scans and emits a `rug-pull`
+finding for every tool/prompt/resource whose hash changed (high), was added (medium), or was removed
+(info) since the snapshot. Combined with `--fail-on high` this fails CI the moment a trusted tool's
+definition changes.
+
+## SARIF output (CI / code scanning)
+
+`--format sarif` emits SARIF 2.1.0 so findings flow into GitHub code scanning and other SARIF-aware
+tools. Severity maps to the SARIF level (critical/high -> `error`, medium -> `warning`, low/info ->
+`note`); each result carries the target URL (artifact location) and the evidence path (logical
+location).
+
+```yaml
+# GitHub Actions
+- run: mcplense analyze "$MCP_URL" --format sarif > mcplense.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with: { sarif_file: mcplense.sarif }
+```
 
 ## Configuration (`analysis` block)
 

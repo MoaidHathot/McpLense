@@ -54,7 +54,13 @@ internal enum OutputFormat
     /// whole report.
     /// </summary>
     Jsonl,
-    Dumpify
+    Dumpify,
+    /// <summary>
+    /// SARIF 2.1.0 (Static Analysis Results Interchange Format) for the findings layer
+    /// (<c>analyze</c> / <c>scan --findings</c>). Lets findings flow into GitHub code scanning and
+    /// other SARIF-aware security tooling. Non-findings payloads fall back to JSON.
+    /// </summary>
+    Sarif
 }
 
 /// <summary>
@@ -106,7 +112,17 @@ internal sealed record ParsedCommand(
     /// critical). When any finding meets or exceeds it the process exits non-zero. Overrides
     /// <c>analysis.failOn</c> from config; null means "use config (or never gate)".
     /// </summary>
-    string? FailOn = null);
+    string? FailOn = null,
+    /// <summary>
+    /// <c>analyze --approve &lt;file&gt;</c>: write an approval snapshot (per-item hashes) of the
+    /// current server surface to this path - the trust anchor for later rug-pull detection.
+    /// </summary>
+    string? ApprovePath = null,
+    /// <summary>
+    /// <c>analyze --since &lt;file&gt;</c>: compare the current scan against this approval snapshot and
+    /// emit rug-pull findings for any tool/prompt/resource that changed since it was approved.
+    /// </summary>
+    string? SincePath = null);
 
 /// <summary>
 /// Resolved target description used to drive scans and other read-only operations. Public so

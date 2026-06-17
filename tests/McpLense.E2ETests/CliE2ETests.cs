@@ -91,6 +91,21 @@ public class CliE2ETests
     }
 
     [Fact]
+    public async Task Analyze_SarifFormat_EmitsSarif210()
+    {
+        var args = CliRunner.WithStdioTestServer(
+            "analyze",
+            "--format", "sarif",
+            "--timeout", "60");
+
+        var result = await CliRunner.RunAsync(args, DefaultTimeout);
+
+        result.ExitCode.ShouldBe(0, $"stderr=<<{result.StandardError}>>");
+        result.StandardOutput.ShouldContain("\"2.1.0\"");
+        result.StandardOutput.ShouldContain("\"McpLense\"");
+    }
+
+    [Fact]
     public async Task Tools_AgainstStdioTestServer_ListsKnownTools()
     {
         var args = CliRunner.WithStdioTestServer(

@@ -78,7 +78,9 @@ internal static class CommandLineParser
         ["interactive"] = new([AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--interactive is only valid for call, read, and prompt."),
         ["server-stream"] = new([AppCommand.Tui, AppCommand.Call, AppCommand.Read, AppCommand.Prompt], "--server-stream is only valid for tui and for interactive call, read, and prompt."),
         ["findings"] = new([AppCommand.Scan], "--findings is only valid for 'scan' ('analyze' always produces findings)."),
-        ["fail-on"] = new([AppCommand.Scan, AppCommand.Analyze], "--fail-on is only valid for 'scan' (with --findings) and 'analyze'.")
+        ["fail-on"] = new([AppCommand.Scan, AppCommand.Analyze], "--fail-on is only valid for 'scan' (with --findings) and 'analyze'."),
+        ["approve"] = new([AppCommand.Analyze], "--approve is only valid for 'analyze'."),
+        ["since"] = new([AppCommand.Analyze], "--since is only valid for 'analyze'.")
     };
 
     /// <summary>Every recognised long option = universal ∪ restricted keys. Derived so the two can't drift.</summary>
@@ -258,6 +260,8 @@ internal static class CommandLineParser
         {
             throw new UserInputException($"--fail-on '{failOn}' is not a severity. Use one of: info, low, medium, high, critical.");
         }
+        var approvePath = GetSingle(options, "approve");
+        var sincePath = GetSingle(options, "since");
         var scanPlugins = GetMany(options, "scan-plugin");
 
         var targetsFromPaths = GetMany(options, "targets-from");
@@ -311,7 +315,9 @@ internal static class CommandLineParser
             Interactive: interactive,
             ServerStream: serverStream,
             Findings: findings,
-            FailOn: failOn);
+            FailOn: failOn,
+            ApprovePath: approvePath,
+            SincePath: sincePath);
     }
 
     /// <summary>
@@ -921,6 +927,7 @@ internal static class CommandLineParser
         "json" => OutputFormat.Json,
         "jsonl" or "ndjson" => OutputFormat.Jsonl,
         "dump" or "dumpify" => OutputFormat.Dumpify,
+        "sarif" => OutputFormat.Sarif,
         _ => throw new UserInputException($"Unknown format '{value}'.")
     };
 

@@ -256,4 +256,25 @@ public class CommandLineParserVerbCoverageTests
     [Fact]
     public void FailOn_OnInspect_Throws()
         => Should.Throw<UserInputException>(() => CommandLineParser.Parse(["inspect", "https://h/mcp", "--fail-on", "high"]));
+
+    [Fact]
+    public void Analyze_ApproveAndSince_AreParsed()
+    {
+        var approve = CommandLineParser.Parse(["analyze", "https://h/mcp", "--approve", "a.json"]);
+        approve.ApprovePath.ShouldBe("a.json");
+
+        var since = CommandLineParser.Parse(["analyze", "https://h/mcp", "--since", "a.json"]);
+        since.SincePath.ShouldBe("a.json");
+    }
+
+    [Fact]
+    public void Approve_OnScan_Throws()
+        => Should.Throw<UserInputException>(() => CommandLineParser.Parse(["scan", "https://h/mcp", "--approve", "a.json"]));
+
+    [Fact]
+    public void Format_Sarif_IsParsed()
+    {
+        var parsed = CommandLineParser.Parse(["analyze", "https://h/mcp", "--format", "sarif"]);
+        parsed.Format.ShouldBe(OutputFormat.Sarif);
+    }
 }

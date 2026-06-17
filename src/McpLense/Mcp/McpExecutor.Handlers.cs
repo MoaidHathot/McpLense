@@ -172,6 +172,13 @@ internal static partial class McpExecutor
         public async Task<ExecutionOutcome> ExecuteAsync(ParsedCommand command, IReadOnlyList<ResolvedServer>? servers, JsonSerializerOptions jsonOptions, CancellationToken cancellationToken)
         {
             var scanReport = await RunScanAsync(command, cancellationToken).ConfigureAwait(false);
+
+            // --approve: snapshot the current surface as the trust anchor for later rug-pull detection.
+            if (!string.IsNullOrEmpty(command.ApprovePath))
+            {
+                await WriteApprovalAsync(scanReport, command.ApprovePath, command.Quiet, cancellationToken).ConfigureAwait(false);
+            }
+
             var (findings, gate) = await AnalyzeScanAsync(scanReport, command, cancellationToken).ConfigureAwait(false);
             // HasErrors doubles as the CI-gate signal: non-zero exit when findings cross the threshold.
             return new ExecutionOutcome(findings, gate);
@@ -220,9 +227,58 @@ internal static partial class McpExecutor
         var config = await ScanConfigLoader.LoadAsync(configPaths, cancellationToken).ConfigureAwait(false);
 
         var findings = new FindingsAnalyzer().Analyze(scanReport, config.Analysis);
+
+        // --since: merge rug-pull findings (changed/added/removed items vs an approved snapshot).
+        if (!string.IsNullOrEmpty(command.SincePath) && config.Analysis.IsRuleEnabled(RugPullAnalyzer.RuleId, true))
+        {
+            var json = await File.ReadAllTextAsync(command.SincePath, cancellationToken).ConfigureAwait(false);
+            var approved = RugPullAnalyzer.Deserialize(json)
+                ?? throw new UserInputException($"Approval baseline '{command.SincePath}' is empty or invalid JSON.");
+            findings = MergeRugPull(findings, RugPullAnalyzer.Compare(scanReport, approved), config.Analysis);
+        }
+
         var threshold = Severities.TryParse(command.FailOn) ?? config.Analysis.FailOnThreshold;
         var gate = threshold is { } t && findings.Exceeds(t);
         return (findings, gate);
+    }
+
+    /// <summary>Merges per-target rug-pull findings into the report (applying the rug-pull severity override).</summary>
+    private static FindingsReport MergeRugPull(
+        FindingsReport report,
+        IReadOnlyDictionary<string, IReadOnlyList<Finding>> rugByTarget,
+        AnalysisConfig config)
+    {
+        if (rugByTarget.Count == 0)
+        {
+            return report;
+        }
+
+        var servers = report.Servers.Select(server =>
+        {
+            if (!rugByTarget.TryGetValue(server.Target, out var extra))
+            {
+                return server;
+            }
+
+            var merged = server.Findings
+                .Concat(extra.Select(f => f with { Severity = config.SeverityFor(RugPullAnalyzer.RuleId, f.Severity) }))
+                .OrderByDescending(f => f.Severity)
+                .ToList();
+            return server with { Findings = merged };
+        }).ToList();
+
+        return report with { Servers = servers };
+    }
+
+    /// <summary>Writes the approval snapshot for <c>analyze --approve</c>.</summary>
+    private static async Task WriteApprovalAsync(Scanning.ScanReport scanReport, string path, bool quiet, CancellationToken cancellationToken)
+    {
+        var baseline = RugPullAnalyzer.Snapshot(scanReport);
+        await File.WriteAllTextAsync(path, RugPullAnalyzer.Serialize(baseline), cancellationToken).ConfigureAwait(false);
+        if (!quiet)
+        {
+            McpLenseLog.Write($"approval baseline written: {path}");
+        }
     }
 
     // --- Tier ResolveOnly: resolve + overlay, but no executor-driven auth attach -------------
