@@ -101,22 +101,10 @@ internal sealed class McpHandshakeProbe : IMcpHandshakeProbe
             SetProperty(options, server.Headers.ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase), "AdditionalHeaders");
         }
 
-        // Wrap with StandaloneStreamSuppressingHandler for parity with the runtime client: some
-        // Streamable HTTP servers commit the session only after `initialize` completes, and the
-        // SDK's early standalone GET event-stream otherwise races ahead and the server drops the
-        // session, breaking the handshake with -32001 "Session not found".
-        DelegatingHandler outer = new StandaloneStreamSuppressingHandler();
-        DelegatingHandler tail = outer;
-
-        if (server.Auth is { Kind: not AuthKind.None }
-            && AuthHandlerFactory.Create(server.Auth, server.Url) is { } authHandler)
-        {
-            tail.InnerHandler = authHandler;
-            tail = authHandler;
-        }
-
-        tail.InnerHandler = new SocketsHttpHandler();
-        var http = new HttpClient(outer, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
+        // Shared factory: standalone-stream suppression for parity with the runtime client (some
+        // Streamable HTTP servers drop the session if the SDK's early standalone GET races ahead of
+        // the async session commit -> -32001), auth chaining, and the streaming-safe timeout.
+        var http = McpHttpClientFactory.Create(server, server.Auth);
         return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 

@@ -209,23 +209,11 @@ internal sealed class ServerInitiatedObservationCheck : IScanCheck
         var serverForSession = context.Server with { Auth = context.ActiveAuth };
         try
         {
-            if (serverForSession.Auth is { Kind: not AuthKind.None })
-            {
-                var authHandler = AuthHandlerFactory.Create(serverForSession.Auth, serverForSession.Url);
-                if (authHandler is not null)
-                {
-                    authHandler.InnerHandler = new SocketsHttpHandler();
-                    var http = new HttpClient(authHandler, disposeHandler: true);
-                    return await McpClient.CreateAsync(
-                        new HttpClientTransport(transportOptions, http, ownsHttpClient: true),
-                        clientOptions,
-                        loggerFactory: null,
-                        cancellationToken: cancellationToken).ConfigureAwait(false);
-                }
-            }
-
+            // This check exists to OBSERVE server-initiated traffic, which arrives on the standalone
+            // GET event-stream - so it is the one place that must NOT suppress that stream.
+            var http = McpHttpClientFactory.Create(serverForSession, serverForSession.Auth, suppressStandaloneStream: false);
             return await McpClient.CreateAsync(
-                new HttpClientTransport(transportOptions),
+                new HttpClientTransport(transportOptions, http, ownsHttpClient: true),
                 clientOptions,
                 loggerFactory: null,
                 cancellationToken: cancellationToken).ConfigureAwait(false);

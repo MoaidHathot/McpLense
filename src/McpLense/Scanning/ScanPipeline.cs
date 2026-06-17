@@ -343,18 +343,11 @@ public sealed class ScanPipeline
             prop?.SetValue(options, server.Headers.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase));
         }
 
-        if (server.Auth is { Kind: not AuthKind.None })
-        {
-            var authHandler = AuthHandlerFactory.Create(server.Auth, server.Url);
-            if (authHandler is not null)
-            {
-                authHandler.InnerHandler = new SocketsHttpHandler();
-                var http = new HttpClient(authHandler, disposeHandler: true);
-                return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        return await McpClient.CreateAsync(new HttpClientTransport(options), cancellationToken: cancellationToken).ConfigureAwait(false);
+        // Shared MCP HTTP factory: standalone-stream suppression (so session checks don't lose the
+        // session to the -32001 quirk on async-commit servers), auth chaining, streaming-safe
+        // timeout - identical to the runtime/handshake clients.
+        var http = McpHttpClientFactory.Create(server, server.Auth);
+        return await McpClient.CreateAsync(new HttpClientTransport(options, http, ownsHttpClient: true), cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static JsonNode AddErrorField(JsonNode existing, string error)
