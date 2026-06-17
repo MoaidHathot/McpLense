@@ -47,8 +47,11 @@ internal static class InvocationRenderer
     /// <summary>
     /// Builds a connector that opens a session against the chosen server by re-using the command
     /// the TUI / interactive flow was launched with (scoped to that server, progress/interactive off).
+    /// The optional <paramref name="interaction"/> services the server-initiated half of the protocol
+    /// (sampling / elicitation / roots / notifications); when null the executor falls back to the
+    /// default logging interaction.
     /// </summary>
-    public static McpSessionConnector ConnectorFor(ParsedCommand command)
+    public static McpSessionConnector ConnectorFor(ParsedCommand command, IServerInteraction? interaction = null)
         => (serverName, cancellationToken) => McpExecutor.ConnectAsync(
             command with
             {
@@ -56,5 +59,6 @@ internal static class InvocationRenderer
                 Interactive = false,
                 Target = command.Target with { ServerNames = new[] { serverName } }
             },
-            cancellationToken);
+            cancellationToken,
+            interaction);
 }

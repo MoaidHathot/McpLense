@@ -148,4 +148,83 @@ public class TuiInvokeTests
         exit.ShouldBe(0);
         console.Output.ShouldNotContain("Call tool");
     }
+
+    [Fact]
+    public async Task CallTool_WhenServerInitiatesTraffic_ShowsItAfterResult()
+    {
+        var console = NewConsole();
+        var report = new InspectReport(DateTimeOffset.UtcNow, [SingleToolServer()]);
+        var interaction = new TuiServerInteraction();
+
+        // A session that, while "running" the tool, captures a server-initiated elicitation +
+        // notification through the shared interaction - exactly what the SDK handlers would do.
+        McpSessionConnector connector = (_, _) =>
+        {
+            var session = new InteractingSession(interaction);
+            return Task.FromResult<IMcpSession>(session);
+        };
+
+        console.Input.PushKey(ConsoleKey.Enter);                 // server alpha
+        console.Input.PushKey(ConsoleKey.DownArrow);             // Tools
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.DownArrow);             // -> Ping
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.Enter);                 // Call tool
+        console.Input.PushKey(ConsoleKey.Enter);                 // confirm Run now?
+        console.Input.PushKey(ConsoleKey.DownArrow);             // tool actions -> Back
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.DownArrow);             // tools list -> [Back]
+        console.Input.PushKey(ConsoleKey.Enter);
+        for (var i = 0; i < 6; i++)
+        {
+            console.Input.PushKey(ConsoleKey.DownArrow);         // section -> Back
+        }
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.DownArrow);             // server -> Exit
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask, bookmarkStore: null, connector, interaction);
+
+        exit.ShouldBe(0);
+        console.Output.ShouldContain("server-initiated");
+        console.Output.ShouldContain("elicitation/create");
+    }
+
+    /// <summary>Session fake whose tool call pushes server-initiated traffic into the interaction.</summary>
+    private sealed class InteractingSession(TuiServerInteraction interaction) : IMcpSession
+    {
+        public ServerReference Server { get; } = new("alpha", "stdio", "dotnet exec foo.dll");
+
+        public Task<IReadOnlyList<ToolInfo>> ListToolsAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<ToolInfo>>([]);
+
+        public Task<IReadOnlyList<PromptInfo>> ListPromptsAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<PromptInfo>>([]);
+
+        public async Task<ToolCallReport> CallToolAsync(string toolName, JsonObject arguments, IProgress<ProgressNotificationValue>? progress, CancellationToken cancellationToken)
+        {
+            await interaction.ElicitAsync(new ModelContextProtocol.Protocol.ElicitRequestParams { Message = "confirm?" }, cancellationToken);
+            await interaction.OnNotificationAsync("notifications/message", null, cancellationToken);
+            return new ToolCallReport(
+                DateTimeOffset.UnixEpoch, Server, toolName, arguments, [],
+                new CallResultView(IsError: false, StructuredContent: null, Meta: null,
+                    Content: [new ContentBlockView("text", Text: "RESULT-OK")]));
+        }
+
+        public Task<ReadReport> ReadResourceAsync(string resourceOrTemplate, JsonObject? arguments, CancellationToken cancellationToken)
+            => Task.FromResult(new ReadReport(DateTimeOffset.UnixEpoch, Server, resourceOrTemplate, arguments, new ReadResourceView([])));
+
+        public Task<PromptCallReport> GetPromptAsync(string promptName, JsonObject arguments, CancellationToken cancellationToken)
+            => Task.FromResult(new PromptCallReport(DateTimeOffset.UnixEpoch, Server, promptName, arguments, new PromptResultView(null, [])));
+
+        public Task<IReadOnlyList<string>> CompletePromptArgumentAsync(string promptName, string argumentName, string partialValue, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<string>>([]);
+
+        public Task<IReadOnlyList<string>> CompleteTemplateArgumentAsync(string uriTemplate, string argumentName, string partialValue, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<string>>([]);
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 }

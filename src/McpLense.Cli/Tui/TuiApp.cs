@@ -34,30 +34,42 @@ internal static class TuiApp
 
         // Invocations open their own live session per server-visit (reusing the same parsed
         // command), so a tool call / read / prompt authenticates exactly the way the equivalent
-        // CLI command would - and for stdio the server process stays up across calls.
-        var connector = InvocationRenderer.ConnectorFor(command);
-        return await RenderAsync(report, console, waitForKey, bookmarkStore, connector);
+        // CLI command would - and for stdio the server process stays up across calls. A TUI
+        // interaction captures the server-initiated half of the protocol so it can be shown after
+        // each invocation (and, with --server-stream, on the next invocation when idle).
+        var interaction = new TuiServerInteraction();
+        var connector = InvocationRenderer.ConnectorFor(command, interaction);
+        return await RenderAsync(report, console, waitForKey, bookmarkStore, connector, interaction);
     }
 
     internal static Task<int> RenderAsync(
         InspectReport report,
         IAnsiConsole console,
         Func<Task> waitForKey)
-        => RenderAsync(report, console, waitForKey, bookmarkStore: null, connector: null);
+        => RenderAsync(report, console, waitForKey, bookmarkStore: null, connector: null, interaction: null);
 
     internal static Task<int> RenderAsync(
         InspectReport report,
         IAnsiConsole console,
         Func<Task> waitForKey,
         TuiBookmarkStore? bookmarkStore)
-        => RenderAsync(report, console, waitForKey, bookmarkStore, connector: null);
+        => RenderAsync(report, console, waitForKey, bookmarkStore, connector: null, interaction: null);
+
+    internal static Task<int> RenderAsync(
+        InspectReport report,
+        IAnsiConsole console,
+        Func<Task> waitForKey,
+        TuiBookmarkStore? bookmarkStore,
+        McpSessionConnector? connector)
+        => RenderAsync(report, console, waitForKey, bookmarkStore, connector, interaction: null);
 
     internal static async Task<int> RenderAsync(
         InspectReport report,
         IAnsiConsole console,
         Func<Task> waitForKey,
         TuiBookmarkStore? bookmarkStore,
-        McpSessionConnector? connector)
+        McpSessionConnector? connector,
+        TuiServerInteraction? interaction)
     {
         var servers = report.Servers;
         if (servers.Count == 0)
@@ -67,7 +79,7 @@ internal static class TuiApp
         }
 
         bookmarkStore ??= TuiBookmarkStore.InMemory();
-        var session = new TuiSession(console, waitForKey, bookmarkStore, connector);
+        var session = new TuiSession(console, waitForKey, bookmarkStore, connector, interaction);
 
         while (true)
         {
@@ -528,8 +540,40 @@ internal static class TuiApp
             ? $"[red]x {Markup.Escape(title)} (errors)[/]"
             : $"[green]+ {Markup.Escape(title)}[/]");
         console.WriteLine(result.Text);
+        RenderServerInitiated(session);
         console.MarkupLine("\n[grey]Press any key to continue...[/]");
         await session.WaitForKey();
+    }
+
+    /// <summary>
+    /// Shows the server-initiated traffic captured during (or since) the invocation: sampling /
+    /// elicitation / roots requests the server made back at us, plus any notifications. Nothing is
+    /// rendered when the server stayed quiet, so the common case is unchanged.
+    /// </summary>
+    private static void RenderServerInitiated(TuiSession session)
+    {
+        var captured = session.Interaction?.Drain();
+        if (captured is null || captured.Count == 0)
+        {
+            return;
+        }
+
+        var console = session.Console;
+        var table = new Table().RoundedBorder().BorderColor(Color.Purple);
+        table.Title = new TableTitle("server-initiated");
+        table.AddColumn("Method");
+        table.AddColumn("Detail");
+        table.AddColumn("Our response");
+        foreach (var item in captured)
+        {
+            table.AddRow(
+                Markup.Escape(item.Method),
+                Markup.Escape(item.Detail),
+                Markup.Escape(item.Response ?? "-"));
+        }
+
+        console.WriteLine();
+        console.Write(table);
     }
 
     private static async Task ShowBookmarksAsync(
@@ -928,12 +972,14 @@ internal static class TuiApp
         IAnsiConsole console,
         Func<Task> waitForKey,
         TuiBookmarkStore bookmarks,
-        McpSessionConnector? connector)
+        McpSessionConnector? connector,
+        TuiServerInteraction? interaction = null)
     {
         public IAnsiConsole Console { get; } = console;
         public Func<Task> WaitForKey { get; } = waitForKey;
         public TuiBookmarkStore Bookmarks { get; } = bookmarks;
         public McpSessionConnector? Connector { get; } = connector;
+        public TuiServerInteraction? Interaction { get; } = interaction;
         public IMcpSession? Mcp { get; set; }
 
         public async Task CloseSessionAsync()
