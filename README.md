@@ -146,6 +146,7 @@ mcplense prompts [<url>]
 mcplense call <tool-name> [<url>]
 mcplense read <uri-or-template> [<url>]
 mcplense prompt <prompt-name> [<url>]
+mcplense explain [<url>]                         # plain-language "what is this MCP" summary
 mcplense scan [<url>]                            # fact-only audit pipeline
 mcplense analyze [<url>] [--fail-on <severity>]  # scan + severity-rated findings (CI gate)
 mcplense login   {--all | --profile <name> | <url>}
@@ -169,6 +170,19 @@ mcplense scan https://server.example/mcp --findings --format json
 Rules and severities are configured in `McpLense.Config.json` under the top-level `analysis` block
 (`analysis.rules.<id>.enabled` / `.severity`, `analysis.failOn`) - a fleet policy lives in config
 rather than CLI flags. See [docs/analysis-rules.md](docs/analysis-rules.md).
+
+### Learning aids
+
+```bash
+mcplense explain https://server.example/mcp                 # narrative: identity, auth, what it exposes, findings
+mcplense explain https://server.example/mcp --format markdown > server.md   # shareable write-up
+mcplense call <tool> https://server.example/mcp --example   # generate a ready-to-edit --args template (no invocation)
+```
+
+`explain` runs the scan and narrates it in plain language. `call --example` reads the tool's input
+schema and prints a filled-in `--args` example plus the equivalent command, so a first call is
+copy-paste-edit. `--format markdown` (alias `md`) renders `explain` / `inspect` / findings as a
+shareable Markdown document.
 
 ## Targets
 

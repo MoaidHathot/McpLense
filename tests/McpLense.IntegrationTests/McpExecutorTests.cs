@@ -341,6 +341,28 @@ public class McpExecutorTests
     }
 
     [Fact]
+    public async Task Explain_StdioTarget_ProducesNarrative()
+    {
+        var outcome = await McpExecutor.ExecuteAsync(BuildCommand(AppCommand.Explain), JsonOptions, CancellationToken.None);
+
+        var report = outcome.Payload.ShouldBeOfType<McpLense.Learning.ExplainReport>();
+        report.Servers.ShouldHaveSingleItem().Lines.ShouldNotBeEmpty();
+    }
+
+    [Fact]
+    public async Task Call_Example_ProducesArgumentTemplateWithoutInvoking()
+    {
+        var command = BuildCommand(AppCommand.Call, subject: "Add") with { Example = true };
+
+        var outcome = await McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None);
+
+        var report = outcome.Payload.ShouldBeOfType<ToolExampleReport>();
+        report.ToolName.ShouldBe("Add");
+        report.Error.ShouldBeNull();
+        report.Example.ShouldNotBeNull();
+    }
+
+    [Fact]
     public async Task Observe_StdioTarget_ProducesReport()
     {
         // Observe holds the session open for command.Timeout; keep the window short.

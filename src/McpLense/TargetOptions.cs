@@ -38,6 +38,7 @@ internal enum AppCommand
     FetchResource,
     Diff,
     Analyze,
+    Explain,
     Schema
 }
 
@@ -60,7 +61,10 @@ internal enum OutputFormat
     /// (<c>analyze</c> / <c>scan --findings</c>). Lets findings flow into GitHub code scanning and
     /// other SARIF-aware security tooling. Non-findings payloads fall back to JSON.
     /// </summary>
-    Sarif
+    Sarif,
+    /// <summary>Markdown - a shareable, readable write-up. Best for <c>explain</c> / <c>inspect</c> /
+    /// findings; other payloads fall back to a fenced text block.</summary>
+    Markdown
 }
 
 /// <summary>
@@ -122,7 +126,12 @@ internal sealed record ParsedCommand(
     /// <c>analyze --since &lt;file&gt;</c>: compare the current scan against this approval snapshot and
     /// emit rug-pull findings for any tool/prompt/resource that changed since it was approved.
     /// </summary>
-    string? SincePath = null);
+    string? SincePath = null,
+    /// <summary>
+    /// <c>call &lt;tool&gt; --example</c>: instead of invoking, print a ready-to-edit example
+    /// <c>--args</c> JSON generated from the tool's input schema (a learning/first-call aid).
+    /// </summary>
+    bool Example = false);
 
 /// <summary>
 /// Resolved target description used to drive scans and other read-only operations. Public so

@@ -277,4 +277,33 @@ public class CommandLineParserVerbCoverageTests
         var parsed = CommandLineParser.Parse(["analyze", "https://h/mcp", "--format", "sarif"]);
         parsed.Format.ShouldBe(OutputFormat.Sarif);
     }
+
+    // --- explain / call --example / markdown -------------------------
+
+    [Fact]
+    public void Explain_Url_IsRecognized()
+    {
+        var parsed = CommandLineParser.Parse(["explain", "https://h/mcp"]);
+        parsed.Command.ShouldBe(AppCommand.Explain);
+    }
+
+    [Fact]
+    public void Call_Example_SetsFlag()
+    {
+        var parsed = CommandLineParser.Parse(["call", "Echo", "https://h/mcp", "--example"]);
+        parsed.Example.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Example_OnInspect_Throws()
+        => Should.Throw<UserInputException>(() => CommandLineParser.Parse(["inspect", "https://h/mcp", "--example"]));
+
+    [Theory]
+    [InlineData("markdown")]
+    [InlineData("md")]
+    public void Format_Markdown_IsParsed(string value)
+    {
+        var parsed = CommandLineParser.Parse(["explain", "https://h/mcp", "--format", value]);
+        parsed.Format.ShouldBe(OutputFormat.Markdown);
+    }
 }

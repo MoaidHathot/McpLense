@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using McpLense.Analysis;
+using McpLense.Learning;
 using McpLense.Scanning;
 
 namespace McpLense;
@@ -15,6 +16,7 @@ internal static class TextFormatter
         ResourceListReport report => FormatResourceList(report, jsonOptions),
         PromptListReport report => FormatServerItems("prompts", report.Servers, FormatPrompt, jsonOptions),
         ToolCallReport report => FormatToolCall(report, jsonOptions),
+        ToolExampleReport report => FormatToolExample(report),
         ReadReport report => FormatRead(report, jsonOptions),
         PromptCallReport report => FormatPromptCall(report, jsonOptions),
         AuthSessionReport report => FormatAuthSession(report),
@@ -23,8 +25,59 @@ internal static class TextFormatter
         ScanDiff.ScanDiffReport diff => FormatScanDiff(diff, jsonOptions),
         FindingsReport findings => FormatFindings(findings),
         AnalyzedScanReport analyzed => FormatScanReport(analyzed.Scan, jsonOptions) + "\n\n" + FormatFindings(analyzed.Findings),
+        ExplainReport explain => FormatExplain(explain),
         _ => JsonSerializer.Serialize(payload, jsonOptions)
     };
+
+    /// <summary>Narrative explanation: a short paragraph of plain-language lines per server.</summary>
+    private static string FormatExplain(ExplainReport report)
+    {
+        var sb = new StringBuilder();
+        foreach (var server in report.Servers)
+        {
+            foreach (var line in server.Lines)
+            {
+                sb.AppendLine(line);
+            }
+
+            sb.AppendLine();
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Shows a generated, ready-to-edit example call for <c>call --example</c>.</summary>
+    private static string FormatToolExample(ToolExampleReport report)
+    {
+        if (report.Error is not null)
+        {
+            return $"call {report.ToolName}: {report.Error}";
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"tool: {report.ToolName}   {report.Server.Target}");
+        if (!string.IsNullOrWhiteSpace(report.Description))
+        {
+            sb.AppendLine($"  {report.Description}");
+        }
+
+        sb.AppendLine(report.RequiredArguments.Count == 0
+            ? "  required: (none)"
+            : $"  required: {string.Join(", ", report.RequiredArguments)}");
+        sb.AppendLine("  example --args:");
+        var json = report.Example?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "{}";
+        foreach (var line in json.ReplaceLineEndings("\n").Split('\n'))
+        {
+            sb.AppendLine($"    {line}");
+        }
+
+        if (!string.IsNullOrEmpty(report.EquivalentCommand))
+        {
+            sb.Append($"  run: {report.EquivalentCommand}");
+        }
+
+        return sb.ToString().TrimEnd();
+    }
 
     /// <summary>Human-readable findings: one block per server, most-severe-first, with evidence + fix.</summary>
     private static string FormatFindings(FindingsReport report)

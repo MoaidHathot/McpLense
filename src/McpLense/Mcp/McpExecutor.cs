@@ -682,6 +682,41 @@ internal static partial class McpExecutor
         return new ExecutionOutcome(new ToolListReport(DateTimeOffset.UtcNow, servers.Zip(results, ToServerItems).ToArray()), results.Any(result => result.Error is not null));
     }
 
+    /// <summary>
+    /// <c>call --example</c>: connect, list tools, and emit a generated example for the named tool
+    /// instead of invoking it. A learning aid - shows the exact argument shape to fill in.
+    /// </summary>
+    private static async Task<ExecutionOutcome> ToolExampleAsync(ResolvedServer server, string toolName, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var result = await WithClientAsync(server, timeout, cancellationToken, async (client, ct) =>
+        {
+            var tools = await LoadToolsAsync(client, ct);
+            return tools.FirstOrDefault(tool => string.Equals(tool.Name, toolName, StringComparison.Ordinal)) is { } match
+                ? (Found: true, Tool: match, Available: string.Empty)
+                : (Found: false, Tool: (ToolInfo?)null, Available: tools.Count == 0 ? "(none)" : string.Join(", ", tools.Select(t => t.Name)));
+        });
+
+        var reference = ToReference(server);
+        if (result.Error is not null)
+        {
+            return new ExecutionOutcome(new ToolExampleReport(DateTimeOffset.UtcNow, reference, toolName, null, null, [], null, result.Error), true);
+        }
+
+        var (found, tool, available) = result.Value;
+        if (!found || tool is null)
+        {
+            return new ExecutionOutcome(
+                new ToolExampleReport(DateTimeOffset.UtcNow, reference, toolName, null, null, [], null, $"Tool '{toolName}' not found. Available: {available}."),
+                true);
+        }
+
+        var example = Learning.SchemaSampleGenerator.Generate(tool.InputSchema);
+        var required = Learning.SchemaSampleGenerator.RequiredProperties(tool.InputSchema);
+        var targetArg = server.Url is not null ? server.Url.ToString() : "<target>";
+        var equivalent = $"mcplense call {toolName} {targetArg} --args '{example.ToJsonString()}'";
+        return new ExecutionOutcome(new ToolExampleReport(DateTimeOffset.UtcNow, reference, tool.Name, tool.Description, example, required, equivalent), false);
+    }
+
     private static async Task<ExecutionOutcome> ListResourcesAsync(IReadOnlyList<ResolvedServer> servers, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var results = await Task.WhenAll(servers.Select(server => WithClientAsync(server, timeout, cancellationToken, async (client, ct) =>

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using McpLense.Analysis;
 using McpLense.Diagnostics;
+using McpLense.Learning;
 using McpLense.Mcp;
 using McpLense.Scanning;
 using McpLense.Scanning.TargetResolution;
@@ -22,6 +23,7 @@ internal static partial class McpExecutor
             new DiffHandler(),
             new ScanHandler(),
             new AnalyzeHandler(),
+            new ExplainHandler(),
             new AuthScanHandler(),
             new ObserveHandler(),
             new FetchResourceHandler(),
@@ -182,6 +184,23 @@ internal static partial class McpExecutor
             var (findings, gate) = await AnalyzeScanAsync(scanReport, command, cancellationToken).ConfigureAwait(false);
             // HasErrors doubles as the CI-gate signal: non-zero exit when findings cross the threshold.
             return new ExecutionOutcome(findings, gate);
+        }
+    }
+
+    private sealed class ExplainHandler : ICommandHandler
+    {
+        public AppCommand Command => AppCommand.Explain;
+        // Tier None: explain runs the scan pipeline itself (like scan/analyze) then narrates it.
+        public ServerResolution Resolution => ServerResolution.None;
+
+        public async Task<ExecutionOutcome> ExecuteAsync(ParsedCommand command, IReadOnlyList<ResolvedServer>? servers, JsonSerializerOptions jsonOptions, CancellationToken cancellationToken)
+        {
+            var scanReport = await RunScanAsync(command, cancellationToken).ConfigureAwait(false);
+            var configPaths = TargetConfigLoading.ResolveScanConfigPaths(command.Target.ProfilePaths);
+            var config = await ScanConfigLoader.LoadAsync(configPaths, cancellationToken).ConfigureAwait(false);
+            var findings = new FindingsAnalyzer().Analyze(scanReport, config.Analysis);
+            var report = ExplainBuilder.Build(scanReport, findings);
+            return new ExecutionOutcome(report, scanReport.Servers.Any(s => s.Error is not null));
         }
     }
 
@@ -369,7 +388,9 @@ internal static partial class McpExecutor
         public ServerResolution Resolution => ServerResolution.ResolveAndAuthenticate;
 
         public async Task<ExecutionOutcome> ExecuteAsync(ParsedCommand command, IReadOnlyList<ResolvedServer>? servers, JsonSerializerOptions jsonOptions, CancellationToken cancellationToken)
-            => await CallToolAsync(SingleServer(servers!), command.Subject!, command.Arguments!, command.Timeout, command.ProgressEnabled, cancellationToken);
+            => command.Example
+                ? await ToolExampleAsync(SingleServer(servers!), command.Subject!, command.Timeout, cancellationToken)
+                : await CallToolAsync(SingleServer(servers!), command.Subject!, command.Arguments!, command.Timeout, command.ProgressEnabled, cancellationToken);
     }
 
     private sealed class ReadHandler : ICommandHandler

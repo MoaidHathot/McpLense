@@ -48,6 +48,20 @@ mcplense call resolve-library-id https://mcp.context7.com/mcp \
   --args '{"libraryName":"spectre.console"}'
 ```
 
+Add `--example` to print a ready-to-edit `--args` template generated from the tool's
+input schema (plus the equivalent command) WITHOUT invoking - a first-call aid.
+
+```bash
+mcplense call resolve-library-id https://mcp.context7.com/mcp --example
+```
+
+### `mcplense explain <url|@target>`
+
+Plain-language summary of a server: identity, auth posture, how many tools/resources/
+prompts it exposes, which tools are server-declared destructive/open-world, and a
+one-line findings summary. Built for learning/triage. `--format markdown` renders a
+shareable write-up; `--format json` gives the structured form.
+
 ### `mcplense read <uri> <url|@target> [--args '<json>']`
 
 Read a resource by URI. `--args` may carry template-substitution variables when

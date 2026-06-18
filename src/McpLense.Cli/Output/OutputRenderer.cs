@@ -14,6 +14,7 @@ internal static class OutputRenderer
         OutputFormat.Jsonl => RenderJsonl(payload, jsonOptions),
         OutputFormat.Dumpify => payload.DumpText(),
         OutputFormat.Sarif => SarifRenderer.Render(payload, jsonOptions),
+        OutputFormat.Markdown => MarkdownRenderer.Render(payload, jsonOptions),
         _ => TextFormatter.Format(payload, jsonOptions)
     };
 

@@ -18,7 +18,8 @@ internal static class CommandLineParser
         "http-only",
         "interactive",
         "server-stream",
-        "findings"
+        "findings",
+        "example"
     };
 
     /// <summary>Long options that can appear multiple times (repeatable).</summary>
@@ -66,12 +67,12 @@ internal static class CommandLineParser
         ["check-authorization-servers"] = new([AppCommand.Scan, AppCommand.Analyze], "--check-authorization-servers is only valid for 'scan' and 'analyze'."),
         ["baseline"] = new([AppCommand.Scan], "--baseline is only valid for 'scan'."),
         ["diff"] = new([AppCommand.Scan, AppCommand.Diff], "--diff is only valid for 'scan' and 'diff'."),
-        ["scan-plugin"] = new([AppCommand.Scan, AppCommand.Analyze], "--scan-plugin is only valid for 'scan' and 'analyze'."),
-        ["enable"] = new([AppCommand.Scan, AppCommand.Observe, AppCommand.Analyze], "--enable / --disable are only valid for 'scan', 'observe', and 'analyze'."),
-        ["disable"] = new([AppCommand.Scan, AppCommand.Observe, AppCommand.Analyze], "--enable / --disable are only valid for 'scan', 'observe', and 'analyze'."),
-        ["parallel-servers"] = new([AppCommand.Scan, AppCommand.Analyze], "--parallel-servers is only valid for 'scan' and 'analyze'."),
-        ["targets-from"] = new([AppCommand.Scan, AppCommand.Analyze], "--targets-from is only valid for 'scan' and 'analyze'."),
-        ["http-only"] = new([AppCommand.Scan, AppCommand.Analyze], "--http-only is only valid for 'scan' and 'analyze'."),
+        ["scan-plugin"] = new([AppCommand.Scan, AppCommand.Analyze, AppCommand.Explain], "--scan-plugin is only valid for 'scan', 'analyze', and 'explain'."),
+        ["enable"] = new([AppCommand.Scan, AppCommand.Observe, AppCommand.Analyze, AppCommand.Explain], "--enable / --disable are only valid for 'scan', 'observe', 'analyze', and 'explain'."),
+        ["disable"] = new([AppCommand.Scan, AppCommand.Observe, AppCommand.Analyze, AppCommand.Explain], "--enable / --disable are only valid for 'scan', 'observe', 'analyze', and 'explain'."),
+        ["parallel-servers"] = new([AppCommand.Scan, AppCommand.Analyze, AppCommand.Explain], "--parallel-servers is only valid for 'scan', 'analyze', and 'explain'."),
+        ["targets-from"] = new([AppCommand.Scan, AppCommand.Analyze, AppCommand.Explain], "--targets-from is only valid for 'scan', 'analyze', and 'explain'."),
+        ["http-only"] = new([AppCommand.Scan, AppCommand.Analyze, AppCommand.Explain], "--http-only is only valid for 'scan', 'analyze', and 'explain'."),
         ["default-scope"] = new(
             [AppCommand.Scan, AppCommand.AuthScan, AppCommand.Inspect, AppCommand.Tools, AppCommand.Resources, AppCommand.Prompts, AppCommand.Call, AppCommand.Read, AppCommand.Prompt, AppCommand.FetchResource, AppCommand.Observe, AppCommand.Analyze],
             "--default-scope is only valid for scan / inspect / read / call / prompt / fetch-resource / observe / auth-scan / tools / resources / prompts / analyze."),
@@ -80,7 +81,8 @@ internal static class CommandLineParser
         ["findings"] = new([AppCommand.Scan], "--findings is only valid for 'scan' ('analyze' always produces findings)."),
         ["fail-on"] = new([AppCommand.Scan, AppCommand.Analyze], "--fail-on is only valid for 'scan' (with --findings) and 'analyze'."),
         ["approve"] = new([AppCommand.Analyze], "--approve is only valid for 'analyze'."),
-        ["since"] = new([AppCommand.Analyze], "--since is only valid for 'analyze'.")
+        ["since"] = new([AppCommand.Analyze], "--since is only valid for 'analyze'."),
+        ["example"] = new([AppCommand.Call], "--example is only valid for 'call'.")
     };
 
     /// <summary>Every recognised long option = universal ∪ restricted keys. Derived so the two can't drift.</summary>
@@ -262,6 +264,7 @@ internal static class CommandLineParser
         }
         var approvePath = GetSingle(options, "approve");
         var sincePath = GetSingle(options, "since");
+        var example = string.Equals(GetSingle(options, "example"), "true", StringComparison.OrdinalIgnoreCase);
         var scanPlugins = GetMany(options, "scan-plugin");
 
         var targetsFromPaths = GetMany(options, "targets-from");
@@ -317,7 +320,8 @@ internal static class CommandLineParser
             Findings: findings,
             FailOn: failOn,
             ApprovePath: approvePath,
-            SincePath: sincePath);
+            SincePath: sincePath,
+            Example: example);
     }
 
     /// <summary>
@@ -460,6 +464,7 @@ internal static class CommandLineParser
             case "fetch-resource": command = AppCommand.FetchResource; return true;
             case "diff": command = AppCommand.Diff; return true;
             case "analyze": command = AppCommand.Analyze; return true;
+            case "explain": command = AppCommand.Explain; return true;
             case "schema": command = AppCommand.Schema; return true;
             default: command = default; return false;
         }
@@ -928,6 +933,7 @@ internal static class CommandLineParser
         "jsonl" or "ndjson" => OutputFormat.Jsonl,
         "dump" or "dumpify" => OutputFormat.Dumpify,
         "sarif" => OutputFormat.Sarif,
+        "markdown" or "md" => OutputFormat.Markdown,
         _ => throw new UserInputException($"Unknown format '{value}'.")
     };
 

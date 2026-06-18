@@ -252,6 +252,24 @@ Examples
 Run 'mcplense help' for targets, auth, config, and the full reference.
 """,
 
+        [AppCommand.Explain] = """
+mcplense explain - a plain-language summary of what an MCP server is and whether it looks safe.
+
+Usage
+  mcplense explain [<url|@target>] [target-options] [common-options]
+
+Runs the scan pipeline, then narrates it: server identity, auth posture (e.g. "anonymous - anyone
+who can reach it can use it"), how many tools/resources/prompts it exposes, which tools the server
+declares destructive or open-world, and a one-line findings summary. Use `--format markdown` for a
+shareable write-up, or `--format json` for the structured form.
+
+Examples
+  mcplense explain https://api.example.com/mcp
+  mcplense explain https://api.example.com/mcp --format markdown > server.md
+
+Run 'mcplense help' for targets, auth, config, and the full reference.
+""",
+
         [AppCommand.AuthScan] = """
 mcplense auth-scan - minimal, read-only auth classification + profile probing.
 

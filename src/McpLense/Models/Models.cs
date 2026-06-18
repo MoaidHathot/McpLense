@@ -115,6 +115,17 @@ internal sealed record ToolCallReport(
     string? Error = null,
     ConnectionAuthInfo? AuthStatus = null);
 
+/// <summary>Output of <c>call &lt;tool&gt; --example</c>: a generated, ready-to-edit argument template.</summary>
+internal sealed record ToolExampleReport(
+    DateTimeOffset GeneratedAt,
+    ServerReference Server,
+    string ToolName,
+    string? Description,
+    JsonNode? Example,
+    IReadOnlyList<string> RequiredArguments,
+    string? EquivalentCommand,
+    string? Error = null);
+
 internal sealed record ReadReport(
     DateTimeOffset GeneratedAt,
     ServerReference Server,
