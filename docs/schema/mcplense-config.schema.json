@@ -42,6 +42,37 @@
           }
         }
       }
+    },
+    "analysis": {
+      "type": "object",
+      "description": "Findings/analysis layer configuration (consumed by 'mcplense analyze' and 'scan --findings'). Opinionated severities live here only; the scan checks stay fact-only.",
+      "additionalProperties": false,
+      "properties": {
+        "failOn": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"],
+          "description": "Default CI-gate threshold: the process exits non-zero when any finding meets or exceeds it. '--fail-on' overrides this."
+        },
+        "rules": {
+          "type": "object",
+          "description": "Per-rule overrides keyed by rule id (e.g. 'prompt-injection', 'open-shape-input', 'weak-cors').",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Turn this rule on or off (overrides its built-in default)."
+              },
+              "severity": {
+                "type": "string",
+                "enum": ["info", "low", "medium", "high", "critical"],
+                "description": "Override the severity this rule assigns to its findings."
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

@@ -123,6 +123,17 @@ Rules and their severities are configured in `McpLense.Config.json` under the to
 `analysis` block (`analysis.rules.<id>.enabled` / `.severity`, `analysis.failOn`), so a
 fleet policy lives in config rather than CLI flags. See `docs/analysis-rules.md`.
 
+### `mcplense doctor <url|@target>`
+
+Staged connectivity triage for "why won't this MCP connect?": walks DNS → TCP → TLS →
+MCP initialize → auth classification and reports exactly which stage broke, with a fix-it
+hint (auth required, transport mismatch, expired cert, ...). Stdio targets get spawn +
+initialize. Exit code is non-zero if any stage failed. Distinct from `scan` (an audit).
+
+### `mcplense serve`
+
+Runs McpLense itself as a stdio MCP server (see Helper / meta below).
+
 ### `mcplense auth-scan <url|@target>`
 
 Lightweight classification-only path: probe + classify + (optionally) profile
@@ -210,17 +221,24 @@ for an agent to invoke as a subprocess.)
 | `-- <command...>` | Alternative stdio form (everything after `--` becomes the command line). |
 | `--cwd <path>` | Working directory for stdio targets. |
 | `--env NAME=VALUE` | Environment variable for stdio targets. |
-| `--format <text\|json\|dumpify>` | Output format (default `text`). |
+| `--format <text\|json\|markdown\|sarif\|dumpify>` | Output format (default `text`). `sarif`/`markdown` are findings/report oriented. |
+| `--trace` | Log every HTTP MCP request/response (method, URL, JSON-RPC body, status, timing) to stderr. |
+| `--watch <seconds>` | Re-run a read-only command (inspect/tools/resources/prompts/scan/analyze/explain/auth-scan/doctor) on an interval; flags when the output changed. Ctrl+C stops. |
 
 ## Picking flags by user intent
 
 | User intent | Flag combo |
 | --- | --- |
 | Just want JSON I can pipe | `--format json` |
+| Security findings with a CI gate | `mcplense analyze ... --fail-on high` |
+| Findings for GitHub code scanning | `mcplense analyze ... --format sarif` |
+| Detect tool changes since I trusted it | `analyze --approve f.json` then `analyze --since f.json` |
+| Why won't it connect / see the wire | `mcplense doctor ...` / add `--trace` |
+| How do I call this tool | `mcplense call <tool> ... --example` |
 | Don't show the auth/matched/AuthProbe lines | `--quiet --format json` |
 | Show me everything (headers, auth picks, probe reasoning) | `--verbose` |
 | I want to test the bare unauthenticated surface | `--no-auth` |
 | I only want the auth classification, no enumeration | `mcplense auth-scan ... --classify-only` |
 | I want to also see RFC 8414 metadata | `mcplense scan ... --check-authorization-servers` |
 | Save and compare scans over time | `--baseline ./baselines/` then `--diff <path>` |
-| Fleet of MCPs in one go | One `mcplense scan` per URL, or wrap in a loop / xargs |
+| Fleet of MCPs in one go | `--targets-from fleet.txt --parallel-servers 8` |
