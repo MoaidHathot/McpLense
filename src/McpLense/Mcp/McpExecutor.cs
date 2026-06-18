@@ -683,6 +683,31 @@ internal static partial class McpExecutor
     }
 
     /// <summary>
+    /// Stdio handshake for <c>doctor</c>: spawns the stdio server and attempts <c>initialize</c> +
+    /// a tool list, honoring cwd/env (unlike the HTTP-only <see cref="McpHandshakeProbe"/>). Returns
+    /// a <see cref="HandshakeResult"/> rather than throwing.
+    /// </summary>
+    internal static async Task<HandshakeResult> TryStdioHandshakeAsync(ResolvedServer server, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout);
+        try
+        {
+            await using var client = await ConnectStdioAsync(server, timeout, McpConnectOptions.Default, cts.Token).ConfigureAwait(false);
+            var tools = await LoadToolsAsync(client, cts.Token).ConfigureAwait(false);
+            return new HandshakeResult(Success: true, ToolCount: tools.Count);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new HandshakeResult(Success: false, Error: FormatException(ex));
+        }
+    }
+
+    /// <summary>
     /// <c>call --example</c>: connect, list tools, and emit a generated example for the named tool
     /// instead of invoking it. A learning aid - shows the exact argument shape to fill in.
     /// </summary>

@@ -55,6 +55,11 @@ internal static class McpHttpClientFactory
             chain = new StandaloneStreamSuppressingHandler(chain);
         }
 
+        if (McpTrace.Enabled)
+        {
+            chain = new TraceLoggingHandler(chain);
+        }
+
         return chain;
     }
 }

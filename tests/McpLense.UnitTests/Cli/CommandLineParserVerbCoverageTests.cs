@@ -306,4 +306,24 @@ public class CommandLineParserVerbCoverageTests
         var parsed = CommandLineParser.Parse(["explain", "https://h/mcp", "--format", value]);
         parsed.Format.ShouldBe(OutputFormat.Markdown);
     }
+
+    [Fact]
+    public void Doctor_Url_IsRecognized()
+        => CommandLineParser.Parse(["doctor", "https://h/mcp"]).Command.ShouldBe(AppCommand.Doctor);
+
+    [Fact]
+    public void Watch_OnInspect_IsParsed()
+        => CommandLineParser.Parse(["inspect", "https://h/mcp", "--watch", "5"]).WatchSeconds.ShouldBe(5);
+
+    [Fact]
+    public void Watch_NonPositive_Throws()
+        => Should.Throw<UserInputException>(() => CommandLineParser.Parse(["inspect", "https://h/mcp", "--watch", "0"]));
+
+    [Fact]
+    public void Watch_OnCall_Throws()
+        => Should.Throw<UserInputException>(() => CommandLineParser.Parse(["call", "Echo", "https://h/mcp", "--watch", "5"]));
+
+    [Fact]
+    public void Trace_IsParsed()
+        => CommandLineParser.Parse(["inspect", "https://h/mcp", "--trace"]).Trace.ShouldBeTrue();
 }

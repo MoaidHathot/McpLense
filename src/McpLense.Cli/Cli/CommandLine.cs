@@ -19,7 +19,8 @@ internal static class CommandLineParser
         "interactive",
         "server-stream",
         "findings",
-        "example"
+        "example",
+        "trace"
     };
 
     /// <summary>Long options that can appear multiple times (repeatable).</summary>
@@ -49,7 +50,7 @@ internal static class CommandLineParser
     {
         "config", "server", "profiles", "profile", "try-all", "all", "name", "url",
         "transport", "header", "command", "command-arg", "cwd", "env", "format",
-        "timeout", "auth", "auth-token", "no-auth", "quiet", "verbose"
+        "timeout", "auth", "auth-token", "no-auth", "quiet", "verbose", "trace"
     };
 
     /// <summary>
@@ -82,7 +83,10 @@ internal static class CommandLineParser
         ["fail-on"] = new([AppCommand.Scan, AppCommand.Analyze], "--fail-on is only valid for 'scan' (with --findings) and 'analyze'."),
         ["approve"] = new([AppCommand.Analyze], "--approve is only valid for 'analyze'."),
         ["since"] = new([AppCommand.Analyze], "--since is only valid for 'analyze'."),
-        ["example"] = new([AppCommand.Call], "--example is only valid for 'call'.")
+        ["example"] = new([AppCommand.Call], "--example is only valid for 'call'."),
+        ["watch"] = new(
+            [AppCommand.Inspect, AppCommand.Tools, AppCommand.Resources, AppCommand.Prompts, AppCommand.Scan, AppCommand.Analyze, AppCommand.Explain, AppCommand.AuthScan, AppCommand.Doctor],
+            "--watch is only valid for read-only commands (inspect / tools / resources / prompts / scan / analyze / explain / auth-scan / doctor).")
     };
 
     /// <summary>Every recognised long option = universal ∪ restricted keys. Derived so the two can't drift.</summary>
@@ -265,6 +269,16 @@ internal static class CommandLineParser
         var approvePath = GetSingle(options, "approve");
         var sincePath = GetSingle(options, "since");
         var example = string.Equals(GetSingle(options, "example"), "true", StringComparison.OrdinalIgnoreCase);
+        int? watchSeconds = null;
+        if (GetSingle(options, "watch") is { } watchRaw)
+        {
+            if (!int.TryParse(watchRaw, out var seconds) || seconds <= 0)
+            {
+                throw new UserInputException($"--watch requires a positive number of seconds (got '{watchRaw}').");
+            }
+
+            watchSeconds = seconds;
+        }
         var scanPlugins = GetMany(options, "scan-plugin");
 
         var targetsFromPaths = GetMany(options, "targets-from");
@@ -321,7 +335,9 @@ internal static class CommandLineParser
             FailOn: failOn,
             ApprovePath: approvePath,
             SincePath: sincePath,
-            Example: example);
+            Example: example,
+            WatchSeconds: watchSeconds,
+            Trace: string.Equals(GetSingle(options, "trace"), "true", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -465,6 +481,7 @@ internal static class CommandLineParser
             case "diff": command = AppCommand.Diff; return true;
             case "analyze": command = AppCommand.Analyze; return true;
             case "explain": command = AppCommand.Explain; return true;
+            case "doctor": command = AppCommand.Doctor; return true;
             case "schema": command = AppCommand.Schema; return true;
             default: command = default; return false;
         }

@@ -363,6 +363,18 @@ public class McpExecutorTests
     }
 
     [Fact]
+    public async Task Doctor_StdioTarget_RunsStagesAndSucceeds()
+    {
+        var outcome = await McpExecutor.ExecuteAsync(BuildCommand(AppCommand.Doctor), JsonOptions, CancellationToken.None);
+
+        outcome.HasErrors.ShouldBeFalse();
+        var report = outcome.Payload.ShouldBeOfType<DoctorReport>();
+        var server = report.Servers.ShouldHaveSingleItem();
+        server.Ok.ShouldBeTrue();
+        server.Stages.ShouldContain(s => s.Name == "mcp-initialize" && s.Status == DoctorStatus.Ok);
+    }
+
+    [Fact]
     public async Task Observe_StdioTarget_ProducesReport()
     {
         // Observe holds the session open for command.Timeout; keep the window short.

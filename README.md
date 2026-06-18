@@ -147,6 +147,7 @@ mcplense call <tool-name> [<url>]
 mcplense read <uri-or-template> [<url>]
 mcplense prompt <prompt-name> [<url>]
 mcplense explain [<url>]                         # plain-language "what is this MCP" summary
+mcplense doctor [<url>]                          # staged connectivity triage ("why won't it connect?")
 mcplense scan [<url>]                            # fact-only audit pipeline
 mcplense analyze [<url>] [--fail-on <severity>]  # scan + severity-rated findings (CI gate)
 mcplense login   {--all | --profile <name> | <url>}
@@ -183,6 +184,19 @@ mcplense call <tool> https://server.example/mcp --example   # generate a ready-t
 schema and prints a filled-in `--args` example plus the equivalent command, so a first call is
 copy-paste-edit. `--format markdown` (alias `md`) renders `explain` / `inspect` / findings as a
 shareable Markdown document.
+
+### Debugging aids
+
+```bash
+mcplense doctor https://server.example/mcp          # DNS -> TCP -> TLS -> MCP initialize -> auth, with hints
+mcplense inspect https://server.example/mcp --trace # log every JSON-RPC request/response to stderr
+mcplense inspect https://server.example/mcp --watch 5   # re-run every 5s, flag when the output changes
+```
+
+`doctor` walks the connection stage by stage and tells you exactly where it broke (and how to fix
+it) - built for "why won't my server connect?". `--trace` logs the HTTP wire traffic (method, URL,
+JSON-RPC body, status, timing) to stderr while the command runs. `--watch <seconds>` re-runs any
+read-only command on an interval and flags when the rendered output changed - a tight dev loop.
 
 ## Targets
 

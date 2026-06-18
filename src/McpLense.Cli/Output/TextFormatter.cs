@@ -26,8 +26,38 @@ internal static class TextFormatter
         FindingsReport findings => FormatFindings(findings),
         AnalyzedScanReport analyzed => FormatScanReport(analyzed.Scan, jsonOptions) + "\n\n" + FormatFindings(analyzed.Findings),
         ExplainReport explain => FormatExplain(explain),
+        DoctorReport doctor => FormatDoctor(doctor),
         _ => JsonSerializer.Serialize(payload, jsonOptions)
     };
+
+    /// <summary>Staged connectivity triage: one line per stage with a status marker + hint.</summary>
+    private static string FormatDoctor(DoctorReport report)
+    {
+        var sb = new StringBuilder();
+        foreach (var server in report.Servers)
+        {
+            sb.AppendLine($"doctor: {(server.Ok ? "ok" : "PROBLEM")}   {server.Target} [{server.Transport}]");
+            foreach (var stage in server.Stages)
+            {
+                var marker = stage.Status switch
+                {
+                    DoctorStatus.Ok => "+",
+                    DoctorStatus.Warn => "!",
+                    DoctorStatus.Fail => "x",
+                    _ => "-"
+                };
+                sb.AppendLine($"  [{marker}] {stage.Name}: {stage.Detail}");
+                if (!string.IsNullOrEmpty(stage.Hint))
+                {
+                    sb.AppendLine($"      hint: {stage.Hint}");
+                }
+            }
+
+            sb.AppendLine();
+        }
+
+        return sb.ToString().TrimEnd();
+    }
 
     /// <summary>Narrative explanation: a short paragraph of plain-language lines per server.</summary>
     private static string FormatExplain(ExplainReport report)

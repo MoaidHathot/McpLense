@@ -2,6 +2,28 @@
 
 Living roadmap.
 
+## Delivered in 0.16.0 - debugging aids (Phase 4)
+
+Developer-facing diagnostics for people building their own MCP servers.
+
+- **`mcplense doctor <url>`**: staged connectivity triage - DNS -> TCP -> TLS -> MCP initialize ->
+  auth classification - reporting exactly which stage broke with a fix-it hint (auth required,
+  transport mismatch, expired cert, ...). Stdio targets get spawn + initialize. Non-zero exit on a
+  failed stage. `DoctorRunner` + `McpExecutor.TryStdioHandshakeAsync` for the stdio path.
+- **`--trace`**: logs every HTTP MCP request/response (method, URL, JSON-RPC body, status,
+  content-type, timing) to stderr via a `TraceLoggingHandler` inserted into the shared HTTP client
+  factory. Buffers the request body (never consuming the sent content) and only reads non-streaming
+  responses, so it can't break a live call. Works across every command that connects over HTTP.
+- **`--watch <seconds>`**: re-runs a read-only command on an interval, clearing + re-rendering each
+  cycle and flagging when the rendered output changed; Ctrl+C stops cleanly. A tight dev loop.
+
+Deferred: stdio child-process stderr capture (the doctor stdio failure hint covers the common need;
+full capture needs deeper SDK transport work).
+
+Build + test state: Release `-warnaserror` clean. 818 unit + 73 integration + 37 E2E + 6 gated.
+
+Remaining: Phase 5 - Section-2 checks (callMalformed / tlsDeep / tokenClaims) + `mcplense serve`.
+
 ## Delivered in 0.15.0 - learning aids (Phase 3)
 
 Make any MCP easy to understand and a first call easy to write.

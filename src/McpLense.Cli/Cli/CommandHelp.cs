@@ -270,6 +270,24 @@ Examples
 Run 'mcplense help' for targets, auth, config, and the full reference.
 """,
 
+        [AppCommand.Doctor] = """
+mcplense doctor - "why won't this MCP connect?" staged connectivity triage.
+
+Usage
+  mcplense doctor [<url|@target>] [target-options] [common-options]
+
+Walks DNS -> TCP -> TLS -> MCP initialize -> auth classification and reports exactly which stage
+failed, with a hint (e.g. "the transport may be mismatched - try --transport sse", or "the server
+requires authentication - pass --profile"). For stdio targets it runs the spawn + initialize. Exit
+code is non-zero if any stage failed. Distinct from `scan` (an audit) - this is a first-aid kit.
+
+Examples
+  mcplense doctor https://api.example.com/mcp
+  mcplense doctor -- npx -y @modelcontextprotocol/server-everything
+
+Run 'mcplense help' for targets, auth, config, and the full reference.
+""",
+
         [AppCommand.AuthScan] = """
 mcplense auth-scan - minimal, read-only auth classification + profile probing.
 

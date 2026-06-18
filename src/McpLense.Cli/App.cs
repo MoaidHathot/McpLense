@@ -23,6 +23,10 @@ internal static class App
         {
             var command = CommandLineParser.Parse(args);
 
+            // --trace: enable wire-level HTTP logging for the rest of the process (writes to stderr,
+            // so stdout/the result stays clean).
+            McpTrace.Enabled = command.Trace;
+
             if (command.Command is AppCommand.Help)
             {
                 Console.WriteLine(CommandHelp.For(command.Subject));
@@ -58,6 +62,11 @@ internal static class App
                 return interactive.HasErrors ? 1 : 0;
             }
 
+            if (command.WatchSeconds is { } watchSeconds)
+            {
+                return await RunWatchAsync(command, watchSeconds);
+            }
+
             var result = await McpExecutor.ExecuteAsync(command, JsonOptions, CancellationToken.None);
             WriteOutput(command.Format, result.Payload);
             return result.HasErrors ? 1 : 0;
@@ -88,6 +97,65 @@ internal static class App
     private static void WriteOutput(OutputFormat format, object payload)
     {
         Console.WriteLine(OutputRenderer.Render(format, payload, JsonOptions));
+    }
+
+    /// <summary>
+    /// Re-runs a read-only command on an interval, clearing + re-rendering each cycle and flagging
+    /// when the rendered output changed. Ctrl+C stops the loop cleanly. A dev loop for iterating on
+    /// a server under development. Returns the exit code of the last run.
+    /// </summary>
+    private static async Task<int> RunWatchAsync(ParsedCommand command, int intervalSeconds)
+    {
+        using var cts = new CancellationTokenSource();
+        ConsoleCancelEventHandler handler = (_, e) => { e.Cancel = true; cts.Cancel(); };
+        Console.CancelKeyPress += handler;
+
+        var once = command with { WatchSeconds = null };
+        string? previous = null;
+        var lastHasErrors = false;
+        try
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                string rendered;
+                try
+                {
+                    var result = await McpExecutor.ExecuteAsync(once, JsonOptions, cts.Token);
+                    rendered = OutputRenderer.Render(once.Format, result.Payload, JsonOptions);
+                    lastHasErrors = result.HasErrors;
+                }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    rendered = $"error: {ex.Message}";
+                    lastHasErrors = true;
+                }
+
+                var changed = previous is not null && previous != rendered;
+                try { Console.Clear(); } catch { /* not a TTY */ }
+                Console.WriteLine($"[watch every {intervalSeconds}s | {DateTime.Now:HH:mm:ss} | {(previous is null ? "first run" : changed ? "CHANGED" : "unchanged")} | Ctrl+C to stop]");
+                Console.WriteLine(rendered);
+                previous = rendered;
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            Console.CancelKeyPress -= handler;
+        }
+
+        return lastHasErrors ? 1 : 0;
     }
 
     private static string GetVersion()

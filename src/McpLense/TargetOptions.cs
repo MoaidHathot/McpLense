@@ -39,6 +39,7 @@ internal enum AppCommand
     Diff,
     Analyze,
     Explain,
+    Doctor,
     Schema
 }
 
@@ -131,7 +132,17 @@ internal sealed record ParsedCommand(
     /// <c>call &lt;tool&gt; --example</c>: instead of invoking, print a ready-to-edit example
     /// <c>--args</c> JSON generated from the tool's input schema (a learning/first-call aid).
     /// </summary>
-    bool Example = false);
+    bool Example = false,
+    /// <summary>
+    /// <c>--watch &lt;seconds&gt;</c>: re-run a read-only command on this interval, re-rendering and
+    /// flagging when the output changed (a dev loop). CLI-only; null means run once.
+    /// </summary>
+    int? WatchSeconds = null,
+    /// <summary>
+    /// <c>--trace</c>: log every HTTP MCP request/response (method, URL, JSON-RPC body, status,
+    /// timing) to stderr - a wire-level debugging aid for MCP server authors.
+    /// </summary>
+    bool Trace = false);
 
 /// <summary>
 /// Resolved target description used to drive scans and other read-only operations. Public so

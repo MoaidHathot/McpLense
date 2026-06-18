@@ -27,6 +27,7 @@ internal static partial class McpExecutor
             new AuthScanHandler(),
             new ObserveHandler(),
             new FetchResourceHandler(),
+            new DoctorHandler(),
             new InspectHandler(),
             new ToolsHandler(),
             new ResourcesHandler(),
@@ -341,6 +342,24 @@ internal static partial class McpExecutor
 
             var withAuth = await AttachProfilesAsync(servers!, command.Target, cancellationToken, command.Quiet, command.Verbose).ConfigureAwait(false);
             return await ReadResourceAsync(SingleServer(withAuth), command.Subject, command.Arguments, command.Timeout, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class DoctorHandler : ICommandHandler
+    {
+        public AppCommand Command => AppCommand.Doctor;
+        // ResolveOnly: doctor walks its own staged connection (DNS/TCP/TLS/initialize) anonymously.
+        public ServerResolution Resolution => ServerResolution.ResolveOnly;
+
+        public async Task<ExecutionOutcome> ExecuteAsync(ParsedCommand command, IReadOnlyList<ResolvedServer>? servers, JsonSerializerOptions jsonOptions, CancellationToken cancellationToken)
+        {
+            var results = new List<DoctorServerResult>(servers!.Count);
+            foreach (var server in servers!)
+            {
+                results.Add(await DoctorRunner.RunAsync(server, command.Timeout, cancellationToken).ConfigureAwait(false));
+            }
+
+            return new ExecutionOutcome(new DoctorReport(DateTimeOffset.UtcNow, results), results.Any(r => !r.Ok));
         }
     }
 
