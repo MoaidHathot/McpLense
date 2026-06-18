@@ -150,6 +150,7 @@ mcplense explain [<url>]                         # plain-language "what is this 
 mcplense doctor [<url>]                          # staged connectivity triage ("why won't it connect?")
 mcplense scan [<url>]                            # fact-only audit pipeline
 mcplense analyze [<url>] [--fail-on <severity>]  # scan + severity-rated findings (CI gate)
+mcplense serve                                   # run McpLense AS an MCP server (agent audits other MCPs)
 mcplense login   {--all | --profile <name> | <url>}
 mcplense logout  {--all | --profile <name> | <url>}
 ```
@@ -197,6 +198,17 @@ mcplense inspect https://server.example/mcp --watch 5   # re-run every 5s, flag 
 it) - built for "why won't my server connect?". `--trace` logs the HTTP wire traffic (method, URL,
 JSON-RPC body, status, timing) to stderr while the command runs. `--watch <seconds>` re-runs any
 read-only command on an interval and flags when the rendered output changed - a tight dev loop.
+
+### McpLense as an MCP server
+
+```bash
+mcplense serve                         # stdio MCP server exposing inspect/scan/analyze/explain as tools
+mcplense inspect -- mcplense serve     # inspect McpLense-as-an-MCP-server (self-test)
+```
+
+Add `mcplense serve` to an MCP host's config like any other stdio server and an agent gains
+`mcplense_inspect` / `mcplense_scan` / `mcplense_analyze` / `mcplense_explain` tools to introspect
+and security-scan other MCP servers on demand.
 
 ## Targets
 

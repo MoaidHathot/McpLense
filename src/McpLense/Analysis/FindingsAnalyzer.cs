@@ -27,6 +27,7 @@ public sealed class FindingsAnalyzer
         new PromptInjectionRule(),
         new DescriptionUrlRule(),
         new ErrorLeakRule(),
+        new MalformedHandlingRule(),
         new WeakCorsRule(),
         new TlsExpiryRule(),
         new MixedContentRule(),

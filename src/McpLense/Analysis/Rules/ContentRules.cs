@@ -197,3 +197,39 @@ public sealed partial class ErrorLeakRule : IFindingRule
         RegexOptions.CultureInvariant)]
     private static partial Regex InternalMarker();
 }
+
+/// <summary>
+/// The server returned a 5xx to deliberately malformed JSON-RPC (from the opt-in
+/// <c>behavior.callMalformed</c> check) - it does not reject bad input gracefully, which can mean a
+/// crash, a DoS lever, or internal leakage. Yields nothing unless that check ran.
+/// </summary>
+public sealed class MalformedHandlingRule : IFindingRule
+{
+    public string Id => "malformed-handling";
+    public bool DefaultEnabled => true;
+
+    public IEnumerable<Finding> Evaluate(ServerScanResult facts)
+    {
+        var probes = facts.Check("behavior.callMalformed").Array("probes");
+        if (probes is null)
+        {
+            yield break;
+        }
+
+        foreach (var probe in probes)
+        {
+            var status = probe.Int("statusCode");
+            if (status >= 500)
+            {
+                yield return new Finding(
+                    Id,
+                    Severity.Medium,
+                    $"Server returned {status} to malformed input ({probe.Str("case")})",
+                    $"checks.behavior.callMalformed.probes[case={probe.Str("case")}].statusCode",
+                    status.ToString(),
+                    "Reject malformed JSON-RPC with a 400 / JSON-RPC parse error, not a 5xx - a 5xx suggests the bad input reached and broke server logic.");
+            }
+        }
+    }
+}
+

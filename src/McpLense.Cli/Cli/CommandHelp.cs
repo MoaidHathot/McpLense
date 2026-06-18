@@ -270,6 +270,23 @@ Examples
 Run 'mcplense help' for targets, auth, config, and the full reference.
 """,
 
+        [AppCommand.Serve] = """
+mcplense serve - run McpLense itself as an MCP server (stdio), so an agent can audit OTHER MCPs.
+
+Usage
+  mcplense serve
+
+Exposes tools: mcplense_inspect, mcplense_scan, mcplense_analyze, mcplense_explain - each takes an
+MCP server URL and returns the corresponding JSON report. Add it to an MCP host's config like any
+other stdio server; the agent can then introspect and security-scan MCP servers on demand.
+
+Examples
+  mcplense serve
+  mcplense inspect -- mcplense serve     # inspect McpLense-as-an-MCP-server
+
+Run 'mcplense help' for targets, auth, config, and the full reference.
+""",
+
         [AppCommand.Doctor] = """
 mcplense doctor - "why won't this MCP connect?" staged connectivity triage.
 

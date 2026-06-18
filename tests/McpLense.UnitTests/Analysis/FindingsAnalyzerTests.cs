@@ -125,6 +125,20 @@ public class FindingsAnalyzerTests
         Of("weak-cors", report).ShouldHaveSingleItem().Severity.ShouldBe(Severity.High);
     }
 
+    [Fact]
+    public void MalformedHandling_Flags5xx()
+    {
+        var report = ReportWith(("behavior.callMalformed", """{"probes":[{"case":"invalid-json","statusCode":500}]}"""));
+        Of("malformed-handling", report).ShouldHaveSingleItem().Severity.ShouldBe(Severity.Medium);
+    }
+
+    [Fact]
+    public void MalformedHandling_4xx_NoFinding()
+    {
+        var report = ReportWith(("behavior.callMalformed", """{"probes":[{"case":"invalid-json","statusCode":400}]}"""));
+        Of("malformed-handling", report).ShouldBeEmpty();
+    }
+
     [Theory]
     [InlineData(-1, Severity.Critical)]
     [InlineData(10, Severity.Medium)]

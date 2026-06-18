@@ -182,6 +182,14 @@ Self-explanatory.
 Interactive Spectre.Console UI. Not useful for agents — never invoke from
 automation.
 
+### `mcplense serve`
+
+Runs McpLense itself as an MCP server over stdio, exposing `mcplense_inspect`,
+`mcplense_scan`, `mcplense_analyze`, and `mcplense_explain` as tools (each takes a
+`url`). Lets an agent introspect/security-scan OTHER MCP servers on demand. Add it to
+an MCP host config like any stdio server. (This is for being hosted by an agent, not
+for an agent to invoke as a subprocess.)
+
 ## Target options (apply to every command above)
 
 | Flag | Effect |

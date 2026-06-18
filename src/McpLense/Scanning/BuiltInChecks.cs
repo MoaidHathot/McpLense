@@ -38,6 +38,7 @@ internal static class BuiltInChecks
 
         // Behavioural probes.
         new Checks.Behavior.CallNonExistentToolCheck(),
+        new Checks.Behavior.CallMalformedCheck(),
         new Checks.Behavior.ServerInitiatedObservationCheck(),
 
         // Roll-up metrics + content hashing run last; they consume earlier checks' outputs.

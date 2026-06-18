@@ -33,6 +33,7 @@ report it was derived from), the quoted `evidence`, and a `remediation`.
 | `tls-expiry` | critical / medium | Leaf certificate expired (critical) or expiring within 30 days (medium) | `transport.tls.daysUntilExpiry` |
 | `open-shape-input` | medium | Tool input schema does not restrict `additionalProperties` (wide LLM attack surface) | `tools.items[].schemaFingerprint` |
 | `error-info-leak` | medium | Error response to an unknown tool leaks stack traces / file paths / build ids / internal hostnames | `behavior.callNonExistentTool` |
+| `malformed-handling` | medium | Server returned a 5xx to deliberately malformed JSON-RPC (doesn't reject bad input gracefully) | `behavior.callMalformed` (opt-in) |
 | `description-url` | low | URL(s) embedded in a tool/prompt description (host-rendered links/images are an exfiltration vector) | `metrics.fields[]` |
 | `missing-destructive-hint` | low | Tool does not declare a `destructiveHint` annotation | `tools.items[].missingAnnotations` |
 | `unannounced-bearer` | low | Server demands Bearer auth but advertises no RFC 9728 metadata | `auth.classification` |

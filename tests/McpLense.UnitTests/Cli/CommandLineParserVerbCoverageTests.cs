@@ -326,4 +326,8 @@ public class CommandLineParserVerbCoverageTests
     [Fact]
     public void Trace_IsParsed()
         => CommandLineParser.Parse(["inspect", "https://h/mcp", "--trace"]).Trace.ShouldBeTrue();
+
+    [Fact]
+    public void Serve_IsRecognized_WithoutTarget()
+        => CommandLineParser.Parse(["serve"]).Command.ShouldBe(AppCommand.Serve);
 }

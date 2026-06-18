@@ -2,6 +2,28 @@
 
 Living roadmap.
 
+## Delivered in 0.17.0 - new check + MCP server mode (Phase 5)
+
+The final phase of the 5-phase push.
+
+- **`behavior.callMalformed`** check (opt-in, HTTP): sends deliberately malformed JSON-RPC (invalid
+  JSON, valid-JSON-not-JSON-RPC, JSON-RPC missing `method`) and records how the server responds - a
+  robustness signal. The analyze rule `malformed-handling` flags any `5xx` (the server didn't reject
+  bad input gracefully). Found a real example live: a server that 500s on every malformed input.
+- **`mcplense serve`**: runs McpLense itself as an MCP server over stdio, exposing
+  `mcplense_inspect` / `mcplense_scan` / `mcplense_analyze` / `mcplense_explain` as tools so an agent
+  can introspect and security-scan OTHER MCP servers on demand. Reuses the exact CLI pipeline.
+  Verified by `mcplense inspect -- mcplense serve` (McpLense inspecting itself).
+
+Deferred (lower value / higher effort, noted for a future pass): `tlsDeep` (cipher enumeration) and
+`tokenClaims` (JWT claim inspection).
+
+Build + test state: Release `-warnaserror` clean. 821 unit + 73 integration + 38 E2E + 6 gated.
+
+The 5-phase "explore MCPs for learning, debugging, and security" arc (0.13.0 - 0.17.0) is complete:
+findings + SARIF + rug-pull (security), explain + examples + markdown (learning), doctor + trace +
+watch (debugging), and the callMalformed check + serve mode.
+
 ## Delivered in 0.16.0 - debugging aids (Phase 4)
 
 Developer-facing diagnostics for people building their own MCP servers.

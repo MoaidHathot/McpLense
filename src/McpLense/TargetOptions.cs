@@ -40,6 +40,7 @@ internal enum AppCommand
     Analyze,
     Explain,
     Doctor,
+    Serve,
     Schema
 }
 

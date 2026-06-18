@@ -44,6 +44,11 @@ internal static class App
                 return await TuiApp.RunAsync(command);
             }
 
+            if (command.Command is AppCommand.Serve)
+            {
+                return await ServeCommand.RunAsync(command);
+            }
+
             if (command.Command is AppCommand.Schema)
             {
                 return await SchemaCommand.RunAsync(command);

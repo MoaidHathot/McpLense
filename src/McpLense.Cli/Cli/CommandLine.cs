@@ -236,7 +236,7 @@ internal static class CommandLineParser
         // tell ParseTarget to relax its "specify a target" requirement. 'diff' likewise needs
         // no network target - it diffs two baseline files - so it relaxes the requirement too.
         var hasTargetsFrom = options.ContainsKey("targets-from");
-        var target = ParseTarget(options, stdioTokens, urlPositional, allowEmptyTarget: hasTargetsFrom || command is AppCommand.Diff);
+        var target = ParseTarget(options, stdioTokens, urlPositional, allowEmptyTarget: hasTargetsFrom || command is AppCommand.Diff or AppCommand.Serve);
         var format = ParseFormat(GetSingle(options, "format"));
         var timeout = ParseTimeout(GetSingle(options, "timeout"));
         var progress = ParseProgress(GetSingle(options, "progress"), command);
@@ -482,6 +482,7 @@ internal static class CommandLineParser
             case "analyze": command = AppCommand.Analyze; return true;
             case "explain": command = AppCommand.Explain; return true;
             case "doctor": command = AppCommand.Doctor; return true;
+            case "serve": command = AppCommand.Serve; return true;
             case "schema": command = AppCommand.Schema; return true;
             default: command = default; return false;
         }

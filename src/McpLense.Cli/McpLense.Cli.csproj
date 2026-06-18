@@ -23,6 +23,7 @@
   <ItemGroup>
     <PackageReference Include="Dumpify" />
     <PackageReference Include="Spectre.Console" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
 
   <ItemGroup Label="Internals access">

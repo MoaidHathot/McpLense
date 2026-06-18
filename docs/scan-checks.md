@@ -168,6 +168,23 @@ Calls a deliberately non-existent tool name. Three structurally-distinct outcome
 | `jsonrpc-error` | `jsonRpcErrorCode`, `jsonRpcErrorMessage`, `jsonRpcErrorData` |
 | `transport-error` | `transportError` |
 
+## behavior.callMalformed
+
+**Default:** off. **Depends on:** _none_. **HTTP only.**
+
+Sends deliberately malformed JSON-RPC to the endpoint (invalid JSON, valid-JSON-but-not-JSON-RPC,
+JSON-RPC missing `method`) and records how the server responds - a robustness signal. Opt-in
+(outbound + intentionally malformed). The `analyze` rule `malformed-handling` flags any `5xx`.
+
+| Field | Type | Description |
+|---|---|---|
+| `attempted` | bool | Always true when the check ran. |
+| `probes[].case` | string | `invalid-json` / `valid-json-not-jsonrpc` / `jsonrpc-missing-method`. |
+| `probes[].statusCode` | int? | HTTP status (null on a transport error). |
+| `probes[].contentType` | string? | Response content-type. |
+| `probes[].responseExcerpt` | string? | First ~200 chars of the response body. |
+| `probes[].transportError` | string? | Set when the request threw instead of responding. |
+
 ## behavior.serverInitiated
 
 **Default:** off. **Depends on:** `tools`, `prompts`, `resources`.

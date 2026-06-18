@@ -91,6 +91,20 @@ public class CliE2ETests
     }
 
     [Fact]
+    public async Task Serve_ExposesMcplenseToolsViaStdio()
+    {
+        // Inspect McpLense-as-an-MCP-server: spawn `mcplense serve` over stdio and list its tools.
+        var args = new[] { "inspect", "--format", "json", "--timeout", "60", "--", "dotnet", "exec", BuildArtifacts.MainAppDll, "serve" };
+
+        var result = await CliRunner.RunAsync(args, DefaultTimeout);
+
+        result.ExitCode.ShouldBe(0, $"stderr=<<{result.StandardError}>>");
+        result.StandardOutput.ShouldContain("mcplense_scan");
+        result.StandardOutput.ShouldContain("mcplense_analyze");
+        result.StandardOutput.ShouldContain("mcplense_explain");
+    }
+
+    [Fact]
     public async Task Analyze_SarifFormat_EmitsSarif210()
     {
         var args = CliRunner.WithStdioTestServer(
