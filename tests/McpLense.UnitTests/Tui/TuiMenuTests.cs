@@ -174,6 +174,32 @@ public class TuiMenuTests
     }
 
     [Fact]
+    public void ItemColors_TintTheMatchingRowRed()
+    {
+        // Emit raw ANSI so the colour actually shows up in the captured output (the default
+        // TestConsole strips styling). A red item must carry the red SGR code (foreground 31).
+        var console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Capabilities.Interactive = true;
+        console.Profile.Width = 200;
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        // Row 0 highlighted+red, row 1 uncoloured.
+        TuiMenu.Select(
+            console,
+            null,
+            "Pick",
+            ["unreachable-one", "healthy-two"],
+            new TuiMenuOptions { BackLabel = "Back" },
+            itemColors: ["red", null]);
+
+        // 38;5;9 = red (256-colour) foreground; 38;5;10 = green (the default highlight). The
+        // coloured row must be red, not the default green highlight.
+        var output = console.Output;
+        output.ShouldContain("38;5;9");
+        output.ShouldContain("unreachable-one");
+    }
+
+    [Fact]
     public void ExhaustedInput_DoesNotHang_AndLeavesGracefully()
     {
         var console = NewConsole(); // no keys pushed at all

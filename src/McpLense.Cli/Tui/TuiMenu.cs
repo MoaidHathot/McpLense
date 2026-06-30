@@ -52,7 +52,8 @@ internal static class TuiMenu
         Action? renderHeader,
         string title,
         IReadOnlyList<string> items,
-        TuiMenuOptions options)
+        TuiMenuOptions options,
+        IReadOnlyList<string?>? itemColors = null)
     {
         var count = items.Count;
         var index = count > 0 ? 0 : -1;
@@ -71,7 +72,7 @@ internal static class TuiMenu
 
             console.Clear();
             renderHeader?.Invoke();
-            Render(console, title, items, index, top, pageSize, options);
+            Render(console, title, items, index, top, pageSize, options, itemColors);
 
             var key = TryReadKey(console);
             if (key is null)
@@ -136,7 +137,8 @@ internal static class TuiMenu
         int index,
         int top,
         int pageSize,
-        TuiMenuOptions options)
+        TuiMenuOptions options,
+        IReadOnlyList<string?>? itemColors)
     {
         if (!string.IsNullOrEmpty(title))
         {
@@ -155,9 +157,21 @@ internal static class TuiMenu
                 var positionInPage = i - top;
                 var hotkey = positionInPage < 9 ? (positionInPage + 1).ToString() : " ";
                 var text = Markup.Escape(items[i]);
-                console.MarkupLine(i == index
-                    ? $"[bold green]\u203a[/] [black on green] {hotkey}.  {text} [/]"
-                    : $"  [aqua]{hotkey}.[/] {text}");
+                var color = itemColors is not null && i < itemColors.Count ? itemColors[i] : null;
+
+                if (i == index)
+                {
+                    // Highlighted row: invert on the row colour (falling back to green) so the
+                    // selection cue itself carries the status - an unreachable row stays red even
+                    // when it's the active row.
+                    var highlight = string.IsNullOrEmpty(color) ? "green" : color;
+                    console.MarkupLine($"[bold {highlight}]\u203a[/] [black on {highlight}] {hotkey}.  {text} [/]");
+                }
+                else
+                {
+                    var body = string.IsNullOrEmpty(color) ? text : $"[{color}]{text}[/]";
+                    console.MarkupLine($"  [aqua]{hotkey}.[/] {body}");
+                }
             }
 
             if (top > 0 || end < items.Count)

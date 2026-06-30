@@ -205,6 +205,75 @@ public class TuiAppTests
         TuiApp.FormatCapabilities(caps).ShouldBe("resources, logging");
     }
 
+    // --- Connection failure reason ------------------------------------
+
+    [Theory]
+    [InlineData("HttpRequestException: Response status code does not indicate success: 401 (Unauthorized).", "401 Unauthorized")]
+    [InlineData("HttpRequestException: Response status code does not indicate success: 403 (Forbidden).", "403 Forbidden")]
+    [InlineData("HttpRequestException: Response status code does not indicate success: 404 (Not Found).", "404 Not Found")]
+    [InlineData("HttpRequestException: Response status code does not indicate success: 500 (Internal Server Error).", "500 Internal Server Error")]
+    public void DescribeConnectionFailure_ExtractsStatusCodeAndReason(string error, string expected)
+        => TuiApp.DescribeConnectionFailure(error).ShouldBe(expected);
+
+    [Fact]
+    public void DescribeConnectionFailure_BareStatusCode_UsesDefaultPhrase()
+        => TuiApp.DescribeConnectionFailure("Server returned 401").ShouldBe("401 Unauthorized");
+
+    [Fact]
+    public void DescribeConnectionFailure_DigitsWithoutStatusContext_AreNotTreatedAsCode()
+        // A port number (or other address fragment) must not be mistaken for an HTTP status.
+        => TuiApp.DescribeConnectionFailure("SocketException: Connection refused (localhost:8403)")
+            .ShouldBe("connection refused");
+
+    [Fact]
+    public void DescribeConnectionFailure_Timeout_ReportsTimedOut()
+        => TuiApp.DescribeConnectionFailure("Timed out (raise --timeout if the operation legitimately needs longer).")
+            .ShouldBe("timed out");
+
+    [Fact]
+    public void DescribeConnectionFailure_ConnectionRefused_ReportsRefused()
+        => TuiApp.DescribeConnectionFailure("SocketException: Connection refused (localhost:9999)")
+            .ShouldBe("connection refused");
+
+    [Fact]
+    public void DescribeConnectionFailure_UnknownHost_ReportsHostNotFound()
+        => TuiApp.DescribeConnectionFailure("HttpRequestException: No such host is known. (bad.invalid:443)")
+            .ShouldBe("host not found");
+
+    [Fact]
+    public void DescribeConnectionFailure_UnrecognisedException_FallsBackToTypeName()
+        => TuiApp.DescribeConnectionFailure("InvalidOperationException: something odd happened")
+            .ShouldBe("InvalidOperationException");
+
+    [Fact]
+    public void DescribeConnectionFailure_NullOrEmpty_ReturnsNull()
+    {
+        TuiApp.DescribeConnectionFailure(null).ShouldBeNull();
+        TuiApp.DescribeConnectionFailure("   ").ShouldBeNull();
+    }
+
+    [Fact]
+    public void FormatServerListItem_Reachable_ShowsNameTransportTarget_NoUnreachable()
+    {
+        var server = BuildServer("alpha", "http", "https://example.test/mcp");
+        var item = TuiApp.FormatServerListItem(server);
+
+        item.ShouldContain("alpha");
+        item.ShouldContain("http");
+        item.ShouldContain("https://example.test/mcp");
+        item.ShouldNotContain("unreachable");
+    }
+
+    [Fact]
+    public void FormatServerListItem_Unreachable_AppendsConciseReason()
+    {
+        var server = BuildServer("alpha", "http", "https://example.test/mcp",
+            error: "HttpRequestException: Response status code does not indicate success: 403 (Forbidden).");
+        var item = TuiApp.FormatServerListItem(server);
+
+        item.ShouldContain("unreachable: 403 Forbidden");
+    }
+
     // --- Interactive flow ---------------------------------------------
     //
     // Selection screens are driven by TuiMenu: a number jumps to a row, Enter selects the
@@ -223,10 +292,33 @@ public class TuiAppTests
     }
 
     [Fact]
-    public async Task RenderAsync_QuitsImmediately_Returns0()
+    public async Task RenderAsync_SingleServer_AutoSelects_SkipsSelectionScreen()
     {
         var console = NewConsole();
-        var report = new InspectReport(DateTimeOffset.UtcNow, [BuildServer()]);
+        var report = new InspectReport(DateTimeOffset.UtcNow, [BuildServer("solo")]);
+
+        console.Input.PushCharacter('q'); // section menu -> exit (no server list to go back to)
+
+        var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
+
+        exit.ShouldBe(0);
+        var output = console.Output;
+        // The single server is opened directly: the section menu (and its summary panel) is shown,
+        // and the "Select an MCP server" pre-form is skipped entirely.
+        output.ShouldContain("Choose a section");
+        output.ShouldContain("solo");
+        output.ShouldNotContain("Select an MCP server");
+    }
+
+    [Fact]
+    public async Task RenderAsync_MultipleServers_ShowsSelectionScreen_ThenQuits()
+    {
+        var console = NewConsole();
+        var report = new InspectReport(DateTimeOffset.UtcNow,
+        [
+            BuildServer("alpha"),
+            BuildServer("bravo")
+        ]);
 
         console.Input.PushCharacter('q'); // server list -> exit
 
@@ -240,7 +332,11 @@ public class TuiAppTests
     public async Task RenderAsync_EnterSelectsServer_EscBacks_ThenQuits_Returns0()
     {
         var console = NewConsole();
-        var report = new InspectReport(DateTimeOffset.UtcNow, [BuildServer()]);
+        var report = new InspectReport(DateTimeOffset.UtcNow,
+        [
+            BuildServer("alpha"),
+            BuildServer("bravo")
+        ]);
 
         console.Input.PushKey(ConsoleKey.Enter);   // server list: select highlighted (the server)
         console.Input.PushKey(ConsoleKey.Escape);  // section menu: back to servers
@@ -278,11 +374,10 @@ public class TuiAppTests
         var console = NewConsole();
         var report = new InspectReport(DateTimeOffset.UtcNow, [BuildServer()]);
 
-        console.Input.PushKey(ConsoleKey.Enter);   // select the server
+        // Single server auto-selects, so we land directly on the section menu.
         console.Input.PushCharacter('2');          // sections: Overview=1, Tools=2 -> Tools
         console.Input.PushKey(ConsoleKey.Escape);  // tools list -> back to sections
-        console.Input.PushKey(ConsoleKey.Escape);  // sections -> back to servers
-        console.Input.PushCharacter('q');          // exit
+        console.Input.PushCharacter('q');          // sections -> exit (single server)
 
         var exit = await TuiApp.RenderAsync(report, console, () => Task.CompletedTask);
 
@@ -296,7 +391,7 @@ public class TuiAppTests
     public async Task RenderAsync_FailedServer_SurfacesConnectionErrorInSectionAndList()
     {
         var console = NewConsole();
-        var server = BuildServer(
+        var broken = BuildServer(
             name: "broken",
             transport: "http",
             target: "https://example.test/mcp",
@@ -306,9 +401,11 @@ public class TuiAppTests
             resourceTemplates: new SectionResult<ResourceTemplateInfo>(false, []),
             prompts: new SectionResult<PromptInfo>(false, []),
             error: "HttpRequestException: Response status code does not indicate success: 401 (Unauthorized).");
-        var report = new InspectReport(DateTimeOffset.UtcNow, [server]);
+        // A second (healthy) server keeps the selection list in play so the "unreachable" label is
+        // exercised; the broken server is row 1 and auto-selection is therefore not triggered.
+        var report = new InspectReport(DateTimeOffset.UtcNow, [broken, BuildServer("healthy")]);
 
-        console.Input.PushKey(ConsoleKey.Enter);   // select the failed server
+        console.Input.PushKey(ConsoleKey.Enter);   // server list: select the failed server (row 1)
         console.Input.PushCharacter('2');          // sections: Tools -> short-circuits to the error notice
         console.Input.PushKey(ConsoleKey.Escape);  // sections -> back to servers
         console.Input.PushCharacter('q');          // exit
@@ -319,7 +416,7 @@ public class TuiAppTests
         var output = console.Output;
         output.ShouldContain("connection failed");  // persistent summary panel
         output.ShouldContain("Connection failed");  // the section's unavailable notice
-        output.ShouldContain("Unauthorized");
-        output.ShouldContain("unreachable");        // flagged in the server list
+        output.ShouldContain("401 Unauthorized");   // the concise, distilled reason
+        output.ShouldContain("unreachable: 401 Unauthorized"); // flagged in the server list with the code
     }
 }

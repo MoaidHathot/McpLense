@@ -2,6 +2,29 @@
 
 Living roadmap.
 
+## Delivered in 0.17.2 - TUI reachability + single-server UX fixes
+
+Three TUI explorer fixes driven by real friction opening an unreachable server.
+
+- **Unreachable servers are no longer coloured green.** `TuiMenu.Select` gained an optional
+  per-row `itemColors`; the server-selection list tints any server with a connection `Error`
+  **red** - including the selected-row highlight, so an unreachable row stays red even when active
+  (previously every row, reachable or not, used the green highlight).
+- **The exact failure reason is surfaced, not a bare "(unreachable)".** New
+  `TuiApp.DescribeConnectionFailure` distils the verbose error into a concise reason - HTTP
+  statuses (`401 Unauthorized`, `403 Forbidden`, `404 Not Found`, `5xx`, ...) and transport
+  failures (`timed out`, `connection refused`, `host not found`, `connection dropped`,
+  `TLS error`). It checks transport reasons first and only reads a number as a status code in a
+  genuine HTTP context, so an address/port fragment isn't mistaken for one. The reason now shows
+  in the list (`(unreachable: 401 Unauthorized)`), the summary panel, and the section "Connection
+  failed" notice (with the full raw error retained underneath).
+- **A single resolved server auto-selects.** When `inspect` resolves exactly one server the TUI
+  skips the "Select an MCP server" pre-form and opens straight into the section menu (Overview /
+  Tools / Resources / ...); Back/Esc/q then exits the TUI (there is no server list to return to).
+  The selection screen still appears for multi-server configs.
+
+Build + test state: 836 unit (74 TUI), all green; solution Release build clean.
+
 ## Delivered in 0.17.0 - new check + MCP server mode (Phase 5)
 
 The final phase of the 5-phase push.

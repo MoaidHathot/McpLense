@@ -81,22 +81,27 @@ internal static class TuiApp
         bookmarkStore ??= TuiBookmarkStore.InMemory();
         var session = new TuiSession(console, waitForKey, bookmarkStore, connector, interaction);
 
+        // A single resolved server has nothing to pick between: skip the selection pre-form and jump
+        // straight into it. Backing out of the section menu then exits the TUI (there is no list to
+        // return to), which RunServerLoopAsync handles via the singleServer flag.
+        if (servers.Count == 1)
+        {
+            await ShowServerAsync(session, servers[0], singleServer: true);
+            return 0;
+        }
+
         while (true)
         {
-            var serverItems = servers
-                .Select(server =>
-                {
-                    var label = $"{server.Name}   [{server.Transport}]   {server.Target}";
-                    return server.Error is not null ? $"{label}   (unreachable)" : label;
-                })
-                .ToArray();
+            var serverItems = servers.Select(FormatServerListItem).ToArray();
+            var serverColors = servers.Select(s => s.Error is not null ? "red" : (string?)null).ToArray();
 
             var result = TuiMenu.Select(
                 console,
                 renderHeader: null,
                 title: "Select an MCP server",
                 items: serverItems,
-                options: new TuiMenuOptions { ExitLabel = "Exit" });
+                options: new TuiMenuOptions { ExitLabel = "Exit" },
+                itemColors: serverColors);
 
             if (result.Action is not TuiMenuAction.Item)
             {
@@ -107,7 +112,27 @@ internal static class TuiApp
         }
     }
 
-    private static async Task ShowServerAsync(TuiSession session, ServerInspection server)
+    /// <summary>
+    /// One row in the server-selection list. A reachable server shows
+    /// <c>name   [transport]   target</c>; an unreachable one appends the concise failure reason
+    /// (e.g. <c>(unreachable: 401 Unauthorized)</c>) so the status code is visible without drilling in.
+    /// The row is tinted red by the caller via <c>itemColors</c>.
+    /// </summary>
+    internal static string FormatServerListItem(ServerInspection server)
+    {
+        var label = $"{server.Name}   [{server.Transport}]   {server.Target}";
+        if (server.Error is null)
+        {
+            return label;
+        }
+
+        var reason = DescribeConnectionFailure(server.Error);
+        return reason is null
+            ? $"{label}   (unreachable)"
+            : $"{label}   (unreachable: {reason})";
+    }
+
+    private static async Task ShowServerAsync(TuiSession session, ServerInspection server, bool singleServer = false)
     {
         // Section-level filter state. Each section keeps its own filter so jumping between
         // Tools / Resources doesn't carry the term over; that matches user intuition for
@@ -122,7 +147,7 @@ internal static class TuiApp
 
         try
         {
-            await RunServerLoopAsync(session, server, filters);
+            await RunServerLoopAsync(session, server, filters, singleServer);
         }
         finally
         {
@@ -132,7 +157,7 @@ internal static class TuiApp
         }
     }
 
-    private static async Task RunServerLoopAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters)
+    private static async Task RunServerLoopAsync(TuiSession session, ServerInspection server, IDictionary<string, string> filters, bool singleServer = false)
     {
         var console = session.Console;
 
@@ -145,12 +170,18 @@ internal static class TuiApp
 
             var sections = new[] { "Overview", "Tools", "Resources", "Resource Templates", "Prompts", bookmarksLabel };
 
+            // With a single auto-selected server there is no server list to go back to, so the
+            // back affordance becomes a plain Exit instead of "Back to servers".
+            var menuOptions = singleServer
+                ? new TuiMenuOptions { ExitLabel = "Exit" }
+                : new TuiMenuOptions { BackLabel = "Back to servers" };
+
             var result = TuiMenu.Select(
                 console,
                 renderHeader: () => RenderServerSummary(console, server),
                 title: "Choose a section",
                 items: sections,
-                options: new TuiMenuOptions { BackLabel = "Back to servers" });
+                options: menuOptions);
 
             if (result.Action is not TuiMenuAction.Item)
             {
@@ -726,7 +757,15 @@ internal static class TuiApp
         var body = $"[bold]{Markup.Escape(server.Name)}[/]\n[grey]{Markup.Escape(server.Target)}[/]";
         if (server.Error is not null)
         {
-            body += $"\n[red]connection failed: {Markup.Escape(server.Error)}[/]";
+            var reason = DescribeConnectionFailure(server.Error);
+            var headline = reason is null ? "connection failed" : $"connection failed: {reason}";
+            body += $"\n[red]{Markup.Escape(headline)}[/]";
+            // Keep the raw exception text underneath for the full detail when it adds information
+            // beyond the distilled reason.
+            if (reason is null || !server.Error.Contains(reason, StringComparison.OrdinalIgnoreCase))
+            {
+                body += $"\n[grey]{Markup.Escape(server.Error)}[/]";
+            }
         }
         else if (TextFormatter.DescribeConnectionAuth(server.AuthStatus) is { } authLine)
         {
@@ -780,7 +819,13 @@ internal static class TuiApp
             return false;
         }
 
-        console.MarkupLine($"[red]Connection failed: {Markup.Escape(server.Error)}[/]");
+        var reason = DescribeConnectionFailure(server.Error);
+        var headline = reason is null ? "Connection failed" : $"Connection failed: {reason}";
+        console.MarkupLine($"[red]{Markup.Escape(headline)}[/]");
+        if (reason is null || !server.Error.Contains(reason, StringComparison.OrdinalIgnoreCase))
+        {
+            console.MarkupLine($"[grey]{Markup.Escape(server.Error)}[/]");
+        }
         console.MarkupLine("[grey]The server could not be inspected, so nothing it exposes is available.[/]");
         return true;
     }
@@ -942,6 +987,98 @@ internal static class TuiApp
 
     internal static string SectionStatus<T>(SectionResult<T> section)
         => section.Error is not null ? $"error: {section.Error}" : section.Supported ? "ok" : "not supported";
+
+    /// <summary>
+    /// Distils a verbose connection <see cref="ServerInspection.Error"/> (e.g.
+    /// <c>"HttpRequestException: Response status code does not indicate success: 401 (Unauthorized)."</c>)
+    /// into a short, scannable reason such as <c>"401 Unauthorized"</c>, <c>"404 Not Found"</c>,
+    /// <c>"timed out"</c>, or <c>"connection refused"</c>. The aim is to answer "why is this server
+    /// unreachable?" at a glance - the full <see cref="ServerInspection.Error"/> is still shown in the
+    /// server summary panel for the complete detail. Returns null when there is no error.
+    /// </summary>
+    internal static string? DescribeConnectionFailure(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            return null;
+        }
+
+        // Transport-level failures carry no HTTP status and must be matched first - otherwise a
+        // port number or address fragment (e.g. "host:443") could be mistaken for a status code.
+        if (error.Contains("Timed out", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+        {
+            return "timed out";
+        }
+        if (error.Contains("refused", StringComparison.OrdinalIgnoreCase))
+        {
+            return "connection refused";
+        }
+        if (error.Contains("no such host", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("name or service not known", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("getaddrinfo", StringComparison.OrdinalIgnoreCase))
+        {
+            return "host not found";
+        }
+        if (error.Contains("connection was closed", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("connection reset", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("response ended prematurely", StringComparison.OrdinalIgnoreCase))
+        {
+            return "connection dropped";
+        }
+        if (error.Contains("SSL", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("TLS", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("certificate", StringComparison.OrdinalIgnoreCase))
+        {
+            return "TLS error";
+        }
+
+        // An HTTP status code is the most actionable signal: surface "<code> <reason>" when present.
+        // Match only in genuine status contexts (the .NET HttpRequestException phrasing, an explicit
+        // "status code"/"HTTP" prefix, or "<code> (Reason)") so address/port digits aren't misread.
+        var status = System.Text.RegularExpressions.Regex.Match(
+            error,
+            @"(?:status code(?:\s+does not indicate success)?:?\s*|HTTP[/ ]?(?:\d(?:\.\d)?\s+)?|\bstatus\s+|\breturned\s+)([1-5]\d{2})\b(?:\s*\(([^)]+)\))?"
+                + @"|\b([1-5]\d{2})\s*\(([^)]+)\)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (status.Success)
+        {
+            var code = status.Groups[1].Success ? status.Groups[1].Value : status.Groups[3].Value;
+            var phraseGroup = status.Groups[1].Success ? status.Groups[2] : status.Groups[4];
+            var phrase = phraseGroup.Success ? phraseGroup.Value.Trim() : DefaultReasonPhrase(code);
+            return string.IsNullOrEmpty(phrase) ? code : $"{code} {phrase}";
+        }
+
+        // Fall back to the exception type when the message is just "TypeName: details".
+        var colon = error.IndexOf(':');
+        if (colon > 0)
+        {
+            var typeName = error[..colon].Trim();
+            if (typeName.EndsWith("Exception", StringComparison.Ordinal))
+            {
+                return typeName;
+            }
+        }
+
+        return null;
+    }
+
+    private static string DefaultReasonPhrase(string code) => code switch
+    {
+        "401" => "Unauthorized",
+        "403" => "Forbidden",
+        "404" => "Not Found",
+        "405" => "Method Not Allowed",
+        "406" => "Not Acceptable",
+        "408" => "Request Timeout",
+        "410" => "Gone",
+        "429" => "Too Many Requests",
+        "500" => "Internal Server Error",
+        "502" => "Bad Gateway",
+        "503" => "Service Unavailable",
+        "504" => "Gateway Timeout",
+        _ => string.Empty
+    };
 
     internal static string FormatCapabilities(CapabilitySnapshot capabilities)
     {
