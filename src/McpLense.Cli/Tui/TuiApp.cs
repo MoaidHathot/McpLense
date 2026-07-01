@@ -174,6 +174,11 @@ internal static class TuiApp
     {
         var console = session.Console;
 
+        // When the server advertises logging, open the session up-front and ask for the most verbose
+        // level so log messages stream from the moment we enter the server (not just after the first
+        // tool call). Best-effort: a failure just leaves logging off.
+        await TryEnableLoggingAsync(session, server);
+
         while (true)
         {
             var bookmarksForServer = session.Bookmarks.ForServer(server.Name);
@@ -181,7 +186,11 @@ internal static class TuiApp
                 ? "Bookmarks"
                 : $"Bookmarks ({bookmarksForServer.Count})";
 
-            var sections = new[] { "Overview", "Tools", "Resources", "Resource Templates", "Prompts", bookmarksLabel };
+            var logsLabel = BuildLogsLabel(session, server);
+
+            var sections = server.Capabilities.Logging
+                ? new[] { "Overview", "Tools", "Resources", "Resource Templates", "Prompts", bookmarksLabel, logsLabel }
+                : new[] { "Overview", "Tools", "Resources", "Resource Templates", "Prompts", bookmarksLabel };
 
             // With a single auto-selected server there is no server list to go back to, so the
             // back affordance becomes a plain Exit instead of "Back to servers".
@@ -191,11 +200,15 @@ internal static class TuiApp
 
             var result = TuiMenu.Select(
                 console,
-                renderHeader: () => RenderServerSummary(console, server),
+                renderHeader: () =>
+                {
+                    RenderServerSummary(console, server);
+                    RenderSectionCountsBar(console, server);
+                },
                 title: "Choose a section",
                 items: sections,
                 options: menuOptions,
-                renderStatusBar: () => RenderSectionCountsBar(console, server));
+                renderStatusBar: () => RenderLogTail(session, server));
 
             if (result.Action is not TuiMenuAction.Item)
             {
@@ -206,6 +219,12 @@ internal static class TuiApp
             if (choice == bookmarksLabel)
             {
                 await ShowBookmarksAsync(console, server, session.Bookmarks, session.WaitForKey);
+                continue;
+            }
+
+            if (choice == logsLabel)
+            {
+                await ShowLogsAsync(session, server);
                 continue;
             }
 
@@ -502,6 +521,221 @@ internal static class TuiApp
         var equivalent = ArgumentElicitor.BuildEquivalentCommand(verb, subject, arguments, server.Transport, server.Target);
         session.Console.MarkupLine($"[grey]equivalent:[/] {Markup.Escape(equivalent)}");
         return session.Console.Confirm("Run now?");
+    }
+
+    // --- Logging (logging/setLevel + notifications/message stream) -----
+
+    /// <summary>
+    /// If the server advertises the <c>logging</c> capability, open the live session up front and
+    /// request the most verbose level so every log message streams in. Best-effort and silent: a
+    /// connect or setLevel failure just leaves <see cref="TuiSession.LogLevel"/> null (no logs), and
+    /// it's only attempted once per server visit. Requires a connector (skipped for library hosts).
+    /// </summary>
+    private static async Task TryEnableLoggingAsync(TuiSession session, ServerInspection server)
+    {
+        if (!server.Capabilities.Logging
+            || session.Connector is null
+            || session.Interaction is null
+            || session.LogLevel is not null
+            || server.Error is not null)
+        {
+            return;
+        }
+
+        IMcpSession? mcp;
+        try
+        {
+            mcp = session.Mcp ??= await session.Connector(server.Name, CancellationToken.None);
+        }
+        catch
+        {
+            return; // Couldn't open a session; logging stays off. A later invoke will report the error.
+        }
+
+        await ApplyLogLevelAsync(session, mcp, TuiLogFormat.MostVerbose);
+    }
+
+    /// <summary>Sends logging/setLevel and records the level on the session; swallows failures.</summary>
+    private static async Task<bool> ApplyLogLevelAsync(TuiSession session, IMcpSession mcp, ModelContextProtocol.Protocol.LoggingLevel level)
+    {
+        try
+        {
+            await mcp.SetLoggingLevelAsync(level, CancellationToken.None);
+            session.LogLevel = level;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildLogsLabel(TuiSession session, ServerInspection server)
+    {
+        var count = session.Interaction?.LogCount ?? 0;
+        return count == 0 ? "Logs" : $"Logs ({count})";
+    }
+
+    /// <summary>
+    /// The persistent, always-visible log tail shown under the section menu: the most recent few log
+    /// lines, colour-coded by severity, so activity is visible without opening the Logs view. It
+    /// re-renders every menu frame, so it survives navigation between sections.
+    /// </summary>
+    private static void RenderLogTail(TuiSession session, ServerInspection server)
+    {
+        if (!server.Capabilities.Logging || session.Interaction is null)
+        {
+            return;
+        }
+
+        var console = session.Console;
+        var all = session.Interaction.LogSnapshot();
+        console.Write(new Rule($"[grey]server logs[/] [grey35]{LogLevelSuffix(session)}[/]").RuleStyle(Style.Parse("grey35")).LeftJustified());
+
+        if (all.Count == 0)
+        {
+            console.MarkupLine(session.LogLevel is null
+                ? "  [grey35](logging not enabled)[/]"
+                : "  [grey35](no log messages yet)[/]");
+            return;
+        }
+
+        const int tail = 5;
+        var slice = all.Count <= tail ? all : all.Skip(all.Count - tail).ToList();
+        if (all.Count > tail)
+        {
+            console.MarkupLine($"  [grey35]\u2026 {all.Count - tail} earlier - open Logs for the full history[/]");
+        }
+        foreach (var entry in slice)
+        {
+            console.MarkupLine("  " + FormatLogLine(entry, includeTimestamp: false));
+        }
+    }
+
+    private static string LogLevelSuffix(TuiSession session)
+        => session.LogLevel is { } level ? $"(level: {TuiLogFormat.Name(level).ToLowerInvariant()})" : "(off)";
+
+    /// <summary>One log line as markup: severity tag + optional logger + message, tinted by level.</summary>
+    private static string FormatLogLine(TuiLogEntry entry, bool includeTimestamp)
+    {
+        var colour = TuiLogFormat.Colour(entry.Level);
+        var tag = $"[{colour}]{TuiLogFormat.Tag(entry.Level)}[/]";
+        var time = includeTimestamp ? $"[grey35]{entry.Timestamp:HH:mm:ss}[/] " : string.Empty;
+        var logger = string.IsNullOrEmpty(entry.Logger) ? string.Empty : $"[grey54]{Markup.Escape(entry.Logger!)}[/] ";
+        // Keep tail lines single-line: collapse newlines so one entry never blows up the layout.
+        var message = Markup.Escape(entry.Message.ReplaceLineEndings(" ").Trim());
+        return $"{time}{tag} {logger}[{colour}]{message}[/]";
+    }
+
+    /// <summary>
+    /// Full log viewer: every message received since connecting, newest-relevant at the bottom, with
+    /// a level picker (logging/setLevel) and refresh. Because notifications arrive on background SDK
+    /// threads, re-entering / refreshing shows anything that streamed in while you were away.
+    /// </summary>
+    private static async Task ShowLogsAsync(TuiSession session, ServerInspection server)
+    {
+        var console = session.Console;
+
+        while (true)
+        {
+            console.Clear();
+            RenderServerSummary(console, server);
+
+            var entries = session.Interaction?.LogSnapshot() ?? [];
+            console.Write(new Rule($"[bold]server logs[/] [grey]{LogLevelSuffix(session)}[/]").RuleStyle(Style.Parse("grey")).LeftJustified());
+
+            if (entries.Count == 0)
+            {
+                console.MarkupLine(session.LogLevel is null
+                    ? "[grey]Logging isn't enabled. Pick a level below to start receiving log messages.[/]"
+                    : "[grey]No log messages have been received yet.[/]");
+            }
+            else
+            {
+                // Show the last screenful so the newest are visible; note if older entries scrolled off.
+                const int maxRows = 200;
+                var shown = entries.Count <= maxRows ? entries : entries.Skip(entries.Count - maxRows).ToList();
+                if (entries.Count > maxRows)
+                {
+                    console.MarkupLine($"[grey35]\u2026 {entries.Count - maxRows} earlier entries not shown[/]");
+                }
+                foreach (var entry in shown)
+                {
+                    console.MarkupLine(FormatLogLine(entry, includeTimestamp: true));
+                }
+            }
+
+            console.WriteLine();
+            if (server.Transport == "http" && session.LogLevel is not null)
+            {
+                console.MarkupLine("[grey35]tip: idle HTTP servers only push logs while a request is open - run --server-stream to keep the stream open.[/]");
+            }
+
+            var actions = new[] { "Change level", "Refresh", "Back" };
+            var result = TuiMenu.Select(
+                console,
+                renderHeader: null,
+                title: "Logs",
+                items: actions,
+                options: new TuiMenuOptions { BackLabel = "Back" });
+
+            if (result.Action is not TuiMenuAction.Item)
+            {
+                return;
+            }
+
+            switch (actions[result.Index])
+            {
+                case "Change level":
+                    await ChangeLogLevelAsync(session, server);
+                    break;
+                case "Refresh":
+                    break; // loop re-reads the snapshot
+                default:
+                    return;
+            }
+        }
+    }
+
+    /// <summary>Level picker (the 8 MCP severities); sends logging/setLevel for the chosen level.</summary>
+    private static async Task ChangeLogLevelAsync(TuiSession session, ServerInspection server)
+    {
+        var console = session.Console;
+        var mcp = await EnsureSessionAsync(session, server);
+        if (mcp is null)
+        {
+            return;
+        }
+
+        var levels = TuiLogFormat.LevelsVerboseFirst;
+        var items = levels
+            .Select(l =>
+            {
+                var current = session.LogLevel == l ? "  [green](current)[/]" : string.Empty;
+                var verbosity = l == TuiLogFormat.MostVerbose ? "  [grey35](most verbose)[/]" : string.Empty;
+                return $"[{TuiLogFormat.Colour(l)}]{TuiLogFormat.Tag(l).Trim()}[/] {TuiLogFormat.Name(l)}{verbosity}{current}";
+            })
+            .ToArray();
+
+        var result = TuiMenu.Select(
+            console,
+            renderHeader: () => console.MarkupLine("[grey]The server will send log messages at or above the chosen severity.[/]"),
+            title: "Set log level",
+            items: items,
+            options: new TuiMenuOptions { BackLabel = "Back" });
+
+        if (result.Action is not TuiMenuAction.Item)
+        {
+            return;
+        }
+
+        var chosen = levels[result.Index];
+        var ok = await ApplyLogLevelAsync(session, mcp, chosen);
+        console.MarkupLine(ok
+            ? $"[green]Log level set to {TuiLogFormat.Name(chosen).ToLowerInvariant()}.[/]"
+            : "[red]The server rejected the log-level request.[/]");
+        console.MarkupLine("[grey]Press any key to continue...[/]");
+        await session.WaitForKey();
     }
 
     /// <summary>
@@ -803,9 +1037,11 @@ internal static class TuiApp
     }
 
     /// <summary>
-    /// Compact, always-visible section counts rendered under the section menu so the user sees
-    /// "how much does this server expose" without opening Overview. Each entry is a coloured dot
-    /// (green = has items, grey = empty, red = section errored / not reachable) + a count + label.
+    /// Compact, always-visible section counts + declared capabilities rendered just under the
+    /// server summary panel (above the menu) so the user sees "how much does this server expose"
+    /// and "what does it advertise" without opening Overview. Counts use a coloured dot
+    /// (green = has items, grey = empty, red = section errored); capabilities are chips that are
+    /// bright when declared and dimmed/struck when the server doesn't advertise them.
     /// </summary>
     internal static void RenderSectionCountsBar(IAnsiConsole console, ServerInspection server)
     {
@@ -815,14 +1051,36 @@ internal static class TuiApp
             return;
         }
 
-        var cells = new[]
+        var counts = new[]
         {
             FormatSectionCount(server.Tools, "tool"),
             FormatSectionCount(server.Prompts, "prompt"),
             FormatSectionCount(server.Resources, "resource"),
             FormatSectionCount(server.ResourceTemplates, "template")
         };
-        console.MarkupLine("  " + string.Join("   ", cells));
+        console.MarkupLine("  " + string.Join("   ", counts));
+        console.MarkupLine("  [grey]caps[/] " + FormatCapabilityChips(server.Capabilities));
+    }
+
+    /// <summary>
+    /// Renders every capability flag as a chip: bright + a filled dot when the server declares it,
+    /// dim + a hollow dot when it doesn't. Mirrors the "Capabilities" row of the Overview table.
+    /// </summary>
+    private static string FormatCapabilityChips(CapabilitySnapshot capabilities)
+    {
+        var chips = new[]
+        {
+            Chip("tools", capabilities.Tools),
+            Chip("resources", capabilities.Resources),
+            Chip("prompts", capabilities.Prompts),
+            Chip("logging", capabilities.Logging),
+            Chip("completions", capabilities.Completions)
+        };
+        return string.Join("  ", chips);
+
+        static string Chip(string name, bool present) => present
+            ? $"[green]\u25cf[/] [white]{name}[/]"
+            : $"[grey35]\u25cb[/] [grey35]{name}[/]";
     }
 
     private static string FormatSectionCount<T>(SectionResult<T> section, string noun)
@@ -1210,6 +1468,9 @@ internal static class TuiApp
         public TuiServerInteraction? Interaction { get; } = interaction;
         public IMcpSession? Mcp { get; set; }
 
+        /// <summary>The log level currently requested from the server (null until logging is enabled).</summary>
+        public ModelContextProtocol.Protocol.LoggingLevel? LogLevel { get; set; }
+
         public async Task CloseSessionAsync()
         {
             if (Mcp is not null)
@@ -1217,6 +1478,8 @@ internal static class TuiApp
                 await Mcp.DisposeAsync();
                 Mcp = null;
             }
+
+            LogLevel = null;
         }
     }
 }

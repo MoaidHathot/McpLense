@@ -1520,6 +1520,13 @@ internal static partial class McpExecutor
     {
         public ServerReference Server => ToReference(server);
 
+        public async Task SetLoggingLevelAsync(LoggingLevel level, CancellationToken cancellationToken)
+        {
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            await client.SetLoggingLevelAsync(level, cancellationToken: timeoutSource.Token).ConfigureAwait(false);
+        }
+
         public async Task<IReadOnlyList<ToolInfo>> ListToolsAsync(CancellationToken cancellationToken)
         {
             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

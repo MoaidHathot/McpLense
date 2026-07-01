@@ -2,6 +2,33 @@
 
 Living roadmap.
 
+## Delivered in 0.19.0 - MCP logging support + counts/caps bar polish
+
+First-class support for the MCP `logging` capability in the TUI, plus the section-bar refinements.
+
+- **Logging: send + receive + control.** `IMcpSession` gained `SetLoggingLevelAsync` (wraps the SDK's
+  `McpClient.SetLoggingLevelAsync`). On entering a server that advertises the `logging` capability the
+  TUI opens the session up front and requests the **most verbose level (debug)** so every log streams
+  by default; the user can change it. `notifications/message` is parsed into a structured
+  `TuiLogEntry` (level / logger / message) from the SDK's `LoggingMessageNotificationParams`, with a
+  safe raw-JSON fallback for non-conforming payloads. `TuiServerInteraction` now keeps a persistent,
+  session-lifetime log buffer (every log since connect) separate from the transient post-invocation
+  table, exposing `LogCount` + `LogSnapshot(minLevel?)`.
+- **Logging TUI: rich, colourful, persistent.** A persistent log tail renders under the section menu
+  (severity-coloured tags DEBUG-&gt;EMERG, logger names, last few lines) and survives navigation
+  because it re-renders each menu frame. A dedicated **`Logs (N)`** section (badge = total received)
+  opens a full scrollback viewer (timestamps + every entry since connect) with **Change level** (pick
+  any of the 8 MCP severities -&gt; `logging/setLevel`) and **Refresh**. For HTTP servers the viewer
+  notes that idle logs need `--server-stream`. The section only appears when the server declares
+  logging, and the `caps` chip for logging lights up green.
+- **Counts/caps bar placement.** The section counts bar moved **above** the menu (just under the
+  URL/auth panel) and gained a `caps` line mirroring the Overview "Capabilities" row: every capability
+  flag as a chip (bright + filled dot when declared, dim + hollow when not), so tools / resources /
+  prompts / logging / completions are visible at a glance without opening Overview.
+
+Build + test state: 874 unit + 73 integration + 38 E2E (6 gated smokes skipped), all green; solution
+Release build clean.
+
 ## Delivered in 0.18.0 - implied URL scheme + richer TUI
 
 Two usability features on top of the 0.17.2 TUI pass.

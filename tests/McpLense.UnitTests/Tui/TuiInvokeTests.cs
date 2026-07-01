@@ -29,6 +29,9 @@ public class TuiInvokeTests
 
         public ServerReference Server { get; } = new("alpha", "stdio", "dotnet exec foo.dll");
 
+        public Task SetLoggingLevelAsync(ModelContextProtocol.Protocol.LoggingLevel level, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
         public Task<IReadOnlyList<ToolInfo>> ListToolsAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<ToolInfo>>([]);
 
@@ -196,6 +199,9 @@ public class TuiInvokeTests
     private sealed class InteractingSession(TuiServerInteraction interaction) : IMcpSession
     {
         public ServerReference Server { get; } = new("alpha", "stdio", "dotnet exec foo.dll");
+
+        public Task SetLoggingLevelAsync(ModelContextProtocol.Protocol.LoggingLevel level, CancellationToken cancellationToken)
+            => Task.CompletedTask;
 
         public Task<IReadOnlyList<ToolInfo>> ListToolsAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<ToolInfo>>([]);

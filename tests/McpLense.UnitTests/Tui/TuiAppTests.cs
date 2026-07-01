@@ -191,6 +191,21 @@ public class TuiAppTests
     }
 
     [Fact]
+    public void RenderSectionCountsBar_IncludesCapabilityChips()
+    {
+        var console = NewConsole();
+        // Default BuildServer capabilities: tools, resources, prompts declared; logging + completions not.
+        var server = BuildServer();
+
+        TuiApp.RenderSectionCountsBar(console, server);
+
+        var output = console.Output;
+        output.ShouldContain("caps");
+        output.ShouldContain("logging");
+        output.ShouldContain("completions");
+    }
+
+    [Fact]
     public void RenderSectionCountsBar_ConnectionError_ShowsUnreachable_NotCounts()
     {
         var console = NewConsole();

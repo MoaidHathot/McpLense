@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 
 namespace McpLense;
 
@@ -14,6 +15,13 @@ internal interface IMcpSession : IAsyncDisposable
 {
     /// <summary>Identity of the connected server (name / transport / target).</summary>
     ServerReference Server { get; }
+
+    /// <summary>
+    /// Requests the server send log messages at or above <paramref name="level"/>
+    /// (MCP <c>logging/setLevel</c>). Best-effort: throws only if the caller wants to surface the
+    /// error; a server that doesn't support logging may reject it. Enables the client's log stream.
+    /// </summary>
+    Task SetLoggingLevelAsync(LoggingLevel level, CancellationToken cancellationToken);
 
     /// <summary>Lists the server's tools (name, description, input schema) over the open session.</summary>
     Task<IReadOnlyList<ToolInfo>> ListToolsAsync(CancellationToken cancellationToken);
