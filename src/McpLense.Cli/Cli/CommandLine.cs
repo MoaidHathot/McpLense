@@ -417,7 +417,8 @@ internal static class CommandLineParser
         }
 
         Uri? url = null;
-        if (urlPositional is not null && !Uri.TryCreate(urlPositional, UriKind.Absolute, out url))
+        var schemeInferred = false;
+        if (urlPositional is not null && !TryParseTargetUrl(urlPositional, out url, out schemeInferred))
         {
             throw new UserInputException($"Invalid URL '{urlPositional}'.");
         }
@@ -438,7 +439,8 @@ internal static class CommandLineParser
             CommandArguments: [],
             WorkingDirectory: null,
             Environment: new Dictionary<string, string>(),
-            AuthOverrides: authOverrides);
+            AuthOverrides: authOverrides,
+            SchemeInferred: schemeInferred);
 
         return new ParsedCommand(command, Subject: null, Arguments: null, format, timeout, target, ProgressEnabled: false);
     }
@@ -619,13 +621,98 @@ internal static class CommandLineParser
 
     private static bool LooksLikeUrl(string value)
         => value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-           || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+           || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+           || LooksLikeSchemelessUrl(value);
+
+    /// <summary>
+    /// True when the value looks like a host (optionally with a port / path) that a user typed
+    /// WITHOUT an <c>http(s)://</c> scheme - e.g. <c>example.com/mcp</c> or <c>localhost:8080</c>.
+    /// The scheme is inferred later (https first, then http). Deliberately conservative so it never
+    /// swallows a stdio command word: it requires a dotted host, a <c>host:port</c>, or an explicit
+    /// <c>localhost</c> - and it must not contain whitespace or start with a path/flag character.
+    /// </summary>
+    private static bool LooksLikeSchemelessUrl(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || value.IndexOf(' ') >= 0
+            || value[0] is '/' or '-' or '@' or '.')
+        {
+            return false;
+        }
+
+        // A scheme we don't infer (e.g. "file:", "ws:") should not be treated as a bare host.
+        var schemeSep = value.IndexOf("://", StringComparison.Ordinal);
+        if (schemeSep >= 0)
+        {
+            return false;
+        }
+
+        // The authority is everything up to the first '/', '?' or '#'.
+        var authorityEnd = value.IndexOfAny(['/', '?', '#']);
+        var authority = authorityEnd >= 0 ? value[..authorityEnd] : value;
+        if (authority.Length == 0)
+        {
+            return false;
+        }
+
+        var host = authority;
+        var colon = authority.IndexOf(':');
+        if (colon >= 0)
+        {
+            var portText = authority[(colon + 1)..];
+            // "host:port" - the part after the colon must be a valid port for us to treat the
+            // whole thing as a schemeless URL (guards against "cmd:subcmd" style tokens).
+            if (!int.TryParse(portText, out var port) || port is < 1 or > 65535)
+            {
+                return false;
+            }
+            host = authority[..colon];
+        }
+
+        if (host.Length == 0)
+        {
+            return false;
+        }
+
+        // Accept an explicit localhost, or any dotted host (a.b) - a single bare word like "npx"
+        // is rejected so stdio commands are never mistaken for a URL.
+        return string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+               || (colon >= 0)
+               || host.Contains('.');
+    }
 
     private static bool LooksLikeNamedReference(string value)
         => value.Length > 1 && value[0] == '@';
 
     private static bool LooksLikeUrlOrTargetRef(string value)
         => LooksLikeUrl(value) || LooksLikeNamedReference(value);
+
+    /// <summary>
+    /// Parses a user-supplied target URL, inferring the scheme when the user omitted it. Returns
+    /// the parsed <paramref name="uri"/> plus <paramref name="schemeInferred"/> = true when we
+    /// defaulted to <c>https://</c> (so the connection layer knows it may fall back to http). An
+    /// explicit <c>http(s)://</c> scheme is honoured as-is and never triggers a fallback.
+    /// </summary>
+    private static bool TryParseTargetUrl(string value, out Uri? uri, out bool schemeInferred)
+    {
+        schemeInferred = false;
+
+        if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return Uri.TryCreate(value, UriKind.Absolute, out uri);
+        }
+
+        if (LooksLikeSchemelessUrl(value)
+            && Uri.TryCreate($"https://{value}", UriKind.Absolute, out uri))
+        {
+            schemeInferred = true;
+            return true;
+        }
+
+        uri = null;
+        return false;
+    }
 
     private static JsonObject? ParseArguments(AppCommand command, string? value)
     {
@@ -796,12 +883,12 @@ internal static class CommandLineParser
                 throw new UserInputException("--cwd and --env only apply to stdio targets.");
             }
 
-            if (!Uri.TryCreate(urlText, UriKind.Absolute, out var uri))
+            if (!TryParseTargetUrl(urlText!, out var uri, out var schemeInferred))
             {
                 throw new UserInputException($"Invalid URL '{urlText}'.");
             }
 
-            return new TargetOptions([], [], profilePaths, displayName, uri, transport, headers, null, [], null, new Dictionary<string, string>(), authOverrides);
+            return new TargetOptions([], [], profilePaths, displayName, uri, transport, headers, null, [], null, new Dictionary<string, string>(), authOverrides, SchemeInferred: schemeInferred);
         }
 
         if (headers.Count > 0)

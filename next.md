@@ -2,6 +2,37 @@
 
 Living roadmap.
 
+## Delivered in 0.18.0 - implied URL scheme + richer TUI
+
+Two usability features on top of the 0.17.2 TUI pass.
+
+- **Implied URL scheme with https-&gt;http fallback.** A bare host now works everywhere a target is
+  accepted - `mcplense inspect example.com/mcp`, `localhost:8080`, etc. - instead of erroring. The
+  CLI recognises schemeless hosts (conservatively: a dotted host, `host:port`, or `localhost`; a
+  lone word like `npx` is still treated as a stdio command), defaults to `https://`, and records a
+  `TargetOptions.SchemeInferred` flag. `TargetResolver` then probes the inferred `https://`; if it
+  doesn't respond but `http://` does, it switches to http and prints a warning
+  (`no scheme was given and https://... did not respond; falling back to http://... (unencrypted)`).
+  If neither answers it keeps https so the real connect error surfaces. The probe runs **only** when
+  the scheme was inferred, so explicit-URL usage pays no latency. Because it lives in the shared
+  `TargetResolver` choke-point it covers inspect / tui / call / read / prompt / tools / resources /
+  prompts / scan / analyze / explain / doctor; `--targets-from` batch files also accept bare hosts
+  (default https, no per-line probe at fleet scale). New `SchemeReachability` HEAD-probe helper
+  (overridable for tests via `TargetResolver.ReachabilityProbe`).
+- **Always-visible section counts + richer TUI.** The section menu now shows a compact counts bar
+  under the items so you see what a server exposes without opening Overview:
+  `\u25cf 5 tools   \u25cf 3 prompts   \u25cb 0 resources   \u25cb 1 template` (filled green dot = has items, hollow
+  grey = empty, red = errored/unreachable). `TuiMenu.Select` gained an optional `renderStatusBar`
+  slot rendered between the items and the keybinding footer. General polish: rounded, colour-bordered
+  summary panel with a health dot + field separators, a branded header on the multi-server selection
+  screen, per-row health dots in the server list, colour-coded detail panels (aqua tools / green
+  resources / magenta prompts) with required args in red, and a titled, right-aligned, colourised
+  Overview table. Deliberately no emoji (they render as tofu in many terminals) - only safe geometric
+  glyphs and box drawing already used elsewhere.
+
+Build + test state: 850 unit + 73 integration + 38 E2E (6 gated smokes skipped), all green; solution
+Release build clean.
+
 ## Delivered in 0.17.2 - TUI reachability + single-server UX fixes
 
 Three TUI explorer fixes driven by real friction opening an unreachable server.

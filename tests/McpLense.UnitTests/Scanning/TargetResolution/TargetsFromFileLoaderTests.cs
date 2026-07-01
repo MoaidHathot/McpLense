@@ -76,10 +76,46 @@ public class TargetsFromFileLoaderTests
         var tmp = Path.GetTempFileName();
         try
         {
-            await File.WriteAllTextAsync(tmp, "https://ok/mcp\nnot-a-url\n");
+            // A bare host is now accepted (defaults to https), but a value that can't be a URL even
+            // with a scheme - here one containing whitespace - is still rejected with its line number.
+            await File.WriteAllTextAsync(tmp, "https://ok/mcp\nnot a url\n");
             var ex = await Should.ThrowAsync<UserInputException>(() =>
                 TargetsFromFileLoader.LoadAsync(new[] { tmp }, new ScanConfig(), CancellationToken.None));
             ex.Message.ShouldContain("line 2");
+        }
+        finally
+        {
+            File.Delete(tmp);
+        }
+    }
+
+    [Fact]
+    public async Task LoadAsync_UnsupportedScheme_ThrowsWithLineNumber()
+    {
+        var tmp = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(tmp, "ftp://example.com\n");
+            var ex = await Should.ThrowAsync<UserInputException>(() =>
+                TargetsFromFileLoader.LoadAsync(new[] { tmp }, new ScanConfig(), CancellationToken.None));
+            ex.Message.ShouldContain("line 1");
+        }
+        finally
+        {
+            File.Delete(tmp);
+        }
+    }
+
+    [Fact]
+    public async Task LoadAsync_BareHost_DefaultsToHttps()
+    {
+        var tmp = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(tmp, "example.com/mcp\n");
+            var servers = await TargetsFromFileLoader.LoadAsync(new[] { tmp }, new ScanConfig(), CancellationToken.None);
+            servers.ShouldHaveSingleItem();
+            servers[0].Url!.ToString().ShouldBe("https://example.com/mcp");
         }
         finally
         {

@@ -97,7 +97,7 @@ internal static class TuiApp
 
             var result = TuiMenu.Select(
                 console,
-                renderHeader: null,
+                renderHeader: () => RenderAppHeader(console, $"{servers.Count} MCP servers resolved"),
                 title: "Select an MCP server",
                 items: serverItems,
                 options: new TuiMenuOptions { ExitLabel = "Exit" },
@@ -112,15 +112,28 @@ internal static class TuiApp
         }
     }
 
+    /// <summary>A compact branded header shown atop top-level screens.</summary>
+    internal static void RenderAppHeader(IAnsiConsole console, string subtitle)
+    {
+        console.Write(new Panel($"[bold aqua]McpLense[/] [grey]\u2502[/] [grey]MCP explorer[/]\n[grey]{Markup.Escape(subtitle)}[/]")
+        {
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: Color.Aqua),
+            Padding = new Padding(1, 0, 1, 0)
+        });
+    }
+
     /// <summary>
     /// One row in the server-selection list. A reachable server shows
-    /// <c>name   [transport]   target</c>; an unreachable one appends the concise failure reason
-    /// (e.g. <c>(unreachable: 401 Unauthorized)</c>) so the status code is visible without drilling in.
-    /// The row is tinted red by the caller via <c>itemColors</c>.
+    /// <c>\u25cf name   \u2502 transport \u2502   target</c>; an unreachable one appends the concise failure
+    /// reason (e.g. <c>(unreachable: 401 Unauthorized)</c>) so the status code is visible without
+    /// drilling in. The row is tinted red by the caller via <c>itemColors</c>.
     /// </summary>
     internal static string FormatServerListItem(ServerInspection server)
     {
-        var label = $"{server.Name}   [{server.Transport}]   {server.Target}";
+        // The leading dot inherits the row colour (green when reachable, red when not) applied by
+        // the menu's itemColors, giving an at-a-glance health indicator per row.
+        var label = $"\u25cf {server.Name}   [{server.Transport}]   {server.Target}";
         if (server.Error is null)
         {
             return label;
@@ -181,7 +194,8 @@ internal static class TuiApp
                 renderHeader: () => RenderServerSummary(console, server),
                 title: "Choose a section",
                 items: sections,
-                options: menuOptions);
+                options: menuOptions,
+                renderStatusBar: () => RenderSectionCountsBar(console, server));
 
             if (result.Action is not TuiMenuAction.Item)
             {
@@ -754,35 +768,83 @@ internal static class TuiApp
 
     internal static void RenderServerSummary(IAnsiConsole console, ServerInspection server)
     {
-        var body = $"[bold]{Markup.Escape(server.Name)}[/]\n[grey]{Markup.Escape(server.Target)}[/]";
-        if (server.Error is not null)
+        var reachable = server.Error is null;
+        var statusDot = reachable ? "[green]\u25cf[/]" : "[red]\u25cf[/]";
+        var body = $"{statusDot} [bold]{Markup.Escape(server.Name)}[/]  [grey]\u2502[/]  [grey54]{Markup.Escape(server.Transport)}[/]"
+                   + $"\n  [grey]{Markup.Escape(server.Target)}[/]";
+        if (!reachable)
         {
             var reason = DescribeConnectionFailure(server.Error);
             var headline = reason is null ? "connection failed" : $"connection failed: {reason}";
-            body += $"\n[red]{Markup.Escape(headline)}[/]";
+            body += $"\n  [red]{Markup.Escape(headline)}[/]";
             // Keep the raw exception text underneath for the full detail when it adds information
             // beyond the distilled reason.
-            if (reason is null || !server.Error.Contains(reason, StringComparison.OrdinalIgnoreCase))
+            if (reason is null || !server.Error!.Contains(reason, StringComparison.OrdinalIgnoreCase))
             {
-                body += $"\n[grey]{Markup.Escape(server.Error)}[/]";
+                body += $"\n  [grey]{Markup.Escape(server.Error!)}[/]";
             }
         }
         else if (TextFormatter.DescribeConnectionAuth(server.AuthStatus) is { } authLine)
         {
-            var colour = server.AuthStatus!.Mode == ConnectionAuthModes.Authenticated ? "green" : "grey";
-            body += $"\n[{colour}]auth: {Markup.Escape(authLine)}[/]";
+            var authenticated = server.AuthStatus!.Mode == ConnectionAuthModes.Authenticated;
+            var colour = authenticated ? "green" : "grey";
+            body += $"\n  [{colour}]auth: {Markup.Escape(authLine)}[/]";
         }
 
         var panel = new Panel(body)
         {
-            Header = new PanelHeader($"{server.Transport} server")
+            Header = new PanelHeader($" {server.Transport} server "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: reachable ? Color.Grey : Color.Red),
+            Padding = new Padding(1, 0, 1, 0)
         };
-        if (server.Error is not null)
-        {
-            panel.BorderStyle = new Style(foreground: Color.Red);
-        }
 
         console.Write(panel);
+    }
+
+    /// <summary>
+    /// Compact, always-visible section counts rendered under the section menu so the user sees
+    /// "how much does this server expose" without opening Overview. Each entry is a coloured dot
+    /// (green = has items, grey = empty, red = section errored / not reachable) + a count + label.
+    /// </summary>
+    internal static void RenderSectionCountsBar(IAnsiConsole console, ServerInspection server)
+    {
+        if (server.Error is not null)
+        {
+            console.MarkupLine("  [red]\u25cf unreachable[/] [grey]- counts unavailable until the server responds[/]");
+            return;
+        }
+
+        var cells = new[]
+        {
+            FormatSectionCount(server.Tools, "tool"),
+            FormatSectionCount(server.Prompts, "prompt"),
+            FormatSectionCount(server.Resources, "resource"),
+            FormatSectionCount(server.ResourceTemplates, "template")
+        };
+        console.MarkupLine("  " + string.Join("   ", cells));
+    }
+
+    private static string FormatSectionCount<T>(SectionResult<T> section, string noun)
+    {
+        var count = section.Items.Count;
+        string dot;
+        if (section.Error is not null)
+        {
+            dot = "[red]\u25cf[/]";
+        }
+        else if (!section.Supported)
+        {
+            dot = "[grey35]\u25cb[/]"; // hollow: capability not offered at all
+        }
+        else
+        {
+            dot = count > 0 ? "[green]\u25cf[/]" : "[grey]\u25cb[/]";
+        }
+
+        var label = count == 1 ? noun : noun + "s";
+        var countColour = section.Error is not null ? "red" : count > 0 ? "white" : "grey";
+        return $"{dot} [{countColour}]{count}[/] [grey]{label}[/]";
     }
 
     internal static void RenderOverview(IAnsiConsole console, ServerInspection server)
@@ -792,16 +854,35 @@ internal static class TuiApp
             return;
         }
 
-        var table = new Table().RoundedBorder();
-        table.AddColumn("Section");
-        table.AddColumn("Status");
-        table.AddColumn("Count");
-        table.AddRow("Capabilities", Markup.Escape(FormatCapabilities(server.Capabilities)), "-");
-        table.AddRow("Tools", SectionStatus(server.Tools), server.Tools.Items.Count.ToString());
-        table.AddRow("Resources", SectionStatus(server.Resources), server.Resources.Items.Count.ToString());
-        table.AddRow("Resource Templates", SectionStatus(server.ResourceTemplates), server.ResourceTemplates.Items.Count.ToString());
-        table.AddRow("Prompts", SectionStatus(server.Prompts), server.Prompts.Items.Count.ToString());
+        var table = new Table()
+            .RoundedBorder()
+            .BorderColor(Color.Grey)
+            .Title("[bold]capabilities & counts[/]");
+        table.AddColumn("[grey]Section[/]");
+        table.AddColumn("[grey]Status[/]");
+        table.AddColumn(new TableColumn("[grey]Count[/]").RightAligned());
+        table.AddRow("Capabilities", $"[aqua]{Markup.Escape(FormatCapabilities(server.Capabilities))}[/]", "[grey]-[/]");
+        table.AddRow("Tools", ColourSectionStatus(server.Tools), CountCell(server.Tools));
+        table.AddRow("Resources", ColourSectionStatus(server.Resources), CountCell(server.Resources));
+        table.AddRow("Resource Templates", ColourSectionStatus(server.ResourceTemplates), CountCell(server.ResourceTemplates));
+        table.AddRow("Prompts", ColourSectionStatus(server.Prompts), CountCell(server.Prompts));
         console.Write(table);
+    }
+
+    private static string CountCell<T>(SectionResult<T> section)
+    {
+        var count = section.Items.Count;
+        return count > 0 ? $"[white]{count}[/]" : "[grey]0[/]";
+    }
+
+    /// <summary>Coloured variant of <see cref="SectionStatus{T}"/> for the overview table.</summary>
+    private static string ColourSectionStatus<T>(SectionResult<T> section)
+    {
+        if (section.Error is not null)
+        {
+            return $"[red]error: {Markup.Escape(section.Error)}[/]";
+        }
+        return section.Supported ? "[green]ok[/]" : "[grey]not supported[/]";
     }
 
     /// <summary>
@@ -832,10 +913,10 @@ internal static class TuiApp
 
     internal static void RenderToolDetail(IAnsiConsole console, ToolInfo tool)
     {
-        console.Write(new Panel($"[bold]{Markup.Escape(tool.Name)}[/]\n[grey]{Markup.Escape(tool.Description ?? string.Empty)}[/]")
-        {
-            Header = new PanelHeader("Tool")
-        });
+        console.Write(DetailPanel(
+            "tool",
+            $"[bold aqua]{Markup.Escape(tool.Name)}[/]\n[grey]{Markup.Escape(tool.Description ?? "(no description)")}[/]",
+            Color.Aqua));
 
         if (tool.InputSchema is null)
         {
@@ -843,14 +924,14 @@ internal static class TuiApp
             return;
         }
 
-        var root = new Tree("[bold]inputSchema[/]");
+        var root = new Tree("[bold]inputSchema[/]").Style(Style.Parse("grey"));
         AppendSchemaNode(root, tool.InputSchema);
         console.Write(root);
     }
 
     internal static void RenderResourceDetail(IAnsiConsole console, ResourceInfo resource)
     {
-        var body = $"[bold]{Markup.Escape(resource.Name ?? "(unnamed)")}[/]\n[grey]{Markup.Escape(resource.Uri ?? "(no uri)")}[/]";
+        var body = $"[bold green]{Markup.Escape(resource.Name ?? "(unnamed)")}[/]\n[grey]{Markup.Escape(resource.Uri ?? "(no uri)")}[/]";
         if (!string.IsNullOrWhiteSpace(resource.MimeType))
         {
             body += $"\n[grey]mime: {Markup.Escape(resource.MimeType!)}[/]";
@@ -859,12 +940,12 @@ internal static class TuiApp
         {
             body += $"\n{Markup.Escape(resource.Description!)}";
         }
-        console.Write(new Panel(body) { Header = new PanelHeader("Resource") });
+        console.Write(DetailPanel("resource", body, Color.Green));
     }
 
     internal static void RenderResourceTemplateDetail(IAnsiConsole console, ResourceTemplateInfo template)
     {
-        var body = $"[bold]{Markup.Escape(template.Name ?? "(unnamed)")}[/]\n[grey]{Markup.Escape(template.UriTemplate ?? "(no template)")}[/]";
+        var body = $"[bold green]{Markup.Escape(template.Name ?? "(unnamed)")}[/]\n[grey]{Markup.Escape(template.UriTemplate ?? "(no template)")}[/]";
         if (!string.IsNullOrWhiteSpace(template.MimeType))
         {
             body += $"\n[grey]mime: {Markup.Escape(template.MimeType!)}[/]";
@@ -874,21 +955,21 @@ internal static class TuiApp
             body += $"\n{Markup.Escape(template.Description!)}";
         }
 
-        console.Write(new Panel(body) { Header = new PanelHeader("Resource template") });
+        console.Write(DetailPanel("resource template", body, Color.Green));
 
         var variables = ArgumentElicitor.ExtractTemplateVariables(template.UriTemplate ?? string.Empty);
         if (variables.Count > 0)
         {
-            console.MarkupLine($"[grey]variables:[/] {Markup.Escape(string.Join(", ", variables))}");
+            console.MarkupLine($"[grey]variables:[/] [yellow]{Markup.Escape(string.Join(", ", variables))}[/]");
         }
     }
 
     internal static void RenderPromptDetail(IAnsiConsole console, PromptInfo prompt)
     {
-        console.Write(new Panel($"[bold]{Markup.Escape(prompt.Name)}[/]\n[grey]{Markup.Escape(prompt.Description ?? string.Empty)}[/]")
-        {
-            Header = new PanelHeader("Prompt")
-        });
+        console.Write(DetailPanel(
+            "prompt",
+            $"[bold magenta]{Markup.Escape(prompt.Name)}[/]\n[grey]{Markup.Escape(prompt.Description ?? "(no description)")}[/]",
+            Color.Magenta1));
 
         if (prompt.Arguments.Count == 0)
         {
@@ -896,19 +977,29 @@ internal static class TuiApp
             return;
         }
 
-        var table = new Table().RoundedBorder();
-        table.AddColumn("Argument");
-        table.AddColumn("Required");
-        table.AddColumn("Description");
+        var table = new Table().RoundedBorder().BorderColor(Color.Grey);
+        table.AddColumn("[grey]Argument[/]");
+        table.AddColumn("[grey]Required[/]");
+        table.AddColumn("[grey]Description[/]");
         foreach (var argument in prompt.Arguments)
         {
             table.AddRow(
-                Markup.Escape(argument.Name ?? "(unnamed)"),
-                argument.Required ? "yes" : "no",
+                $"[white]{Markup.Escape(argument.Name ?? "(unnamed)")}[/]",
+                argument.Required ? "[red]required[/]" : "[grey]optional[/]",
                 Markup.Escape(argument.Description ?? string.Empty));
         }
         console.Write(table);
     }
+
+    /// <summary>Shared rounded, coloured detail panel so every drill-in screen looks consistent.</summary>
+    private static Panel DetailPanel(string header, string body, Color accent)
+        => new(body)
+        {
+            Header = new PanelHeader($" {header} "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: accent),
+            Padding = new Padding(1, 0, 1, 0)
+        };
 
     private static void AppendSchemaNode(IHasTreeNodes parent, JsonNode? node)
     {

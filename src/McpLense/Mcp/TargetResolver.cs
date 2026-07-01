@@ -1,9 +1,21 @@
 using System.Text.Json.Nodes;
+using McpLense.Diagnostics;
 
 namespace McpLense;
 
 internal static class TargetResolver
 {
+    /// <summary>
+    /// Tests HTTP(S) reachability of an inferred-scheme URL so the resolver can fall back from
+    /// <c>https://</c> to <c>http://</c>. Overridable so tests can decide reachability without real
+    /// network I/O. Returns true when the endpoint answered (any HTTP response, including 4xx/5xx -
+    /// the host is up), false on DNS/TLS/connection failure. Never throws.
+    /// </summary>
+    internal static Func<Uri, CancellationToken, Task<bool>> ReachabilityProbe { get; set; } = SchemeReachability.ProbeAsync;
+
+    /// <summary>Restore the default network-backed reachability probe. For test teardown.</summary>
+    internal static void ResetReachabilityProbe() => ReachabilityProbe = SchemeReachability.ProbeAsync;
+
     public static Task<IReadOnlyList<ResolvedServer>> ResolveAsync(TargetOptions options, CancellationToken cancellationToken)
         => ResolveAsync(options, new EnvironmentExpander(), cancellationToken);
 
@@ -36,18 +48,19 @@ internal static class TargetResolver
 
             if (options.Url is not null)
             {
+                var url = await ResolveHttpSchemeAsync(options.Url, options.SchemeInferred, cancellationToken).ConfigureAwait(false);
                 return
                 [
                     new ResolvedServer(
-                        Name: options.DisplayName ?? options.Url.Host,
+                        Name: options.DisplayName ?? url.Host,
                         Kind: ConnectionKind.Http,
-                        Target: options.Url.ToString(),
+                        Target: url.ToString(),
                         Source: "direct-url",
                         Command: null,
                         CommandArguments: [],
                         WorkingDirectory: null,
                         Environment: new Dictionary<string, string>(),
-                        Url: options.Url,
+                        Url: url,
                         Transport: options.Transport,
                         Headers: new Dictionary<string, string>(options.Headers, StringComparer.OrdinalIgnoreCase))
                 ];
@@ -73,6 +86,39 @@ internal static class TargetResolver
             }
 
             throw new UserInputException("No target was resolved.");
+        }
+
+        /// <summary>
+        /// Returns the URL to connect to, applying https-&gt;http fallback when the scheme was
+        /// inferred. When <paramref name="schemeInferred"/> is false (the user typed an explicit
+        /// scheme) the URL is returned unchanged with no probing. Otherwise the inferred
+        /// <c>https://</c> URL is probed; if it's unreachable but the <c>http://</c> variant answers,
+        /// the http URL is used and a warning is emitted. If neither answers we keep https (the
+        /// original preference) so the subsequent connect surfaces the real error.
+        /// </summary>
+        private static async Task<Uri> ResolveHttpSchemeAsync(Uri url, bool schemeInferred, CancellationToken cancellationToken)
+        {
+            if (!schemeInferred || !string.Equals(url.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return url;
+            }
+
+            if (await ReachabilityProbe(url, cancellationToken).ConfigureAwait(false))
+            {
+                return url;
+            }
+
+            var httpUrl = new UriBuilder(url) { Scheme = Uri.UriSchemeHttp, Port = url.IsDefaultPort ? 80 : url.Port }.Uri;
+            if (await ReachabilityProbe(httpUrl, cancellationToken).ConfigureAwait(false))
+            {
+                McpLenseLog.Write(
+                    $"warning: no scheme was given and https://{url.Authority} did not respond; " +
+                    $"falling back to http://{httpUrl.Authority} (unencrypted). Pass an explicit https:// URL to require TLS.");
+                return httpUrl;
+            }
+
+            // Neither answered: keep the https preference so the connect error is the https one.
+            return url;
         }
 
         private async Task<IReadOnlyList<ResolvedServer>> ResolveFromConfigsAsync(TargetOptions options, CancellationToken cancellationToken)

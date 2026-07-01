@@ -53,7 +53,8 @@ internal static class TuiMenu
         string title,
         IReadOnlyList<string> items,
         TuiMenuOptions options,
-        IReadOnlyList<string?>? itemColors = null)
+        IReadOnlyList<string?>? itemColors = null,
+        Action? renderStatusBar = null)
     {
         var count = items.Count;
         var index = count > 0 ? 0 : -1;
@@ -72,7 +73,7 @@ internal static class TuiMenu
 
             console.Clear();
             renderHeader?.Invoke();
-            Render(console, title, items, index, top, pageSize, options, itemColors);
+            Render(console, title, items, index, top, pageSize, options, itemColors, renderStatusBar);
 
             var key = TryReadKey(console);
             if (key is null)
@@ -138,7 +139,8 @@ internal static class TuiMenu
         int top,
         int pageSize,
         TuiMenuOptions options,
-        IReadOnlyList<string?>? itemColors)
+        IReadOnlyList<string?>? itemColors,
+        Action? renderStatusBar)
     {
         if (!string.IsNullOrEmpty(title))
         {
@@ -179,6 +181,10 @@ internal static class TuiMenu
                 console.MarkupLine($"[grey]  ({top + 1}-{end} of {items.Count})[/]");
             }
         }
+
+        // An optional caller-supplied status line rendered directly under the items (above the
+        // keybinding footer) - e.g. the section-menu counts bar.
+        renderStatusBar?.Invoke();
 
         RenderFooter(console, options, items.Count);
     }

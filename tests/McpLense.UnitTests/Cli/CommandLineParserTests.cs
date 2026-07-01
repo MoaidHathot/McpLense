@@ -246,6 +246,52 @@ public class CommandLineParserTests
             .Message.ShouldContain("at most a single positional URL");
     }
 
+    [Fact]
+    public void Parse_SchemelessPositional_DefaultsToHttps_AndFlagsInferred()
+    {
+        var parsed = CommandLineParser.Parse(["inspect", "example.com/mcp"]);
+
+        parsed.Target.Url.ShouldNotBeNull();
+        parsed.Target.Url!.ToString().ShouldBe("https://example.com/mcp");
+        parsed.Target.SchemeInferred.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Parse_SchemelessHostPort_DefaultsToHttps_AndFlagsInferred()
+    {
+        var parsed = CommandLineParser.Parse(["inspect", "localhost:8080"]);
+
+        parsed.Target.Url!.ToString().ShouldBe("https://localhost:8080/");
+        parsed.Target.SchemeInferred.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Parse_ExplicitHttpsPositional_DoesNotFlagInferred()
+    {
+        var parsed = CommandLineParser.Parse(["inspect", "https://example.com/mcp"]);
+
+        parsed.Target.Url.ShouldNotBeNull();
+        parsed.Target.SchemeInferred.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Parse_ExplicitHttpPositional_DoesNotFlagInferred()
+    {
+        var parsed = CommandLineParser.Parse(["inspect", "http://example.com/mcp"]);
+
+        parsed.Target.Url!.Scheme.ShouldBe("http");
+        parsed.Target.SchemeInferred.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Parse_SchemelessViaUrlFlag_DefaultsToHttps()
+    {
+        var parsed = CommandLineParser.Parse(["inspect", "--url", "example.com/mcp"]);
+
+        parsed.Target.Url!.ToString().ShouldBe("https://example.com/mcp");
+        parsed.Target.SchemeInferred.ShouldBeTrue();
+    }
+
     // -------- Profile flags (Phase A) --------------------------------------------
 
     [Fact]

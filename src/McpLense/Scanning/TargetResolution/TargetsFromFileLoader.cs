@@ -90,11 +90,21 @@ internal static class TargetsFromFileLoader
                     continue;
                 }
 
-                if (!Uri.TryCreate(line, UriKind.Absolute, out var uri)
+                // Accept a bare host (no scheme) by defaulting to https - consistent with the
+                // positional-URL behaviour. Batch files aren't probed per-line for http fallback
+                // (that would add a network round-trip per target at fleet scale); list an explicit
+                // http:// URL when a target is plain-HTTP.
+                var candidate = line;
+                if (candidate.IndexOf("://", StringComparison.Ordinal) < 0)
+                {
+                    candidate = $"https://{candidate}";
+                }
+
+                if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
                     || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                 {
                     throw new UserInputException(
-                        $"--targets-from: '{path}' line {i + 1}: '{line}' is not an absolute http(s) URL or '@name' reference.");
+                        $"--targets-from: '{path}' line {i + 1}: '{line}' is not an http(s) URL, a bare host, or an '@name' reference.");
                 }
 
                 var key = uri.ToString();

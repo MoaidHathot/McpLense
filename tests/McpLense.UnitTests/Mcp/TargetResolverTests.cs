@@ -24,7 +24,8 @@ public class TargetResolverTests
         IReadOnlyList<string>? commandArguments = null,
         string? workingDirectory = null,
         IReadOnlyDictionary<string, string>? environment = null,
-        AuthOverrides? authOverrides = null)
+        AuthOverrides? authOverrides = null,
+        bool schemeInferred = false)
         => new(
             configPath is null ? [] : [configPath],
             serverNames ?? [],
@@ -37,7 +38,8 @@ public class TargetResolverTests
             commandArguments ?? [],
             workingDirectory,
             environment ?? new Dictionary<string, string>(),
-            authOverrides ?? AuthOverrides.Empty);
+            authOverrides ?? AuthOverrides.Empty,
+            SchemeInferred: schemeInferred);
 
     private static TargetOptions ConfigsTarget(
         IReadOnlyList<string> configPaths,
@@ -86,6 +88,91 @@ public class TargetResolverTests
         var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
 
         servers[0].Name.ShouldBe("example.com");
+    }
+
+    // -------- Inferred-scheme https->http fallback -------------------------------
+
+    [Fact]
+    public async Task ResolveAsync_SchemeInferred_HttpsReachable_KeepsHttps()
+    {
+        var probed = new List<System.Uri>();
+        TargetResolver.ReachabilityProbe = (uri, _) =>
+        {
+            probed.Add(uri);
+            return Task.FromResult(true); // https answers
+        };
+        try
+        {
+            var options = Direct(url: new System.Uri("https://example.com/mcp"), schemeInferred: true);
+
+            var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+            servers[0].Url!.Scheme.ShouldBe("https");
+            probed.ShouldHaveSingleItem().Scheme.ShouldBe("https"); // http never probed once https answers
+        }
+        finally
+        {
+            TargetResolver.ResetReachabilityProbe();
+        }
+    }
+
+    [Fact]
+    public async Task ResolveAsync_SchemeInferred_HttpsUnreachable_FallsBackToHttp()
+    {
+        TargetResolver.ReachabilityProbe = (uri, _) =>
+            Task.FromResult(uri.Scheme == "http"); // only http answers
+        try
+        {
+            var options = Direct(url: new System.Uri("https://example.com/mcp"), schemeInferred: true);
+
+            var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+            servers[0].Url!.ToString().ShouldBe("http://example.com/mcp");
+        }
+        finally
+        {
+            TargetResolver.ResetReachabilityProbe();
+        }
+    }
+
+    [Fact]
+    public async Task ResolveAsync_SchemeInferred_NeitherReachable_KeepsHttps()
+    {
+        TargetResolver.ReachabilityProbe = (_, _) => Task.FromResult(false); // nothing answers
+        try
+        {
+            var options = Direct(url: new System.Uri("https://example.com/mcp"), schemeInferred: true);
+
+            var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+            // Keep the https preference so the eventual connect surfaces the https error, not an http one.
+            servers[0].Url!.Scheme.ShouldBe("https");
+        }
+        finally
+        {
+            TargetResolver.ResetReachabilityProbe();
+        }
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ExplicitScheme_NeverProbes()
+    {
+        var probed = false;
+        TargetResolver.ReachabilityProbe = (_, _) => { probed = true; return Task.FromResult(true); };
+        try
+        {
+            // schemeInferred:false means the user typed the scheme; no probing/fallback should occur.
+            var options = Direct(url: new System.Uri("https://example.com/mcp"), schemeInferred: false);
+
+            var servers = await TargetResolver.ResolveAsync(options, CancellationToken.None);
+
+            servers[0].Url!.Scheme.ShouldBe("https");
+            probed.ShouldBeFalse();
+        }
+        finally
+        {
+            TargetResolver.ResetReachabilityProbe();
+        }
     }
 
     [Fact]

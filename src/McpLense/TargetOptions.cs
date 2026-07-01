@@ -182,7 +182,15 @@ public sealed record TargetOptions(
     /// / AAD-backed MCPs that don't speak PRM yet still need a <c>&lt;audience&gt;/.default</c>
     /// scope on the token request.
     /// </summary>
-    string? DefaultScope = null);
+    string? DefaultScope = null,
+    /// <summary>
+    /// True when <see cref="Url"/> was built by defaulting a scheme the user omitted (a bare host
+    /// like <c>example.com/mcp</c> becomes <c>https://example.com/mcp</c>). The connection layer
+    /// uses this to fall back to <c>http://</c> - and warn - when the inferred <c>https://</c>
+    /// endpoint is unreachable. An explicit <c>http(s)://</c> URL leaves this false and is never
+    /// second-guessed.
+    /// </summary>
+    bool SchemeInferred = false);
 
 /// <summary>
 /// Raised when the caller supplied invalid input - bad URL, missing required option, etc.

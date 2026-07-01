@@ -161,6 +161,48 @@ public class TuiAppTests
         console.Output.ShouldContain("not supported");
     }
 
+    // --- Section counts bar -------------------------------------------
+
+    [Fact]
+    public void RenderSectionCountsBar_ShowsCountsAndLabelsForEachSection()
+    {
+        var console = NewConsole();
+        // Default BuildServer: 2 tools, 1 resource, 1 template, 1 prompt.
+        var server = BuildServer();
+
+        TuiApp.RenderSectionCountsBar(console, server);
+
+        var output = console.Output;
+        output.ShouldContain("2 tools");
+        output.ShouldContain("1 prompt");
+        output.ShouldContain("1 resource");
+        output.ShouldContain("1 template");
+    }
+
+    [Fact]
+    public void RenderSectionCountsBar_ZeroResources_ShowsZero()
+    {
+        var console = NewConsole();
+        var server = BuildServer(resources: new SectionResult<ResourceInfo>(true, []));
+
+        TuiApp.RenderSectionCountsBar(console, server);
+
+        console.Output.ShouldContain("0 resources");
+    }
+
+    [Fact]
+    public void RenderSectionCountsBar_ConnectionError_ShowsUnreachable_NotCounts()
+    {
+        var console = NewConsole();
+        var server = BuildServer(error: "HttpRequestException: 401 (Unauthorized).");
+
+        TuiApp.RenderSectionCountsBar(console, server);
+
+        var output = console.Output;
+        output.ShouldContain("unreachable");
+        output.ShouldNotContain("tools");
+    }
+
     // --- Helpers -------------------------------------------------------
 
     [Fact]
