@@ -1,6 +1,7 @@
 using System;
 using McpLense;
 using Shouldly;
+using Spectre.Console;
 using Spectre.Console.Testing;
 using Xunit;
 
@@ -240,5 +241,100 @@ public class TuiMenuTests
             renderStatusBar: i => seen.Add(i));
 
         seen.ShouldAllBe(i => i == -1);
+    }
+
+    // --- Fixed-height, scrollable detail pane -----------------------------
+
+    private static TuiDetail LongDetail(int lines)
+    {
+        var body = new System.Collections.Generic.List<TuiDetailLine>();
+        for (var i = 0; i < lines; i++)
+        {
+            body.Add(new TuiDetailLine($"line-{i:D2}"));
+        }
+        return new TuiDetail("[bold]detail[/]", Color.Aqua, body);
+    }
+
+    [Fact]
+    public void Detail_ShowsScrollHint_WhenContentExceedsBox()
+    {
+        var console = NewConsole();
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        TuiMenu.Select(
+            console, null, "Pick", Items,
+            new TuiMenuOptions { BackLabel = "Back", DetailHeight = 3 },
+            detailFor: _ => LongDetail(20));
+
+        // First 3 lines visible; a scroll hint offers "shift" scrolling for the remaining lines.
+        var output = console.Output;
+        output.ShouldContain("line-00");
+        output.ShouldContain("scroll");
+        output.ShouldContain("shift"); // footer hint
+    }
+
+    [Fact]
+    public void Detail_ShiftDown_ScrollsToLaterLines()
+    {
+        var console = NewConsole();
+        console.Input.PushKey(new ConsoleKeyInfo('\0', ConsoleKey.DownArrow, shift: true, alt: false, control: false));
+        console.Input.PushKey(new ConsoleKeyInfo('\0', ConsoleKey.DownArrow, shift: true, alt: false, control: false));
+        console.Input.PushKey(new ConsoleKeyInfo('\0', ConsoleKey.DownArrow, shift: true, alt: false, control: false));
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        TuiMenu.Select(
+            console, null, "Pick", Items,
+            new TuiMenuOptions { BackLabel = "Back", DetailHeight = 3 },
+            detailFor: _ => LongDetail(20));
+
+        // After scrolling down 3, a line from further down the content is now visible.
+        console.Output.ShouldContain("line-03");
+    }
+
+    [Fact]
+    public void Detail_AngleBrackets_AlsoScroll()
+    {
+        var console = NewConsole();
+        console.Input.PushCharacter('>');
+        console.Input.PushCharacter('>');
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        TuiMenu.Select(
+            console, null, "Pick", Items,
+            new TuiMenuOptions { BackLabel = "Back", DetailHeight = 2 },
+            detailFor: _ => LongDetail(20));
+
+        console.Output.ShouldContain("line-02");
+    }
+
+    [Fact]
+    public void Detail_ScrollDoesNotChangeSelection()
+    {
+        var console = NewConsole();
+        console.Input.PushCharacter('>'); // scroll, not move
+        console.Input.PushKey(ConsoleKey.Enter); // select highlighted
+
+        var result = TuiMenu.Select(
+            console, null, "Pick", Items,
+            new TuiMenuOptions { BackLabel = "Back", DetailHeight = 2 },
+            detailFor: _ => LongDetail(20));
+
+        result.Action.ShouldBe(TuiMenuAction.Item);
+        result.Index.ShouldBe(0); // still the first item - scrolling didn't move the cursor
+    }
+
+    [Fact]
+    public void Detail_ShortContent_NoScrollHint()
+    {
+        var console = NewConsole();
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        TuiMenu.Select(
+            console, null, "Pick", Items,
+            new TuiMenuOptions { BackLabel = "Back", DetailHeight = 6 },
+            detailFor: _ => LongDetail(2));
+
+        // 2 lines fit in a 6-row box - no scroll affordance.
+        console.Output.ShouldNotContain("scroll");
     }
 }

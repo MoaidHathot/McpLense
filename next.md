@@ -2,6 +2,30 @@
 
 Living roadmap.
 
+## Delivered in 0.21.0 - fixed-height scrollable detail + log escaping fix
+
+A TUI layout refinement plus a log-rendering bug fix.
+
+- **Fixed-height, scrollable detail pane (no more layout jump).** The live "selected item" detail
+  under the Tools / Resources / Resource Templates / Prompts lists is now a constant-height box, so
+  moving between items with different description lengths no longer shifts the whole view. Content
+  taller than the box is cropped with a scroll indicator in the header (e.g. `(↓3 · shift+↑↓ scroll)`)
+  and can be scrolled in place, Lazygit-style, with **Shift+↑/↓** (or `<` / `>` as a
+  terminal-robust fallback) - without moving the list selection; the offset resets when the selection
+  changes. `TuiMenu` gained a `TuiDetail` provider + a `DetailHeight` option and owns the wrapping +
+  scroll window. Detail body lines are now plain text + a per-line style (applied after wrapping) so
+  a wrap point can never split a markup tag.
+- **Log rendering: strip server ANSI / control characters (fixes miscoloured levels).** A server that
+  logs pre-coloured output was injecting raw ANSI escape sequences into `notifications/message`
+  payloads; `Markup.Escape` doesn't strip those, so they overrode McpLense's own level colouring and
+  leaked a reset that blanked the rest of the line. New `TuiLogEntry.Sanitize` removes ANSI escapes
+  (CSI / OSC / other `ESC` runs) and C0/C1 control chars (tab → space, newlines preserved), applied
+  both at parse time and at the render boundary. Also fixed the Logs viewer erasing its own log list
+  (it now renders through the menu header so it persists).
+
+Build + test state: 901 unit + 73 integration + 38 E2E (6 gated smokes skipped), all green; solution
+Release build clean.
+
 ## Delivered in 0.20.0 - full-description detail panel + syntax-highlighted result view
 
 Two TUI readability features.

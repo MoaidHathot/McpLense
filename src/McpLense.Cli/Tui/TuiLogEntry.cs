@@ -41,7 +41,7 @@ internal sealed record TuiLogEntry(DateTimeOffset Timestamp, LoggingLevel Level,
     }
 
     private static string? NormalizeLogger(string? logger)
-        => string.IsNullOrWhiteSpace(logger) ? null : logger.Trim();
+        => string.IsNullOrWhiteSpace(logger) ? null : Sanitize(logger).Trim();
 
     /// <summary>
     /// Renders the free-form <c>data</c> field for a single line: a JSON string is shown verbatim,
@@ -53,18 +53,82 @@ internal sealed record TuiLogEntry(DateTimeOffset Timestamp, LoggingLevel Level,
         {
             return data.ValueKind switch
             {
-                JsonValueKind.String => data.GetString() ?? string.Empty,
+                JsonValueKind.String => Sanitize(data.GetString() ?? string.Empty),
                 JsonValueKind.Null or JsonValueKind.Undefined => "(no data)",
                 JsonValueKind.Number => data.GetRawText(),
                 JsonValueKind.True => "true",
                 JsonValueKind.False => "false",
-                _ => Truncate(data.GetRawText())
+                _ => Truncate(Sanitize(data.GetRawText()))
             };
         }
         catch (Exception)
         {
             return "(unreadable data)";
         }
+    }
+
+    /// <summary>
+    /// Strips terminal-corrupting sequences from server-supplied log text: ANSI escape sequences
+    /// (CSI <c>ESC[…</c>, OSC <c>ESC]…</c>, and other <c>ESC</c>-introduced runs) and C0/C1 control
+    /// characters (except tab, which becomes a space). Without this, a server that logs pre-coloured
+    /// output would inject raw ANSI that overrides McpLense's own colouring and leaks a reset that
+    /// blanks the rest of the line. Newlines are preserved (callers collapse them for single-line
+    /// rendering).
+    /// </summary>
+    internal static string Sanitize(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        var sb = new System.Text.StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+
+            if (c == '\u001b') // ESC - start of an ANSI escape sequence
+            {
+                if (i + 1 < text.Length)
+                {
+                    var next = text[i + 1];
+                    if (next == '[') // CSI: ESC [ ... <final byte 0x40-0x7E>
+                    {
+                        i += 2;
+                        while (i < text.Length && !(text[i] >= '\u0040' && text[i] <= '\u007e')) i++;
+                        continue; // skip the final byte too (loop's i++)
+                    }
+                    if (next == ']') // OSC: ESC ] ... BEL or ESC \
+                    {
+                        i += 2;
+                        while (i < text.Length && text[i] != '\u0007'
+                               && !(text[i] == '\u001b' && i + 1 < text.Length && text[i + 1] == '\\')) i++;
+                        if (i < text.Length && text[i] == '\u001b') i++; // consume the '\' of ST
+                        continue;
+                    }
+                    // Other ESC-introduced two-char sequences: drop ESC + the following byte.
+                    i++;
+                    continue;
+                }
+                continue; // lone trailing ESC
+            }
+
+            if (c == '\t')
+            {
+                sb.Append(' ');
+                continue;
+            }
+
+            // Drop remaining C0 controls (except \n and \r which callers handle) and DEL/C1.
+            if ((c < '\u0020' && c is not '\n' and not '\r') || (c >= '\u007f' && c <= '\u009f'))
+            {
+                continue;
+            }
+
+            sb.Append(c);
+        }
+
+        return sb.ToString();
     }
 
     private static string Truncate(string text, int max = 2000)

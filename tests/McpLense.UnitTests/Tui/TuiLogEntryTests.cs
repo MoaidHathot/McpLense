@@ -68,6 +68,68 @@ public class TuiLogEntryTests
         entry.Level.ShouldBe(LoggingLevel.Info);
         entry.Message.ShouldContain("verbose");
     }
+
+    [Fact]
+    public void FromNotification_AnsiEscapesInData_AreStripped()
+    {
+        // A server that logs pre-coloured output must not inject raw ANSI into the TUI.
+        var entry = Parse("""{"level":"info","data":"before \u001b[31mRED\u001b[0m after"}""");
+
+        entry.Message.ShouldBe("before RED after");
+        entry.Message.ShouldNotContain("\u001b");
+    }
+
+    [Fact]
+    public void FromNotification_ControlCharsInLogger_AreStripped()
+    {
+        var entry = Parse("""{"level":"info","logger":"svc\u001b[1m\u0007","data":"x"}""");
+
+        entry.Logger.ShouldBe("svc");
+    }
+}
+
+public class TuiLogSanitizeTests
+{
+    [Fact]
+    public void Sanitize_StripsCsiSequence()
+        => TuiLogEntry.Sanitize("a\u001b[31mb\u001b[0mc").ShouldBe("abc");
+
+    [Fact]
+    public void Sanitize_StripsOscSequence_BelTerminated()
+        => TuiLogEntry.Sanitize("x\u001b]0;window title\u0007y").ShouldBe("xy");
+
+    [Fact]
+    public void Sanitize_StripsOscSequence_StTerminated()
+        => TuiLogEntry.Sanitize("x\u001b]8;;http://e.com\u001b\\y").ShouldBe("xy");
+
+    [Fact]
+    public void Sanitize_ConvertsTabToSpace_DropsOtherControls()
+        => TuiLogEntry.Sanitize("a\tb\u0007c\u0000d").ShouldBe("a b" + "c" + "d");
+
+    [Fact]
+    public void Sanitize_PreservesNewlines()
+        => TuiLogEntry.Sanitize("line1\nline2").ShouldBe("line1\nline2");
+
+    [Fact]
+    public void Sanitize_StripsLoneEsc()
+        => TuiLogEntry.Sanitize("a\u001b").ShouldBe("a");
+
+    [Fact]
+    public void Sanitize_PlainText_Unchanged()
+        => TuiLogEntry.Sanitize("normal [brackets] and text").ShouldBe("normal [brackets] and text");
+
+    [Fact]
+    public void FormatLogLine_WithAnsiInMessage_EmitsNoRawEscape()
+    {
+        // Even a TuiLogEntry built directly (bypassing FromNotification) must render without leaking
+        // raw ANSI - the render boundary sanitizes too.
+        var entry = new TuiLogEntry(System.DateTimeOffset.UnixEpoch, LoggingLevel.Warning, "svc\u001b[1m", "x\u001b[31mred\u001b[0m y");
+
+        var line = TuiApp.FormatLogLine(entry, includeTimestamp: false);
+
+        line.ShouldNotContain("\u001b");
+        line.ShouldContain("red");
+    }
 }
 
 public class TuiLogFormatTests

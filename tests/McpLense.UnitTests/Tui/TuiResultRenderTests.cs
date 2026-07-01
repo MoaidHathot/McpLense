@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text.Json.Nodes;
 using McpLense;
 using Shouldly;
@@ -137,47 +138,45 @@ public class TuiResultRenderTests
     // --- List detail panels (full, untruncated description) ---------------
 
     [Fact]
-    public void RenderToolListDetail_ShowsFullDescription_NotTruncated()
+    public void BuildToolListDetail_IncludesFullDescription_NotTruncated()
     {
-        var console = NewConsole();
         var longDescription = "This tool does something very elaborate. " + new string('x', 200) + " END-OF-DESC";
         var tool = new ToolInfo("bigtool", longDescription, null);
 
-        TuiApp.RenderToolListDetail(console, tool);
+        var detail = TuiApp.BuildToolListDetail(tool);
 
         // The full description (including its very end) must be present - not cropped at 80 chars.
-        console.Output.ShouldContain("END-OF-DESC");
+        string.Join(" ", detail.Lines.Select(l => l.Text)).ShouldContain("END-OF-DESC");
+        detail.Header.ShouldContain("bigtool");
     }
 
     [Fact]
-    public void RenderPromptListDetail_ShowsArgsAndDescription()
+    public void BuildPromptListDetail_IncludesArgsAndDescription()
     {
-        var console = NewConsole();
         var prompt = new PromptInfo("review", "Reviews code thoroughly",
         [
             new PromptArgumentInfo("language", null, true),
             new PromptArgumentInfo("code", null, false)
         ]);
 
-        TuiApp.RenderPromptListDetail(console, prompt);
+        var detail = TuiApp.BuildPromptListDetail(prompt);
 
-        var output = console.Output;
-        output.ShouldContain("Reviews code thoroughly");
-        output.ShouldContain("language");
-        output.ShouldContain("code");
+        var body = string.Join(" ", detail.Lines.Select(l => l.Text));
+        body.ShouldContain("Reviews code thoroughly");
+        body.ShouldContain("language");
+        body.ShouldContain("code");
     }
 
     [Fact]
-    public void RenderResourceListDetail_ShowsUriMimeAndDescription()
+    public void BuildResourceListDetail_IncludesUriMimeAndDescription()
     {
-        var console = NewConsole();
         var resource = new ResourceInfo("Readme", "file://README.md", "text/markdown", "The project readme file");
 
-        TuiApp.RenderResourceListDetail(console, resource);
+        var detail = TuiApp.BuildResourceListDetail(resource);
 
-        var output = console.Output;
-        output.ShouldContain("file://README.md");
-        output.ShouldContain("text/markdown");
-        output.ShouldContain("The project readme file");
+        var body = string.Join(" ", detail.Lines.Select(l => l.Text));
+        body.ShouldContain("file://README.md");
+        body.ShouldContain("text/markdown");
+        body.ShouldContain("The project readme file");
     }
 }

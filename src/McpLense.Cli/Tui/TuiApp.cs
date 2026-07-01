@@ -262,7 +262,7 @@ internal static class TuiApp
             filter => FilterTools(server.Tools.Items, filter),
             ToolDisplay,
             tool => ShowToolDetailAsync(session, server, tool),
-            RenderToolListDetail);
+            BuildToolListDetail);
 
     private static Task ShowToolDetailAsync(TuiSession session, ServerInspection server, ToolInfo tool)
         => RunDetailAsync(
@@ -278,7 +278,7 @@ internal static class TuiApp
             filter => FilterResources(server.Resources.Items, filter),
             ResourceDisplay,
             resource => ShowResourceDetailAsync(session, server, resource),
-            RenderResourceListDetail);
+            BuildResourceListDetail);
 
     private static Task ShowResourceDetailAsync(TuiSession session, ServerInspection server, ResourceInfo resource)
         => RunDetailAsync(
@@ -294,7 +294,7 @@ internal static class TuiApp
             filter => FilterResourceTemplates(server.ResourceTemplates.Items, filter),
             ResourceTemplateDisplay,
             template => ShowResourceTemplateDetailAsync(session, server, template),
-            RenderResourceTemplateListDetail);
+            BuildResourceTemplateListDetail);
 
     private static Task ShowResourceTemplateDetailAsync(TuiSession session, ServerInspection server, ResourceTemplateInfo template)
         => RunDetailAsync(
@@ -310,7 +310,7 @@ internal static class TuiApp
             filter => FilterPrompts(server.Prompts.Items, filter),
             PromptDisplay,
             prompt => ShowPromptDetailAsync(session, server, prompt),
-            RenderPromptListDetail);
+            BuildPromptListDetail);
 
     private static Task ShowPromptDetailAsync(TuiSession session, ServerInspection server, PromptInfo prompt)
         => RunDetailAsync(
@@ -335,7 +335,7 @@ internal static class TuiApp
         Func<string, IReadOnlyList<T>> matchesFor,
         Func<T, string> display,
         Func<T, Task> drill,
-        Action<IAnsiConsole, T>? renderDetail = null)
+        Func<T, TuiDetail>? buildDetail = null)
     {
         var console = session.Console;
         while (true)
@@ -377,18 +377,12 @@ internal static class TuiApp
                     ShowClearFilter = filter.Length > 0,
                     BackLabel = "Back"
                 },
-                renderStatusBar: renderDetail is null
+                detailFor: buildDetail is null
                     ? null
-                    : index =>
-                    {
-                        // Live detail of the highlighted row (its FULL, untruncated description), so
-                        // long descriptions cropped in the one-line list are readable in full. Re-runs
-                        // every keypress, so it tracks the selection.
-                        if (index >= 0 && index < matches.Count)
-                        {
-                            renderDetail(console, matches[index]);
-                        }
-                    });
+                    // Fixed-height, scrollable detail of the highlighted row (its FULL, untruncated
+                    // description) so long descriptions cropped in the one-line list are readable in
+                    // full without the layout jumping between items.
+                    : index => index >= 0 && index < matches.Count ? buildDetail(matches[index]) : null);
 
             switch (result.Action)
             {
@@ -634,14 +628,16 @@ internal static class TuiApp
         => session.LogLevel is { } level ? $"(level: {TuiLogFormat.Name(level).ToLowerInvariant()})" : "(off)";
 
     /// <summary>One log line as markup: severity tag + optional logger + message, tinted by level.</summary>
-    private static string FormatLogLine(TuiLogEntry entry, bool includeTimestamp)
+    internal static string FormatLogLine(TuiLogEntry entry, bool includeTimestamp)
     {
         var colour = TuiLogFormat.Colour(entry.Level);
         var tag = $"[{colour}]{TuiLogFormat.Tag(entry.Level)}[/]";
         var time = includeTimestamp ? $"[grey35]{entry.Timestamp:HH:mm:ss}[/] " : string.Empty;
-        var logger = string.IsNullOrEmpty(entry.Logger) ? string.Empty : $"[grey54]{Markup.Escape(entry.Logger!)}[/] ";
-        // Keep tail lines single-line: collapse newlines so one entry never blows up the layout.
-        var message = Markup.Escape(entry.Message.ReplaceLineEndings(" ").Trim());
+        var loggerText = TuiLogEntry.Sanitize(entry.Logger);
+        var logger = string.IsNullOrEmpty(loggerText) ? string.Empty : $"[grey54]{Markup.Escape(loggerText)}[/] ";
+        // Sanitize server-supplied text (strip ANSI/control chars so it can't override our colours or
+        // leak a reset), collapse newlines to keep one entry on one line, then escape markup.
+        var message = Markup.Escape(TuiLogEntry.Sanitize(entry.Message).ReplaceLineEndings(" ").Trim());
         return $"{time}{tag} {logger}[{colour}]{message}[/]";
     }
 
@@ -656,43 +652,14 @@ internal static class TuiApp
 
         while (true)
         {
-            console.Clear();
-            RenderServerSummary(console, server);
-
-            var entries = session.Interaction?.LogSnapshot() ?? [];
-            console.Write(new Rule($"[bold]server logs[/] [grey]{LogLevelSuffix(session)}[/]").RuleStyle(Style.Parse("grey")).LeftJustified());
-
-            if (entries.Count == 0)
-            {
-                console.MarkupLine(session.LogLevel is null
-                    ? "[grey]Logging isn't enabled. Pick a level below to start receiving log messages.[/]"
-                    : "[grey]No log messages have been received yet.[/]");
-            }
-            else
-            {
-                // Show the last screenful so the newest are visible; note if older entries scrolled off.
-                const int maxRows = 200;
-                var shown = entries.Count <= maxRows ? entries : entries.Skip(entries.Count - maxRows).ToList();
-                if (entries.Count > maxRows)
-                {
-                    console.MarkupLine($"[grey35]\u2026 {entries.Count - maxRows} earlier entries not shown[/]");
-                }
-                foreach (var entry in shown)
-                {
-                    console.MarkupLine(FormatLogLine(entry, includeTimestamp: true));
-                }
-            }
-
-            console.WriteLine();
-            if (server.Transport == "http" && session.LogLevel is not null)
-            {
-                console.MarkupLine("[grey35]tip: idle HTTP servers only push logs while a request is open - run --server-stream to keep the stream open.[/]");
-            }
-
             var actions = new[] { "Change level", "Refresh", "Back" };
             var result = TuiMenu.Select(
                 console,
-                renderHeader: null,
+                renderHeader: () =>
+                {
+                    RenderServerSummary(console, server);
+                    RenderLogViewer(session, server);
+                },
                 title: "Logs",
                 items: actions,
                 options: new TuiMenuOptions { BackLabel = "Back" });
@@ -708,10 +675,44 @@ internal static class TuiApp
                     await ChangeLogLevelAsync(session, server);
                     break;
                 case "Refresh":
-                    break; // loop re-reads the snapshot
+                    break; // loop re-reads the snapshot on the next renderHeader
                 default:
                     return;
             }
+        }
+    }
+
+    /// <summary>Renders the full log history + the current-level line for the Logs viewer header.</summary>
+    private static void RenderLogViewer(TuiSession session, ServerInspection server)
+    {
+        var console = session.Console;
+        var entries = session.Interaction?.LogSnapshot() ?? [];
+        console.Write(new Rule($"[bold]server logs[/] [grey]{LogLevelSuffix(session)}[/]").RuleStyle(Style.Parse("grey")).LeftJustified());
+
+        if (entries.Count == 0)
+        {
+            console.MarkupLine(session.LogLevel is null
+                ? "[grey]Logging isn't enabled. Pick a level below to start receiving log messages.[/]"
+                : "[grey]No log messages have been received yet.[/]");
+        }
+        else
+        {
+            // Show the last screenful so the newest are visible; note if older entries scrolled off.
+            const int maxRows = 200;
+            var shown = entries.Count <= maxRows ? entries : entries.Skip(entries.Count - maxRows).ToList();
+            if (entries.Count > maxRows)
+            {
+                console.MarkupLine($"[grey35]\u2026 {entries.Count - maxRows} earlier entries not shown[/]");
+            }
+            foreach (var entry in shown)
+            {
+                console.MarkupLine(FormatLogLine(entry, includeTimestamp: true));
+            }
+        }
+
+        if (server.Transport == "http" && session.LogLevel is not null)
+        {
+            console.MarkupLine("[grey35]tip: idle HTTP servers only push logs while a request is open - run --server-stream to keep the stream open.[/]");
         }
     }
 
@@ -1225,76 +1226,65 @@ internal static class TuiApp
         return oneLine.Length <= 80 ? oneLine : $"{oneLine[..79]}…";
     }
 
-    // --- Live "selected item" detail panels (rendered under the list) -----
+    // --- Live "selected item" detail (fixed-height, scrollable, under the list) -----
     //
-    // The list row is one line (long descriptions are Collapse()d to fit); these panels show the
-    // FULL, untruncated description + metadata of the highlighted item and update as the selection
-    // moves, so nothing is lost to cropping.
+    // The list row is one line (long descriptions are Collapse()d to fit); these build the FULL,
+    // untruncated description + metadata as markup lines. TuiMenu renders them in a fixed-height
+    // pane and scrolls within it, so the layout never jumps between items of different length.
 
-    internal static void RenderToolListDetail(IAnsiConsole console, ToolInfo tool)
+    internal static TuiDetail BuildToolListDetail(ToolInfo tool)
     {
-        var body = string.IsNullOrWhiteSpace(tool.Description)
-            ? "[grey35](no description)[/]"
-            : $"[grey]{Markup.Escape(tool.Description!.Trim())}[/]";
-        var hint = tool.InputSchema is null ? string.Empty : "  [grey35]· enter for input schema[/]";
-        RenderSelectedDetailPanel(console, $"[aqua]{Markup.Escape(tool.Name)}[/]{hint}", body, Color.Aqua);
+        var lines = new List<TuiDetailLine>
+        {
+            string.IsNullOrWhiteSpace(tool.Description)
+                ? new TuiDetailLine("(no description)", "grey35")
+                : new TuiDetailLine(tool.Description!.Trim(), "grey")
+        };
+        if (tool.InputSchema is not null)
+        {
+            lines.Add(new TuiDetailLine("enter for input schema", "grey35"));
+        }
+        return new TuiDetail($"selected: [aqua]{Markup.Escape(tool.Name)}[/]", Color.Aqua, lines);
     }
 
-    internal static void RenderPromptListDetail(IAnsiConsole console, PromptInfo prompt)
+    internal static TuiDetail BuildPromptListDetail(PromptInfo prompt)
     {
-        var lines = new List<string>
+        var lines = new List<TuiDetailLine>
         {
             string.IsNullOrWhiteSpace(prompt.Description)
-                ? "[grey35](no description)[/]"
-                : $"[grey]{Markup.Escape(prompt.Description!.Trim())}[/]"
+                ? new TuiDetailLine("(no description)", "grey35")
+                : new TuiDetailLine(prompt.Description!.Trim(), "grey")
         };
         if (prompt.Arguments.Count > 0)
         {
-            var args = prompt.Arguments.Select(a =>
-            {
-                var req = a.Required ? "[red]*[/]" : string.Empty;
-                return $"[white]{Markup.Escape(a.Name ?? "(unnamed)")}[/]{req}";
-            });
-            lines.Add($"[grey]args:[/] {string.Join("[grey],[/] ", args)}");
+            var args = prompt.Arguments.Select(a => a.Required ? $"{a.Name}*" : a.Name);
+            lines.Add(new TuiDetailLine($"args: {string.Join(", ", args)}", "grey54"));
         }
-        RenderSelectedDetailPanel(console, $"[magenta]{Markup.Escape(prompt.Name)}[/]", string.Join("\n", lines), Color.Magenta1);
+        return new TuiDetail($"selected: [magenta]{Markup.Escape(prompt.Name)}[/]", Color.Magenta1, lines);
     }
 
-    internal static void RenderResourceListDetail(IAnsiConsole console, ResourceInfo resource)
+    internal static TuiDetail BuildResourceListDetail(ResourceInfo resource)
     {
-        var lines = new List<string>();
-        if (!string.IsNullOrWhiteSpace(resource.Uri)) lines.Add($"[grey]uri:[/] [green]{Markup.Escape(resource.Uri!)}[/]");
-        if (!string.IsNullOrWhiteSpace(resource.MimeType)) lines.Add($"[grey]mime:[/] {Markup.Escape(resource.MimeType!)}");
+        var lines = new List<TuiDetailLine>();
+        if (!string.IsNullOrWhiteSpace(resource.Uri)) lines.Add(new TuiDetailLine($"uri: {resource.Uri}", "green"));
+        if (!string.IsNullOrWhiteSpace(resource.MimeType)) lines.Add(new TuiDetailLine($"mime: {resource.MimeType}", "grey54"));
         lines.Add(string.IsNullOrWhiteSpace(resource.Description)
-            ? "[grey35](no description)[/]"
-            : $"[grey]{Markup.Escape(resource.Description!.Trim())}[/]");
+            ? new TuiDetailLine("(no description)", "grey35")
+            : new TuiDetailLine(resource.Description!.Trim(), "grey"));
         var name = resource.Name ?? resource.Uri ?? "(unnamed)";
-        RenderSelectedDetailPanel(console, $"[green]{Markup.Escape(name)}[/]", string.Join("\n", lines), Color.Green);
+        return new TuiDetail($"selected: [green]{Markup.Escape(name)}[/]", Color.Green, lines);
     }
 
-    internal static void RenderResourceTemplateListDetail(IAnsiConsole console, ResourceTemplateInfo template)
+    internal static TuiDetail BuildResourceTemplateListDetail(ResourceTemplateInfo template)
     {
-        var lines = new List<string>();
-        if (!string.IsNullOrWhiteSpace(template.UriTemplate)) lines.Add($"[grey]template:[/] [green]{Markup.Escape(template.UriTemplate!)}[/]");
-        if (!string.IsNullOrWhiteSpace(template.MimeType)) lines.Add($"[grey]mime:[/] {Markup.Escape(template.MimeType!)}");
+        var lines = new List<TuiDetailLine>();
+        if (!string.IsNullOrWhiteSpace(template.UriTemplate)) lines.Add(new TuiDetailLine($"template: {template.UriTemplate}", "green"));
+        if (!string.IsNullOrWhiteSpace(template.MimeType)) lines.Add(new TuiDetailLine($"mime: {template.MimeType}", "grey54"));
         lines.Add(string.IsNullOrWhiteSpace(template.Description)
-            ? "[grey35](no description)[/]"
-            : $"[grey]{Markup.Escape(template.Description!.Trim())}[/]");
+            ? new TuiDetailLine("(no description)", "grey35")
+            : new TuiDetailLine(template.Description!.Trim(), "grey"));
         var name = template.Name ?? template.UriTemplate ?? "(unnamed)";
-        RenderSelectedDetailPanel(console, $"[green]{Markup.Escape(name)}[/]", string.Join("\n", lines), Color.Green);
-    }
-
-    /// <summary>Shared compact panel for the live "selected item" detail shown beneath a list.</summary>
-    private static void RenderSelectedDetailPanel(IAnsiConsole console, string header, string body, Color accent)
-    {
-        console.Write(new Panel(body)
-        {
-            Header = new PanelHeader($" selected: {header} "),
-            Border = BoxBorder.Rounded,
-            BorderStyle = new Style(foreground: accent),
-            Padding = new Padding(1, 0, 1, 0),
-            Expand = true
-        });
+        return new TuiDetail($"selected: [green]{Markup.Escape(name)}[/]", Color.Green, lines);
     }
 
     // --- Filters ---------------------------------------------------------
