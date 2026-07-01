@@ -2,6 +2,27 @@
 
 Living roadmap.
 
+## Delivered in 0.20.0 - full-description detail panel + syntax-highlighted result view
+
+Two TUI readability features.
+
+- **Live "selected item" detail under lists.** The one-line rows in the Tools / Resources / Resource
+  Templates / Prompts lists still truncate long descriptions to fit, but a bordered detail panel now
+  renders directly under the list showing the highlighted item's **full, untruncated** description
+  plus metadata (URI / MIME / args, with required args marked). It updates as the selection moves.
+  Enabled by threading the currently-highlighted index into `TuiMenu`'s status-bar hook
+  (`Action&lt;int&gt;`), and an optional `renderDetail` on the list driver.
+- **Rich, syntax-highlighted result view.** Tool-call / read / prompt results are no longer dumped as
+  plain text. They render as structured, colour-coded panels: text content in a clean bordered panel
+  (preserves newlines, never truncates); `structured content` / `meta` / per-block `raw` as
+  syntax-highlighted JSON via Spectre's `JsonText` widget (members aqua, strings green, numbers
+  yellow, booleans orange, null grey). A text block that is actually JSON (or has a JSON MIME type)
+  is auto-upgraded to the highlighted JSON panel; prompt messages get role-coloured headers; errors
+  render in a red panel with the distilled reason. Adds the `Spectre.Console.Json` 0.54.0 package.
+
+Build + test state: 886 unit + 73 integration + 38 E2E (6 gated smokes skipped), all green; solution
+Release build clean.
+
 ## Delivered in 0.19.0 - MCP logging support + counts/caps bar polish
 
 First-class support for the MCP `logging` capability in the TUI, plus the section-bar refinements.

@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol;
 using Spectre.Console;
+using Spectre.Console.Json;
 
 namespace McpLense;
 
@@ -208,7 +209,7 @@ internal static class TuiApp
                 title: "Choose a section",
                 items: sections,
                 options: menuOptions,
-                renderStatusBar: () => RenderLogTail(session, server));
+                renderStatusBar: _ => RenderLogTail(session, server));
 
             if (result.Action is not TuiMenuAction.Item)
             {
@@ -260,7 +261,8 @@ internal static class TuiApp
             session, server, filters, "Tools", server.Tools.Error, server.Tools.Items.Count,
             filter => FilterTools(server.Tools.Items, filter),
             ToolDisplay,
-            tool => ShowToolDetailAsync(session, server, tool));
+            tool => ShowToolDetailAsync(session, server, tool),
+            RenderToolListDetail);
 
     private static Task ShowToolDetailAsync(TuiSession session, ServerInspection server, ToolInfo tool)
         => RunDetailAsync(
@@ -275,7 +277,8 @@ internal static class TuiApp
             session, server, filters, "Resources", server.Resources.Error, server.Resources.Items.Count,
             filter => FilterResources(server.Resources.Items, filter),
             ResourceDisplay,
-            resource => ShowResourceDetailAsync(session, server, resource));
+            resource => ShowResourceDetailAsync(session, server, resource),
+            RenderResourceListDetail);
 
     private static Task ShowResourceDetailAsync(TuiSession session, ServerInspection server, ResourceInfo resource)
         => RunDetailAsync(
@@ -290,7 +293,8 @@ internal static class TuiApp
             session, server, filters, "Resource Templates", server.ResourceTemplates.Error, server.ResourceTemplates.Items.Count,
             filter => FilterResourceTemplates(server.ResourceTemplates.Items, filter),
             ResourceTemplateDisplay,
-            template => ShowResourceTemplateDetailAsync(session, server, template));
+            template => ShowResourceTemplateDetailAsync(session, server, template),
+            RenderResourceTemplateListDetail);
 
     private static Task ShowResourceTemplateDetailAsync(TuiSession session, ServerInspection server, ResourceTemplateInfo template)
         => RunDetailAsync(
@@ -305,7 +309,8 @@ internal static class TuiApp
             session, server, filters, "Prompts", server.Prompts.Error, server.Prompts.Items.Count,
             filter => FilterPrompts(server.Prompts.Items, filter),
             PromptDisplay,
-            prompt => ShowPromptDetailAsync(session, server, prompt));
+            prompt => ShowPromptDetailAsync(session, server, prompt),
+            RenderPromptListDetail);
 
     private static Task ShowPromptDetailAsync(TuiSession session, ServerInspection server, PromptInfo prompt)
         => RunDetailAsync(
@@ -329,7 +334,8 @@ internal static class TuiApp
         int totalCount,
         Func<string, IReadOnlyList<T>> matchesFor,
         Func<T, string> display,
-        Func<T, Task> drill)
+        Func<T, Task> drill,
+        Action<IAnsiConsole, T>? renderDetail = null)
     {
         var console = session.Console;
         while (true)
@@ -370,7 +376,19 @@ internal static class TuiApp
                     ShowSearch = true,
                     ShowClearFilter = filter.Length > 0,
                     BackLabel = "Back"
-                });
+                },
+                renderStatusBar: renderDetail is null
+                    ? null
+                    : index =>
+                    {
+                        // Live detail of the highlighted row (its FULL, untruncated description), so
+                        // long descriptions cropped in the one-line list are readable in full. Re-runs
+                        // every keypress, so it tracks the selection.
+                        if (index >= 0 && index < matches.Count)
+                        {
+                            renderDetail(console, matches[index]);
+                        }
+                    });
 
             switch (result.Action)
             {
@@ -450,7 +468,7 @@ internal static class TuiApp
 
         var report = await RunWithProgressAsync(session, $"Calling {tool.Name}",
             (progress, ct) => mcp.CallToolAsync(tool.Name, arguments, progress, ct));
-        await RenderInvocationResultAsync(session, $"call {tool.Name}", InvocationRenderer.Render(report));
+        await RenderInvocationResultAsync(session, $"call {tool.Name}", report);
     }
 
     private static async Task InvokeResourceAsync(TuiSession session, ServerInspection server, string uri)
@@ -461,7 +479,7 @@ internal static class TuiApp
         if (!ConfirmRun(session, "read", uri, arguments: null, server)) return;
 
         var report = await mcp.ReadResourceAsync(uri, arguments: null, CancellationToken.None);
-        await RenderInvocationResultAsync(session, $"read {uri}", InvocationRenderer.Render(report));
+        await RenderInvocationResultAsync(session, $"read {uri}", report);
     }
 
     private static async Task InvokeTemplateAsync(TuiSession session, ServerInspection server, ResourceTemplateInfo template)
@@ -476,7 +494,7 @@ internal static class TuiApp
         if (!ConfirmRun(session, "read", uriTemplate, variables, server)) return;
 
         var report = await mcp.ReadResourceAsync(uriTemplate, variables.Count > 0 ? variables : null, CancellationToken.None);
-        await RenderInvocationResultAsync(session, $"read {uriTemplate}", InvocationRenderer.Render(report));
+        await RenderInvocationResultAsync(session, $"read {uriTemplate}", report);
     }
 
     private static async Task InvokePromptAsync(TuiSession session, ServerInspection server, PromptInfo prompt)
@@ -490,7 +508,7 @@ internal static class TuiApp
         if (!ConfirmRun(session, "prompt", prompt.Name, arguments, server)) return;
 
         var report = await mcp.GetPromptAsync(prompt.Name, arguments, CancellationToken.None);
-        await RenderInvocationResultAsync(session, $"prompt {prompt.Name}", InvocationRenderer.Render(report));
+        await RenderInvocationResultAsync(session, $"prompt {prompt.Name}", report);
     }
 
     /// <summary>
@@ -811,17 +829,258 @@ internal static class TuiApp
         }
     }
 
-    private static async Task RenderInvocationResultAsync(TuiSession session, string title, InvokeResult result)
+    private static async Task RenderInvocationResultAsync(TuiSession session, string title, object report)
     {
         var console = session.Console;
+        var hasErrors = InvocationRenderer.HasErrors(report);
+
         console.WriteLine();
-        console.MarkupLine(result.HasErrors
-            ? $"[red]x {Markup.Escape(title)} (errors)[/]"
-            : $"[green]+ {Markup.Escape(title)}[/]");
-        console.WriteLine(result.Text);
+        console.MarkupLine(hasErrors
+            ? $"[red]\u2717 {Markup.Escape(title)} (errors)[/]"
+            : $"[green]\u2713 {Markup.Escape(title)}[/]");
+
+        switch (report)
+        {
+            case ToolCallReport tool:
+                RenderToolCallResult(console, tool);
+                break;
+            case ReadReport read:
+                RenderReadResult(console, read);
+                break;
+            case PromptCallReport prompt:
+                RenderPromptResult(console, prompt);
+                break;
+            default:
+                // Fallback to the plain-text formatter for any other payload.
+                console.WriteLine(TextFormatter.Format(report, App.JsonOptions));
+                break;
+        }
+
         RenderServerInitiated(session);
         console.MarkupLine("\n[grey]Press any key to continue...[/]");
         await session.WaitForKey();
+    }
+
+    internal static void RenderToolCallResult(IAnsiConsole console, ToolCallReport report)
+    {
+        if (report.Error is not null)
+        {
+            RenderResultError(console, report.Error);
+            return;
+        }
+
+        if (report.Progress.Count > 0)
+        {
+            console.MarkupLine($"[grey]progress events: {report.Progress.Count}[/]");
+        }
+
+        var result = report.Result;
+        RenderContentBlocks(console, result?.Content ?? []);
+        RenderJsonPanel(console, "structured content", result?.StructuredContent);
+        RenderJsonPanel(console, "meta", result?.Meta);
+
+        if ((result?.Content is null || result.Content.Count == 0)
+            && result?.StructuredContent is null
+            && result?.Meta is null)
+        {
+            console.MarkupLine("[grey](no content returned)[/]");
+        }
+    }
+
+    internal static void RenderReadResult(IAnsiConsole console, ReadReport report)
+    {
+        if (report.Error is not null)
+        {
+            RenderResultError(console, report.Error);
+            return;
+        }
+
+        var contents = report.Result?.Contents ?? [];
+        if (contents.Count == 0)
+        {
+            console.MarkupLine("[grey](no contents returned)[/]");
+            return;
+        }
+
+        foreach (var content in contents)
+        {
+            var header = content.Uri is { Length: > 0 } uri ? Markup.Escape(uri) : content.Kind;
+            var meta = content.MimeType is { Length: > 0 } mime ? $"  [grey54]{Markup.Escape(mime)}[/]" : string.Empty;
+            if (!string.IsNullOrEmpty(content.Text))
+            {
+                RenderTextPanel(console, $"{header}{meta}", content.Text!, content.MimeType);
+            }
+            else if (content.Raw is not null)
+            {
+                RenderJsonPanel(console, header, content.Raw);
+            }
+            else if (content.ByteCount is { } bytes)
+            {
+                console.MarkupLine($"[grey]{header}: {bytes} byte(s) of binary content[/]");
+            }
+        }
+    }
+
+    internal static void RenderPromptResult(IAnsiConsole console, PromptCallReport report)
+    {
+        if (report.Error is not null)
+        {
+            RenderResultError(console, report.Error);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(report.Result?.Description))
+        {
+            console.MarkupLine($"[grey]description:[/] {Markup.Escape(report.Result!.Description!)}");
+        }
+
+        var messages = report.Result?.Messages ?? [];
+        if (messages.Count == 0)
+        {
+            console.MarkupLine("[grey](no messages returned)[/]");
+            return;
+        }
+
+        foreach (var message in messages)
+        {
+            var role = message.Role ?? "unknown";
+            var roleColour = role.Equals("assistant", StringComparison.OrdinalIgnoreCase) ? "aqua"
+                : role.Equals("user", StringComparison.OrdinalIgnoreCase) ? "green"
+                : "grey";
+            if (message.Content is { } block)
+            {
+                if (!string.IsNullOrEmpty(block.Text))
+                {
+                    RenderTextPanel(console, $"[{roleColour}]{role}[/]", block.Text!, block.MimeType);
+                }
+                else if (block.Raw is not null)
+                {
+                    RenderJsonPanel(console, role, block.Raw);
+                }
+                else
+                {
+                    console.MarkupLine($"[{roleColour}]{role}[/] [grey]({block.Kind})[/]");
+                }
+            }
+        }
+    }
+
+    private static void RenderContentBlocks(IAnsiConsole console, IReadOnlyList<ContentBlockView> content)
+    {
+        foreach (var block in content)
+        {
+            if (!string.IsNullOrEmpty(block.Text))
+            {
+                RenderTextPanel(console, block.Kind, block.Text!, block.MimeType);
+            }
+            else if (block.Raw is not null)
+            {
+                RenderJsonPanel(console, block.Kind, block.Raw);
+            }
+            else if (block.Resource is { } resource)
+            {
+                var header = resource.Uri is { Length: > 0 } uri ? Markup.Escape(uri) : "embedded resource";
+                if (!string.IsNullOrEmpty(resource.Text))
+                {
+                    RenderTextPanel(console, header, resource.Text!, resource.MimeType);
+                }
+                else if (resource.Raw is not null)
+                {
+                    RenderJsonPanel(console, header, resource.Raw);
+                }
+            }
+            else if (block.ByteCount is { } bytes)
+            {
+                console.MarkupLine($"[grey]{block.Kind}: {bytes} byte(s)[/]");
+            }
+        }
+    }
+
+    private static void RenderResultError(IAnsiConsole console, string error)
+    {
+        var reason = DescribeConnectionFailure(error);
+        console.Write(new Panel($"[red]{Markup.Escape(reason is null ? error : $"{reason}\n{error}")}[/]")
+        {
+            Header = new PanelHeader(" error "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: Color.Red),
+            Padding = new Padding(1, 0, 1, 0),
+            Expand = true
+        });
+    }
+
+    /// <summary>
+    /// Renders a JSON node with Spectre's syntax-highlighted <see cref="JsonText"/> widget inside a
+    /// titled panel, so structured content / meta / raw blocks are colourised and easy to read.
+    /// </summary>
+    private static void RenderJsonPanel(IAnsiConsole console, string title, JsonNode? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        var json = node.ToJsonString(App.JsonOptions);
+        var widget = new JsonText(json)
+            .MemberColor(Color.Aqua)
+            .StringColor(Color.Green)
+            .NumberColor(Color.Yellow)
+            .BooleanColor(Color.Orange1)
+            .NullColor(Color.Grey);
+
+        console.Write(new Panel(widget)
+        {
+            Header = new PanelHeader($" {Markup.Escape(title)} "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: Color.Grey),
+            Padding = new Padding(1, 0, 1, 0),
+            Expand = true
+        });
+    }
+
+    /// <summary>
+    /// Renders a text content block. JSON-ish text (a body that parses as JSON, e.g. a tool that
+    /// returns a JSON string) is upgraded to the highlighted JSON panel; otherwise it's shown as a
+    /// plain bordered text panel that preserves newlines and never truncates.
+    /// </summary>
+    private static void RenderTextPanel(IAnsiConsole console, string title, string text, string? mimeType)
+    {
+        if (LooksLikeJson(text, mimeType) && TryParseJson(text) is { } parsed)
+        {
+            RenderJsonPanel(console, title, parsed);
+            return;
+        }
+
+        console.Write(new Panel(new Text(text))
+        {
+            Header = new PanelHeader($" {Markup.Escape(title)} "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: Color.Grey),
+            Padding = new Padding(1, 0, 1, 0),
+            Expand = true
+        });
+    }
+
+    private static bool LooksLikeJson(string text, string? mimeType)
+    {
+        if (mimeType is not null && mimeType.Contains("json", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        var trimmed = text.AsSpan().Trim();
+        return trimmed.Length > 1 && (trimmed[0] is '{' or '[');
+    }
+
+    private static JsonNode? TryParseJson(string text)
+    {
+        try
+        {
+            return JsonNode.Parse(text);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -964,6 +1223,78 @@ internal static class TuiApp
     {
         var oneLine = text.ReplaceLineEndings(" ").Trim();
         return oneLine.Length <= 80 ? oneLine : $"{oneLine[..79]}…";
+    }
+
+    // --- Live "selected item" detail panels (rendered under the list) -----
+    //
+    // The list row is one line (long descriptions are Collapse()d to fit); these panels show the
+    // FULL, untruncated description + metadata of the highlighted item and update as the selection
+    // moves, so nothing is lost to cropping.
+
+    internal static void RenderToolListDetail(IAnsiConsole console, ToolInfo tool)
+    {
+        var body = string.IsNullOrWhiteSpace(tool.Description)
+            ? "[grey35](no description)[/]"
+            : $"[grey]{Markup.Escape(tool.Description!.Trim())}[/]";
+        var hint = tool.InputSchema is null ? string.Empty : "  [grey35]· enter for input schema[/]";
+        RenderSelectedDetailPanel(console, $"[aqua]{Markup.Escape(tool.Name)}[/]{hint}", body, Color.Aqua);
+    }
+
+    internal static void RenderPromptListDetail(IAnsiConsole console, PromptInfo prompt)
+    {
+        var lines = new List<string>
+        {
+            string.IsNullOrWhiteSpace(prompt.Description)
+                ? "[grey35](no description)[/]"
+                : $"[grey]{Markup.Escape(prompt.Description!.Trim())}[/]"
+        };
+        if (prompt.Arguments.Count > 0)
+        {
+            var args = prompt.Arguments.Select(a =>
+            {
+                var req = a.Required ? "[red]*[/]" : string.Empty;
+                return $"[white]{Markup.Escape(a.Name ?? "(unnamed)")}[/]{req}";
+            });
+            lines.Add($"[grey]args:[/] {string.Join("[grey],[/] ", args)}");
+        }
+        RenderSelectedDetailPanel(console, $"[magenta]{Markup.Escape(prompt.Name)}[/]", string.Join("\n", lines), Color.Magenta1);
+    }
+
+    internal static void RenderResourceListDetail(IAnsiConsole console, ResourceInfo resource)
+    {
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(resource.Uri)) lines.Add($"[grey]uri:[/] [green]{Markup.Escape(resource.Uri!)}[/]");
+        if (!string.IsNullOrWhiteSpace(resource.MimeType)) lines.Add($"[grey]mime:[/] {Markup.Escape(resource.MimeType!)}");
+        lines.Add(string.IsNullOrWhiteSpace(resource.Description)
+            ? "[grey35](no description)[/]"
+            : $"[grey]{Markup.Escape(resource.Description!.Trim())}[/]");
+        var name = resource.Name ?? resource.Uri ?? "(unnamed)";
+        RenderSelectedDetailPanel(console, $"[green]{Markup.Escape(name)}[/]", string.Join("\n", lines), Color.Green);
+    }
+
+    internal static void RenderResourceTemplateListDetail(IAnsiConsole console, ResourceTemplateInfo template)
+    {
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(template.UriTemplate)) lines.Add($"[grey]template:[/] [green]{Markup.Escape(template.UriTemplate!)}[/]");
+        if (!string.IsNullOrWhiteSpace(template.MimeType)) lines.Add($"[grey]mime:[/] {Markup.Escape(template.MimeType!)}");
+        lines.Add(string.IsNullOrWhiteSpace(template.Description)
+            ? "[grey35](no description)[/]"
+            : $"[grey]{Markup.Escape(template.Description!.Trim())}[/]");
+        var name = template.Name ?? template.UriTemplate ?? "(unnamed)";
+        RenderSelectedDetailPanel(console, $"[green]{Markup.Escape(name)}[/]", string.Join("\n", lines), Color.Green);
+    }
+
+    /// <summary>Shared compact panel for the live "selected item" detail shown beneath a list.</summary>
+    private static void RenderSelectedDetailPanel(IAnsiConsole console, string header, string body, Color accent)
+    {
+        console.Write(new Panel(body)
+        {
+            Header = new PanelHeader($" selected: {header} "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: accent),
+            Padding = new Padding(1, 0, 1, 0),
+            Expand = true
+        });
     }
 
     // --- Filters ---------------------------------------------------------

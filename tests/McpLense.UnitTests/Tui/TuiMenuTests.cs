@@ -208,4 +208,37 @@ public class TuiMenuTests
 
         result.Action.ShouldBe(TuiMenuAction.Exit);
     }
+
+    [Fact]
+    public void RenderStatusBar_ReceivesHighlightedIndex_AndUpdatesOnMove()
+    {
+        var console = NewConsole();
+        var seen = new System.Collections.Generic.List<int>();
+        console.Input.PushKey(ConsoleKey.DownArrow); // move 0 -> 1
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        TuiMenu.Select(
+            console, null, "Pick", Items,
+            new TuiMenuOptions { BackLabel = "Back" },
+            renderStatusBar: i => seen.Add(i));
+
+        // Rendered once at index 0, then again at index 1 after the DownArrow.
+        seen.ShouldContain(0);
+        seen.ShouldContain(1);
+    }
+
+    [Fact]
+    public void RenderStatusBar_EmptyList_ReceivesNegativeIndex()
+    {
+        var console = NewConsole();
+        var seen = new System.Collections.Generic.List<int>();
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        TuiMenu.Select(
+            console, null, "Pick", System.Array.Empty<string>(),
+            new TuiMenuOptions { BackLabel = "Back" },
+            renderStatusBar: i => seen.Add(i));
+
+        seen.ShouldAllBe(i => i == -1);
+    }
 }

@@ -54,7 +54,7 @@ internal static class TuiMenu
         IReadOnlyList<string> items,
         TuiMenuOptions options,
         IReadOnlyList<string?>? itemColors = null,
-        Action? renderStatusBar = null)
+        Action<int>? renderStatusBar = null)
     {
         var count = items.Count;
         var index = count > 0 ? 0 : -1;
@@ -140,7 +140,7 @@ internal static class TuiMenu
         int pageSize,
         TuiMenuOptions options,
         IReadOnlyList<string?>? itemColors,
-        Action? renderStatusBar)
+        Action<int>? renderStatusBar)
     {
         if (!string.IsNullOrEmpty(title))
         {
@@ -183,8 +183,9 @@ internal static class TuiMenu
         }
 
         // An optional caller-supplied status line rendered directly under the items (above the
-        // keybinding footer) - e.g. the section-menu counts bar.
-        renderStatusBar?.Invoke();
+        // keybinding footer) - e.g. the section-menu counts bar or a per-selection detail panel.
+        // Receives the currently-highlighted index (-1 when the list is empty).
+        renderStatusBar?.Invoke(index);
 
         RenderFooter(console, options, items.Count);
     }
