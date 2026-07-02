@@ -2,6 +2,20 @@
 
 Living roadmap.
 
+## Delivered in 0.21.1 - fix log-level picker rendering literal markup
+
+The **Change level** picker built its rows with embedded Spectre markup (e.g. `[red]ERROR[/]`), but
+`TuiMenu` escapes item strings by design, so the tags rendered as literal text (`[red]ERROR[/]`)
+instead of applying the colour. Added an opt-in `TuiMenuOptions.RichItems` flag: when set, item
+strings are rendered as markup (caller-escaped) rather than escaped literally, and the highlighted
+row uses a bold caret cue instead of an inverted background (which would clash with the item's own
+colours). The log-level picker now sets it, so the severity tags show in real colours
+(DEBUG grey, INFO blue, NOTE aqua, WARN yellow, ERROR/CRIT/ALERT/EMERG red). This is distinct from
+the 0.21.0 fix, which stripped server-injected ANSI from log *messages*.
+
+Build + test state: 903 unit + 73 integration + 38 E2E (6 gated smokes skipped), all green; solution
+Release build clean.
+
 ## Delivered in 0.21.0 - fixed-height scrollable detail + log escaping fix
 
 A TUI layout refinement plus a log-rendering bug fix.

@@ -163,6 +163,38 @@ public class TuiMenuTests
     }
 
     [Fact]
+    public void PlainItems_MarkupIsEscaped_ShownLiterally()
+    {
+        var console = NewConsole();
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        TuiMenu.Select(console, null, "Pick", new[] { "[red]ERROR[/] boom" },
+            new TuiMenuOptions { BackLabel = "Back" });
+
+        // Default (plain) items: the markup is escaped, so the tag appears verbatim as text.
+        console.Output.ShouldContain("[red]ERROR[/]");
+    }
+
+    [Fact]
+    public void RichItems_MarkupIsRendered_NotLiteral()
+    {
+        // Emit raw ANSI so the applied colour shows up (default TestConsole strips styling).
+        var console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Capabilities.Interactive = true;
+        console.Profile.Width = 80;
+        console.Input.PushKey(ConsoleKey.DownArrow); // highlight row 2 so row 1's colour isn't the inverted highlight
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        TuiMenu.Select(console, null, "Pick", new[] { "[red]ERROR[/] boom", "plain" },
+            new TuiMenuOptions { BackLabel = "Back", RichItems = true });
+
+        var output = console.Output;
+        output.ShouldNotContain("[red]ERROR[/]"); // not literal
+        output.ShouldContain("38;5;9");            // red 256-colour actually applied
+        output.ShouldContain("ERROR");
+    }
+
+    [Fact]
     public void EmptyList_ShowsPlaceholder_AndBacksOut()
     {
         var console = NewConsole();

@@ -732,7 +732,7 @@ internal static class TuiApp
             {
                 var current = session.LogLevel == l ? "  [green](current)[/]" : string.Empty;
                 var verbosity = l == TuiLogFormat.MostVerbose ? "  [grey35](most verbose)[/]" : string.Empty;
-                return $"[{TuiLogFormat.Colour(l)}]{TuiLogFormat.Tag(l).Trim()}[/] {TuiLogFormat.Name(l)}{verbosity}{current}";
+                return $"[{TuiLogFormat.Colour(l)}]{TuiLogFormat.Tag(l).Trim()}[/] {Markup.Escape(TuiLogFormat.Name(l))}{verbosity}{current}";
             })
             .ToArray();
 
@@ -741,7 +741,7 @@ internal static class TuiApp
             renderHeader: () => console.MarkupLine("[grey]The server will send log messages at or above the chosen severity.[/]"),
             title: "Set log level",
             items: items,
-            options: new TuiMenuOptions { BackLabel = "Back" });
+            options: new TuiMenuOptions { BackLabel = "Back", RichItems = true });
 
         if (result.Action is not TuiMenuAction.Item)
         {

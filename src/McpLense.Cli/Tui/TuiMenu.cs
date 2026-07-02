@@ -43,6 +43,14 @@ internal sealed class TuiMenuOptions
     /// different description length; content taller than this is cropped and scrollable in place.
     /// </summary>
     public int DetailHeight { get; init; } = 6;
+
+    /// <summary>
+    /// When true, item strings are treated as Spectre MARKUP and rendered as-is instead of being
+    /// escaped as literal text. Use only for items the caller fully controls (and has escaped any
+    /// dynamic content in) - e.g. a colour-coded picker. Default false: items are literal text, so a
+    /// value like <c>"[red]"</c> shows verbatim rather than colouring.
+    /// </summary>
+    public bool RichItems { get; init; }
 }
 
 /// <summary>
@@ -216,16 +224,26 @@ internal static class TuiMenu
             {
                 var positionInPage = i - top;
                 var hotkey = positionInPage < 9 ? (positionInPage + 1).ToString() : " ";
-                var text = Markup.Escape(items[i]);
+                // Rich items are pre-formatted markup (caller-escaped); plain items are literal text.
+                var text = options.RichItems ? items[i] : Markup.Escape(items[i]);
                 var color = itemColors is not null && i < itemColors.Count ? itemColors[i] : null;
 
                 if (i == index)
                 {
-                    // Highlighted row: invert on the row colour (falling back to green) so the
-                    // selection cue itself carries the status - an unreachable row stays red even
-                    // when it's the active row.
-                    var highlight = string.IsNullOrEmpty(color) ? "green" : color;
-                    console.MarkupLine($"[bold {highlight}]\u203a[/] [black on {highlight}] {hotkey}.  {text} [/]");
+                    if (options.RichItems)
+                    {
+                        // The item carries its own colours; an inverted background would clash, so cue
+                        // the selection with a bold caret + a highlighted hotkey instead.
+                        console.MarkupLine($"[bold green]\u203a[/] [bold] {hotkey}.[/]  {text}");
+                    }
+                    else
+                    {
+                        // Highlighted row: invert on the row colour (falling back to green) so the
+                        // selection cue itself carries the status - an unreachable row stays red even
+                        // when it's the active row.
+                        var highlight = string.IsNullOrEmpty(color) ? "green" : color;
+                        console.MarkupLine($"[bold {highlight}]\u203a[/] [black on {highlight}] {hotkey}.  {text} [/]");
+                    }
                 }
                 else
                 {
