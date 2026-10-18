@@ -27,7 +27,7 @@ public class TuiInvokeTests
         public string? ToolName;
         public JsonObject? Arguments;
 
-        public ServerReference Server { get; } = new("alpha", "stdio", "dotnet exec foo.dll");
+        public ServerReference Server { get; init; } = new("alpha", "stdio", "dotnet exec foo.dll");
 
         public Task SetLoggingLevelAsync(ModelContextProtocol.Protocol.LoggingLevel level, CancellationToken cancellationToken)
             => Task.CompletedTask;
@@ -120,6 +120,72 @@ public class TuiInvokeTests
         session.Arguments.ShouldNotBeNull();
         session.Arguments!.Count.ShouldBe(0);
         console.Output.ShouldContain("RESULT-OK");
+    }
+
+    [Theory]
+    [InlineData("", null)]
+    [InlineData("50", 50)]
+    public async Task CallTool_ReleaseCommunicationsSchema_InvokesAndReturnsToMenu(string skipInput, int? expectedSkip)
+    {
+        var console = NewConsole();
+        // Input schema from get_recent_azure_updates, with descriptions shortened.
+        var schema = JsonNode.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "filter": { "description": "OData filter", "type": "string", "default": null },
+            "search": { "description": "Title search", "type": "string", "default": null },
+            "skip": { "description": "Pagination offset", "type": ["integer", "null"], "default": null },
+            "include_facets": { "description": "Include facet counts", "type": "boolean", "default": false }
+          }
+        }
+        """);
+        var tool = new ToolInfo("get_recent_azure_updates", "Recent Azure updates", schema);
+        var server = SingleToolServer() with
+        {
+            Name = "www.microsoft.com",
+            Transport = "http",
+            Target = "https://www.microsoft.com/releasecommunications/mcp",
+            Tools = new SectionResult<ToolInfo>(true, [tool])
+        };
+        var report = new InspectReport(DateTimeOffset.UtcNow, [server]);
+        var session = new RecordingSession { Server = new(server.Name, server.Transport, server.Target) };
+        McpSessionConnector connector = (_, _) => Task.FromResult<IMcpSession>(session);
+        var pauses = 0;
+
+        console.Input.PushCharacter('2');                       // sections -> Tools
+        console.Input.PushKey(ConsoleKey.Enter);                // open the tool detail
+        console.Input.PushKey(ConsoleKey.Enter);                // Call tool
+        console.Input.PushTextWithEnter(string.Empty);          // filter -> skip
+        console.Input.PushTextWithEnter("storage");             // search
+        console.Input.PushTextWithEnter(skipInput);             // optional nullable integer
+        console.Input.PushKey(ConsoleKey.Enter);                // include_facets -> default false
+        console.Input.PushKey(ConsoleKey.Enter);                // Run now? -> yes
+        console.Input.PushKey(ConsoleKey.Escape);               // tool actions -> tools list
+        console.Input.PushKey(ConsoleKey.Escape);               // tools list -> sections
+        console.Input.PushCharacter('1');                       // Overview remains accessible
+        console.Input.PushCharacter('q');                       // exit explicitly
+
+        var exit = await TuiApp.RenderAsync(report, console, () =>
+        {
+            pauses++;
+            return Task.CompletedTask;
+        }, bookmarkStore: null, connector);
+
+        exit.ShouldBe(0);
+        session.ToolName.ShouldBe(tool.Name);
+        session.Arguments.ShouldNotBeNull();
+        session.Arguments["search"]!.GetValue<string>().ShouldBe("storage");
+        session.Arguments["include_facets"]!.GetValue<bool>().ShouldBeFalse();
+        session.Arguments.ContainsKey("filter").ShouldBeFalse();
+        session.Arguments.ContainsKey("skip").ShouldBe(expectedSkip.HasValue);
+        if (expectedSkip.HasValue)
+        {
+            session.Arguments["skip"]!.GetValue<long>().ShouldBe(expectedSkip.Value);
+        }
+        console.Output.ShouldContain("skip (integer | null)");
+        console.Output.ShouldContain("RESULT-OK");
+        pauses.ShouldBe(2, "the result and the subsequently opened overview should both be reached");
     }
 
     [Fact]

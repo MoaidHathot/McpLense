@@ -2,6 +2,22 @@
 
 Living roadmap.
 
+## Delivered in 0.21.2 - fix nullable schema types crashing the TUI
+
+The tool detail viewer now supports JSON Schema `type` arrays, displaying every declared type
+(e.g. `integer | null`) at both the schema root and property level. This fixes the
+`InvalidOperationException: The node must be of type 'JsonValue'.` raised when opening
+`get_recent_azure_updates` on Microsoft's Release Communications MCP: its `skip` parameter declares
+`["integer", "null"]`, and the previous scalar-only read exited the TUI before the call was sent.
+
+Schema metadata reads also tolerate non-string values. Regression coverage checks nullable and
+multi-type schemas, malformed metadata, and the full TUI flow with the affected tool's schema:
+skip or supply the pagination offset, invoke the tool, and continue navigating afterwards.
+A live anonymous CLI call to the reported endpoint also succeeded.
+
+Build + test state: 912 unit + 73 integration + 38 E2E (6 gated smokes skipped), all green;
+solution Release rebuild clean with warnings treated as errors.
+
 ## Delivered in 0.21.1 - fix log-level picker rendering literal markup
 
 The **Change level** picker built its rows with embedded Spectre markup (e.g. `[red]ERROR[/]`), but

@@ -176,6 +176,70 @@ public class TuiPolishTests
         output.ShouldContain("The greeting");
     }
 
+    [Theory]
+    [InlineData("[\"integer\", \"null\"]", "integer | null")]
+    [InlineData("[\"string\", \"null\"]", "string | null")]
+    [InlineData("[\"null\", \"integer\"]", "null | integer")]
+    [InlineData("[\"string\", \"number\", \"boolean\"]", "string | number | boolean")]
+    [InlineData("[\"null\"]", "null")]
+    public void RenderToolDetail_WithPropertyTypeArray_RendersAllTypes(string types, string expected)
+    {
+        var console = NewConsole();
+        var schema = JsonNode.Parse($$"""
+        {
+          "type": "object",
+          "properties": {
+            "value": { "type": {{types}}, "description": "The supplied value" }
+          },
+          "required": ["value"]
+        }
+        """);
+
+        TuiApp.RenderToolDetail(console, new ToolInfo("Echo", null, schema));
+
+        console.Output.ShouldContain($"value * ({expected})");
+        console.Output.ShouldContain("The supplied value");
+    }
+
+    [Fact]
+    public void RenderToolDetail_WithRootTypeArray_RendersAllTypesAndProperties()
+    {
+        var console = NewConsole();
+        var schema = JsonNode.Parse("""
+        {
+          "type": ["object", "null"],
+          "properties": { "message": { "type": "string" } }
+        }
+        """);
+
+        TuiApp.RenderToolDetail(console, new ToolInfo("Echo", null, schema));
+
+        console.Output.ShouldContain("type: object | null");
+        console.Output.ShouldContain("message (string)");
+    }
+
+    [Fact]
+    public void RenderToolDetail_WithNonStringMetadata_UsesFallbacks()
+    {
+        var console = NewConsole();
+        var schema = JsonNode.Parse("""
+        {
+          "type": 42,
+          "properties": {
+            "unknown": { "type": {}, "description": ["unexpected"] },
+            "mixed": { "type": ["integer", null, 42, {}, "null"], "description": false },
+            "untyped": true
+          }
+        }
+        """);
+
+        TuiApp.RenderToolDetail(console, new ToolInfo("Echo", null, schema));
+
+        console.Output.ShouldContain("unknown (any)");
+        console.Output.ShouldContain("mixed (integer | null)");
+        console.Output.ShouldContain("untyped (any)");
+    }
+
     // ---------- Bookmark store ----------
 
     [Fact]

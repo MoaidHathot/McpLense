@@ -1592,7 +1592,7 @@ internal static class TuiApp
         {
             // Recognise the common JSON-Schema "properties" shape and expand it nicely:
             // each top-level property becomes its own subtree with type + required + description.
-            var type = obj["type"]?.GetValue<string>();
+            var type = FormatSchemaType(obj["type"]);
             var properties = obj["properties"] as JsonObject;
             var required = (obj["required"] as JsonArray)?.OfType<JsonValue>()
                 .Select(v => v.TryGetValue<string>(out var s) ? s : null)
@@ -1611,8 +1611,8 @@ internal static class TuiApp
                 foreach (var (name, value) in properties)
                 {
                     var requiredMark = required.Contains(name) ? " [red]*[/]" : string.Empty;
-                    var propType = (value as JsonObject)?["type"]?.GetValue<string>() ?? "any";
-                    var description = (value as JsonObject)?["description"]?.GetValue<string>();
+                    var propType = FormatSchemaType((value as JsonObject)?["type"]) ?? "any";
+                    var description = JsonString((value as JsonObject)?["description"]);
                     var label = $"[green]{Markup.Escape(name)}[/]{requiredMark} [grey]({Markup.Escape(propType)})[/]";
                     var propNode = propsNode.AddNode(label);
                     if (!string.IsNullOrEmpty(description))
@@ -1635,6 +1635,22 @@ internal static class TuiApp
 
         parent.AddNode(Markup.Escape(JsonDescribe(node)));
     }
+
+    private static string? FormatSchemaType(JsonNode? node)
+    {
+        if (node is not JsonArray types)
+        {
+            return JsonString(node);
+        }
+
+        // JSON Schema permits unions such as ["integer", "null"]. Keep every declared
+        // type visible, including null, rather than treating the array as a scalar.
+        var label = string.Join(" | ", types.Select(JsonString).Where(type => !string.IsNullOrEmpty(type)));
+        return label.Length > 0 ? label : null;
+    }
+
+    private static string? JsonString(JsonNode? node)
+        => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     private static string JsonDescribe(JsonNode? node) => node switch
     {
